@@ -254,7 +254,6 @@ async function bootstrap() {
     console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
     console.log(`📡 Socket.IO server running on ws://0.0.0.0:${PORT}`);
     console.log(`📱 Use your machine's IP address to access from mobile devices`);
-    console.log(`🌐 Web apps should connect to http://10.243.17.91:3000 (ZeroTier IP)`);
   }).on("error", (err) => {
     if (err.code === "EADDRINUSE") {
       console.log(`⚠️  Port ${PORT} is already in use. Please kill the process or use a different port.`);

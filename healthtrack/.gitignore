@@ -53,6 +53,11 @@ node_modules/
 backend_nodejs/.env
 *.env
 
+# Firebase/Google Cloud service account keys
+*.json
+!package.json
+!package-lock.json
+
 # Android build outputs
 **/build/
 android_backup/

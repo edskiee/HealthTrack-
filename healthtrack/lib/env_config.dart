@@ -54,20 +54,20 @@ class EnvironmentConfig {
         } else if (isIOSSimulator) {
           return 'http://127.0.0.1:3000'; // iOS simulator can use localhost
         } else if (isPhysicalDevice) {
-          // For physical devices, use your production server URL
-          return 'http://192.168.254.113:3000';
+          // For physical devices, use Railway production URL
+          return 'https://healthtrack-production-0be7.up.railway.app';
         } else {
-          // Desktop/Web development - use production server URL
-          return 'http://10.243.17.91:3000';
+          // Desktop/Web development - use Railway production URL
+          return 'https://healthtrack-production-0be7.up.railway.app';
         }
       case production:
-        // For production, use your production server URL
-        return 'http://192.168.254.113:3000';
+        // For production, use Railway production URL
+        return 'https://healthtrack-production-0be7.up.railway.app';
       case testing:
-        // For testing, use test server
-        return 'http://192.168.254.113:3000';
+        // For testing, use Railway production URL
+        return 'https://healthtrack-production-0be7.up.railway.app';
       default:
-        return 'http://192.168.254.113:3000';
+        return 'https://healthtrack-production-0be7.up.railway.app';
     }
   }
 
@@ -80,8 +80,8 @@ class EnvironmentConfig {
         if (isAndroidEmulator) {
           urls.addAll([
             'http://10.0.2.2:3000',       // Primary: Android emulator gateway
-            'http://192.168.254.113:3000', // Production server
-            'http://10.243.17.91:3000',    // ZeroTier IP
+            'https://healthtrack-production-0be7.up.railway.app', // Railway production
+            'http://192.168.254.113:3000', // Local network
             'http://192.168.1.66:3000',    // Alternative local network
             'http://192.168.137.1:3000',   // Windows hotspot
             'http://192.168.0.1:3000',     // Router gateway
@@ -90,25 +90,25 @@ class EnvironmentConfig {
           urls.addAll([
             'http://127.0.0.1:3000',      // Primary: iOS simulator localhost
             'http://localhost:3000',      // Alternative localhost
-            'http://192.168.254.113:3000', // Production server
-            'http://10.243.17.91:3000',    // ZeroTier IP
+            'https://healthtrack-production-0be7.up.railway.app', // Railway production
+            'http://192.168.254.113:3000', // Local network
             'http://192.168.1.66:3000',    // Alternative local network
             'http://192.168.137.1:3000',   // Windows hotspot
             'http://192.168.0.1:3000',     // Router gateway
           ]);
         } else if (isPhysicalDevice) {
           urls.addAll([
-            'http://192.168.254.113:3000', // Primary: Production server
-            'http://10.243.17.91:3000',    // ZeroTier IP
+            'https://healthtrack-production-0be7.up.railway.app', // Primary: Railway production
+            'http://192.168.254.113:3000', // Local network
             'http://192.168.1.66:3000',    // Alternative local network
             'http://192.168.137.1:3000',   // Windows hotspot
             'http://192.168.0.1:3000',     // Router gateway
           ]);
         } else {
-          // Desktop/Web - use production server
+          // Desktop/Web - use Railway production
           urls.addAll([
-            'http://10.243.17.91:3000',    // Primary: ZeroTier IP
-            'http://192.168.254.113:3000', // Production server
+            'https://healthtrack-production-0be7.up.railway.app', // Primary: Railway production
+            'http://192.168.254.113:3000', // Local network
             'http://192.168.1.66:3000',    // Alternative local network
             'http://192.168.137.1:3000',   // Windows hotspot
             'http://192.168.0.1:3000',     // Router gateway
@@ -119,24 +119,24 @@ class EnvironmentConfig {
 
       case production:
         return [
+          'https://healthtrack-production-0be7.up.railway.app',
           'http://192.168.254.113:3000',
-          'http://10.243.17.91:3000',
           'http://192.168.1.66:3000',
           'http://192.168.137.1:3000',
           'http://192.168.0.1:3000',
         ];
       case testing:
         return [
+          'https://healthtrack-production-0be7.up.railway.app',
           'http://192.168.254.113:3000',
-          'http://10.243.17.91:3000',
           'http://192.168.1.66:3000',
           'http://192.168.137.1:3000',
           'http://192.168.0.1:3000',
         ];
       default:
         return [
+          'https://healthtrack-production-0be7.up.railway.app',
           'http://192.168.254.113:3000',
-          'http://10.243.17.91:3000',
           'http://192.168.1.66:3000',
           'http://192.168.137.1:3000',
           'http://192.168.0.1:3000',

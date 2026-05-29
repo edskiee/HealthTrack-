@@ -1,0 +1,48 @@
+{
+  "name": "healthtrack-backend",
+  "version": "1.0.0",
+  "description": "HealthTrack Node.js Backend API",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test-server": "node test_server.js",
+    "check-notifications": "node check_scheduled_notifications.js",
+    "test": "jest",
+    "test:bugfix": "jest appointmentsController.bugfix.test.js"
+  },
+  "keywords": [
+    "healthtrack",
+    "api",
+    "nodejs",
+    "express",
+    "mysql"
+  ],
+  "author": "Edwin Malunoc",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.1",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.5.0",
+    "helmet": "^7.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "moment-timezone": "^0.6.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.1.1",
+    "mysql2": "^3.15.3",
+    "node-cron": "^4.2.1",
+    "otplib": "^13.4.0",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.2",
+    "supertest": "^7.2.2",
+    "ua-parser-js": "^2.0.9"
+  },
+  "devDependencies": {
+    "fast-check": "^4.5.3",
+    "jest": "^30.2.0",
+    "nodemon": "^3.0.1"
+  }
+}

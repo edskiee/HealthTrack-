@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#2196F3</color>        <!-- Primary blue color -->
+    <color name="primary_dark">#1976D2</color>  <!-- Darker shade -->
+    <color name="accent">#03A9F4</color>        <!-- Accent light blue -->
+</resources>

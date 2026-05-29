@@ -1,0 +1,248 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../services/api_config.dart'; // Import the new API config
+import '../services/dashboard_service.dart';
+
+class HealthRecordsService {
+  // 🎯 USE CONSISTENT URL CONFIGURATION:
+  static String get baseUrl {
+    return ApiConfig.baseUrl;
+  }
+  
+  // Headers for API requests
+  static Map<String, String> get _headers => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+
+  /// Get all health records
+  static Future<List<Map<String, dynamic>>> getHealthRecords() async {
+    try {
+      // Force refresh from server by adding timestamp to prevent caching
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final response = await http.get(
+        Uri.parse("$baseUrl/health-records?_t=$timestamp"),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        // Robust type checking for success field
+        bool isSuccess = false;
+        if (data['success'] is bool) {
+          isSuccess = data['success'];
+        } else if (data['success'] is String) {
+          isSuccess = data['success'].toLowerCase() == 'true';
+        } else if (data['success'] is int) {
+          isSuccess = data['success'] == 1;
+        }
+        
+        if (isSuccess) {
+          // Handle empty data case properly
+          List records = data['data'] ?? [];
+          if (records.isEmpty) {
+            return []; // Return empty list instead of throwing an error
+          }
+          return records.map((record) => {
+            "id": record['id']?.toString() ?? '',
+            "recordId": record['record_id']?.toString() ?? '',
+            "patientId": record['patient_id']?.toString() ?? '',
+            "name": record['name']?.toString() ?? '',
+            "age": record['age']?.toString() ?? '',
+            "gender": record['gender']?.toString() ?? '',
+            "status": record['status']?.toString() ?? '',
+            "diagnosis": record['diagnosis']?.toString() ?? '',
+            "dateOfVisit": record['date_of_visit']?.toString() ?? '',
+            "recordType": record['record_type']?.toString() ?? '',
+            "title": record['title']?.toString() ?? '',
+            "description": record['description']?.toString() ?? '',
+            "patientName": record['patient_name']?.toString() ?? '',
+            "motherName": record['mother_name']?.toString() ?? '',
+            "dateOfBirth": record['date_of_birth']?.toString() ?? '',
+            "placeOfBirth": record['place_of_birth']?.toString() ?? '',
+            "birthWeight": record['birth_weight']?.toString() ?? '',
+            "birthHeight": record['birth_height']?.toString() ?? '',
+            "sex": record['sex']?.toString() ?? '',
+            "address": record['address']?.toString() ?? '',
+            "createdAt": record['created_at']?.toString() ?? '',
+          }).toList().cast<Map<String, dynamic>>();
+        } else {
+          throw Exception(data['message'] ?? 'Failed to fetch health records');
+        }
+      } else {
+        throw Exception("HTTP ${response.statusCode}: Failed to fetch health records");
+      }
+    } catch (e) {
+      throw Exception("Failed to fetch health records: $e");
+    }
+  }
+
+  /// Get health records by patient ID
+  static Future<List<Map<String, dynamic>>> getHealthRecordsByPatient(int patientId) async {
+    try {
+      // Add timestamp to prevent caching and ensure fresh data
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final response = await http.get(
+        Uri.parse("$baseUrl/health-records/patient/$patientId?_t=$timestamp"),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        // Robust type checking for success field
+        bool isSuccess = false;
+        if (data['success'] is bool) {
+          isSuccess = data['success'];
+        } else if (data['success'] is String) {
+          isSuccess = data['success'].toLowerCase() == 'true';
+        } else if (data['success'] is int) {
+          isSuccess = data['success'] == 1;
+        }
+        
+        if (isSuccess) {
+          // Handle empty data case properly
+          List records = data['data'] ?? [];
+          if (records.isEmpty) {
+            return []; // Return empty list instead of throwing an error
+          }
+          return records.map((record) => {
+            "id": record['id']?.toString() ?? '',
+            "recordId": record['record_id']?.toString() ?? '',
+            "patientId": record['patient_id']?.toString() ?? '',
+            "name": record['name']?.toString() ?? '',
+            "age": record['age']?.toString() ?? '',
+            "gender": record['gender']?.toString() ?? '',
+            "status": record['status']?.toString() ?? '',
+            "diagnosis": record['diagnosis']?.toString() ?? '',
+            "dateOfVisit": record['date_of_visit']?.toString() ?? '',
+            "recordType": record['record_type']?.toString() ?? '',
+            "title": record['title']?.toString() ?? '',
+            "description": record['description']?.toString() ?? '',
+            "patientName": record['patient_name']?.toString() ?? '',
+            "motherName": record['mother_name']?.toString() ?? '',
+            "dateOfBirth": record['date_of_birth']?.toString() ?? '',
+            "placeOfBirth": record['place_of_birth']?.toString() ?? '',
+            "birthWeight": record['birth_weight']?.toString() ?? '',
+            "birthHeight": record['birth_height']?.toString() ?? '',
+            "sex": record['sex']?.toString() ?? '',
+            "address": record['address']?.toString() ?? '',
+            "createdAt": record['created_at']?.toString() ?? '',
+          }).toList().cast<Map<String, dynamic>>();
+        } else {
+          throw Exception(data['message'] ?? 'Failed to fetch health records');
+        }
+      } else {
+        throw Exception("HTTP ${response.statusCode}: Failed to fetch health records");
+      }
+    } catch (e) {
+      throw Exception("Failed to fetch health records: $e");
+    }
+  }
+
+  /// Add a health record
+  static Future<bool> addHealthRecord(Map<String, dynamic> recordData) async {
+    try {
+      final response = await http.post(
+        Uri.parse("$baseUrl/health-records"),
+        headers: _headers,
+        body: json.encode(recordData),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = json.decode(response.body);
+        // Robust type checking for success field
+        bool isSuccess = false;
+        if (data['success'] is bool) {
+          isSuccess = data['success'];
+        } else if (data['success'] is String) {
+          isSuccess = data['success'].toLowerCase() == 'true';
+        } else if (data['success'] is int) {
+          isSuccess = data['success'] == 1;
+        }
+        
+        if (isSuccess) {
+          // Trigger dashboard refresh to update all modules
+          DashboardService.triggerDashboardRefresh();
+          return true;
+        }
+        return false;
+      } else {
+        final data = json.decode(response.body);
+        throw Exception(data['message'] ?? 'Failed to add health record');
+      }
+    } catch (e) {
+      throw Exception("Failed to add health record: $e");
+    }
+  }
+
+  /// Update an existing health record
+  static Future<bool> updateHealthRecord(int id, Map<String, dynamic> recordData) async {
+    try {
+      final response = await http.put(
+        Uri.parse("$baseUrl/health-records/$id"),
+        headers: _headers,
+        body: json.encode(recordData),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        // Robust type checking for success field
+        bool isSuccess = false;
+        if (data['success'] is bool) {
+          isSuccess = data['success'];
+        } else if (data['success'] is String) {
+          isSuccess = data['success'].toLowerCase() == 'true';
+        } else if (data['success'] is int) {
+          isSuccess = data['success'] == 1;
+        }
+        
+        if (isSuccess) {
+          // Trigger dashboard refresh to update all modules
+          DashboardService.triggerDashboardRefresh();
+          return true;
+        }
+        return false;
+      } else {
+        final data = json.decode(response.body);
+        throw Exception(data['message'] ?? 'Failed to update health record');
+      }
+    } catch (e) {
+      throw Exception("Failed to update health record: $e");
+    }
+  }
+
+  /// Delete health record
+  static Future<bool> deleteHealthRecord(int id) async {
+    try {
+      final response = await http.delete(
+        Uri.parse("$baseUrl/health-records/$id"),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        // Robust type checking for success field
+        bool isSuccess = false;
+        if (data['success'] is bool) {
+          isSuccess = data['success'];
+        } else if (data['success'] is String) {
+          isSuccess = data['success'].toLowerCase() == 'true';
+        } else if (data['success'] is int) {
+          isSuccess = data['success'] == 1;
+        }
+        
+        if (isSuccess) {
+          // Trigger dashboard refresh to update all modules
+          DashboardService.triggerDashboardRefresh();
+          return true;
+        }
+        return false;
+      } else {
+        final data = json.decode(response.body);
+        throw Exception(data['message'] ?? 'Failed to delete health record');
+      }
+    } catch (e) {
+      throw Exception("Failed to delete health record: $e");
+    }
+  }
+}

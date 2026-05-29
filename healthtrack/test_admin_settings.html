@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Settings Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .test-result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .success { background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .error { background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+        .info { background-color: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460; }
+        pre { background-color: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        button { padding: 10px 20px; margin: 5px; background-color: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 HealthTrack Admin Settings Test</h1>
+        <p>This page tests the system settings API endpoints that the Flutter admin app uses.</p>
+        
+        <button onclick="testGetAllSettings()">Test Get All Settings</button>
+        <button onclick="testGetSpecificSetting()">Test Get Specific Setting</button>
+        <button onclick="testUpdateSetting()">Test Update Setting</button>
+        <button onclick="clearResults()">Clear Results</button>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const baseUrl = 'http://localhost:3000';
+        
+        function addResult(message, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${type}`;
+            resultDiv.innerHTML = `<strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+            resultsDiv.appendChild(resultDiv);
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        }
+        
+        function addJsonResult(title, data, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${type}`;
+            resultDiv.innerHTML = `
+                <strong>${new Date().toLocaleTimeString()}:</strong> ${title}
+                <pre>${JSON.stringify(data, null, 2)}</pre>
+            `;
+            resultsDiv.appendChild(resultDiv);
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        }
+        
+        async function testGetAllSettings() {
+            try {
+                addResult('Testing GET /system-settings...', 'info');
+                
+                const response = await fetch(`${baseUrl}/system-settings`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    addResult(`✅ SUCCESS: Retrieved ${data.data.length} settings`, 'success');
+                    addJsonResult('All Settings Data:', data);
+                    
+                    // Check for the specific settings the admin panel expects
+                    const expectedSettings = ['appointment_reminders', 'system_alerts', 'data_sharing', 'analytics_tracking', 'auto_logout'];
+                    const foundSettings = data.data.filter(setting => 
+                        expectedSettings.includes(setting.setting_key)
+                    );
+                    
+                    if (foundSettings.length === expectedSettings.length) {
+                        addResult(`✅ All expected admin settings found!`, 'success');
+                    } else {
+                        addResult(`⚠️ Missing some expected settings. Found ${foundSettings.length}/${expectedSettings.length}`, 'error');
+                    }
+                } else {
+                    addResult(`❌ ERROR: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Network Error: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testGetSpecificSetting() {
+            try {
+                addResult('Testing GET /system-settings/appointment_reminders...', 'info');
+                
+                const response = await fetch(`${baseUrl}/system-settings/appointment_reminders`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    addResult(`✅ SUCCESS: Retrieved specific setting`, 'success');
+                    addJsonResult('Specific Setting Data:', data);
+                } else {
+                    addResult(`❌ ERROR: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Network Error: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testUpdateSetting() {
+            try {
+                addResult('Testing PUT /system-settings/appointment_reminders...', 'info');
+                
+                const testData = {
+                    value: 'false',
+                    type: 'boolean',
+                    description: 'Test update from web interface'
+                };
+                
+                const response = await fetch(`${baseUrl}/system-settings/appointment_reminders`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(testData)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    addResult(`✅ SUCCESS: Setting updated`, 'success');
+                    addJsonResult('Update Response:', data);
+                    
+                    // Verify the update by fetching it again
+                    setTimeout(() => testGetSpecificSetting(), 1000);
+                } else {
+                    addResult(`❌ ERROR: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Network Error: ${error.message}`, 'error');
+            }
+        }
+        
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+        
+        // Run initial test when page loads
+        window.addEventListener('load', () => {
+            addResult('Page loaded. Click buttons above to test endpoints.', 'info');
+        });
+    </script>
+</body>
+</html>

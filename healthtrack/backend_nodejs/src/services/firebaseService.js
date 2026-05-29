@@ -1,16 +1,24 @@
 const admin = require('firebase-admin');
 const db = require("../config/db");
 const { isUserPushEnabled, maskFcmTokenForLog, RETRYABLE_FCM_CODES } = require("./pushNotificationPolicy");
-const serviceAccount = require('../../healthtrack-d20c2-4ada6cfc53f1.json');
 
 // Initialize Firebase Admin SDK
 let firebaseAdmin = null;
 
 try {
-  firebaseAdmin = admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log('Firebase Admin SDK initialized successfully');
+  // Try to initialize with environment variables first (for Railway)
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+    firebaseAdmin = admin.initializeApp({
+      credential: admin.credential.cert({
+        project_id: process.env.FIREBASE_PROJECT_ID,
+        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL
+      })
+    });
+    console.log('Firebase Admin SDK initialized successfully with environment variables');
+  } else {
+    console.warn('Firebase credentials not found in environment variables. Push notifications will be disabled.');
+  }
 } catch (error) {
   console.error('Error initializing Firebase Admin SDK:', error);
 }

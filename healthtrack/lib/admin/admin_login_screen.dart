@@ -211,6 +211,19 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       final tokenValue = data["access_token"]?.toString();
       if (tokenValue != null && tokenValue.isNotEmpty) {
         await AdminSessionStorage.setToken(tokenValue);
+        // ── DIAGNOSTIC: confirm token round-trip ──────────────────────────
+        final savedToken = await AdminSessionStorage.getToken();
+        final tokenOk = savedToken != null && savedToken.isNotEmpty;
+        print('[AdminLogin] LOGIN RESPONSE data keys: ${data.keys.toList()}');
+        print('[AdminLogin] access_token from response: '
+            '${tokenValue.substring(0, tokenValue.length.clamp(0, 20))}... (${tokenValue.length} chars)');
+        print('[AdminLogin] token saved to storage → '
+            '${tokenOk ? "${savedToken.substring(0, savedToken.length.clamp(0, 20))}... (${savedToken.length} chars)" : "FAILED — NULL or EMPTY"}');
+        if (!tokenOk) {
+          throw Exception(
+              "Token received but could not be saved to local storage. "
+              "This can happen in private/incognito mode on web.");
+        }
       } else {
         throw Exception(
             "Server authenticated you but omitted a session token — check admin_sessions migration.");

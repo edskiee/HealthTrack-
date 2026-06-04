@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../../services/api_config.dart';
 import '../../utils/time_utils.dart';
+import '../../admin/services/admin_session_storage.dart';
 
 class PendingAppointmentsWidget extends StatefulWidget {
   final VoidCallback? onRefresh;
@@ -41,6 +42,15 @@ class _PendingAppointmentsWidgetState extends State<PendingAppointmentsWidget> {
     });
   }
 
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
   Future<void> _loadPendingAppointments() async {
     try {
       setState(() {
@@ -50,7 +60,7 @@ class _PendingAppointmentsWidgetState extends State<PendingAppointmentsWidget> {
 
       final response = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/api/admin/appointments/pending'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -94,7 +104,7 @@ class _PendingAppointmentsWidgetState extends State<PendingAppointmentsWidget> {
     try {
       final response = await http.put(
         Uri.parse('${ApiConfig.baseUrl}/api/appointments/$appointmentId/status'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
         body: json.encode({
           'status': status,
           'newDate': newDate,

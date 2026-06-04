@@ -13,6 +13,9 @@ class PatientsService {
   // Async headers that include the admin Bearer token
   static Future<Map<String, String>> _authHeaders() async {
     final token = await AdminSessionStorage.getToken();
+    // DEBUG — remove once 401s are resolved
+    print('[PatientsService] _authHeaders() token='
+        '${token == null ? "NULL" : token.isEmpty ? "EMPTY" : "${token.substring(0, token.length.clamp(0, 10))}..."}');
     return {
       'Content-Type': 'application/json',
       'Accept': 'application/json',

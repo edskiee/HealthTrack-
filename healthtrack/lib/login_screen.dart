@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'utils/message_utils.dart';
 import 'services/user_session.dart';
+import 'services/user_session_storage.dart';
 import 'services/auth_service.dart';
 import 'services/websocket_service.dart';
 import 'services/fcm_service.dart';
@@ -80,10 +81,16 @@ class _LoginScreenState extends State<LoginScreen>
       if (userData != null) {
         debugPrint("✅ Login successful, user data: $userData");
         
-        // The server returns data with 'user' and 'patient' objects
+        // The server returns data with 'user', 'patient', and 'access_token' objects
         final userInfo = userData['user'];
         final patientInfo = userData['patient'];
-        
+        final accessToken = userData['access_token']?.toString();
+
+        // Persist the user JWT for authenticated API calls
+        if (accessToken != null && accessToken.isNotEmpty) {
+          await UserSessionStorage.setToken(accessToken);
+        }
+
         if (userInfo != null) {
           // Store user session data
           UserSession.instance.setUserData(userInfo);

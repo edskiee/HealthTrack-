@@ -2,10 +2,30 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:healthtrack/models/referral.dart';
 import 'package:healthtrack/services/api_config.dart';
+import 'package:healthtrack/admin/services/admin_session_storage.dart';
+import 'package:healthtrack/services/user_session_storage.dart';
 import 'package:flutter/material.dart';
 
 class ReferralService {
   static String get _baseUrl => ApiConfig.baseUrl;
+
+  static Future<Map<String, String>> _adminHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  static Future<Map<String, String>> _userHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   // Create a new referral
   static Future<Referral?> createReferral({
@@ -18,9 +38,7 @@ class ReferralService {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/referrals'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await _adminHeaders(),
         body: jsonEncode({
           'patient_id': patientId,
           'referred_to': referredTo.trim(),
@@ -52,9 +70,7 @@ class ReferralService {
     try {
       final response = await http.get(
         Uri.parse('$_baseUrl/referrals/patient/$patientId'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await _userHeaders(),
       );
 
       if (response.statusCode == 200) {

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../../services/api_config.dart';
+import '../../admin/services/admin_session_storage.dart';
 import '../../utils/message_utils.dart';
 
 class SlotDetailsModal extends StatefulWidget {
@@ -148,9 +150,11 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
 
     try {
       final response = await http.delete(
-        Uri.parse('http://localhost:3000/appointment-slots/$slotId'),
+        Uri.parse('${ApiConfig.baseUrl}/appointment-slots/$slotId'),
         headers: {
           'Content-Type': 'application/json',
+          if (await AdminSessionStorage.getToken() != null)
+            'Authorization': 'Bearer ${await AdminSessionStorage.getToken()}',
         },
       ).timeout(const Duration(seconds: 15));
 

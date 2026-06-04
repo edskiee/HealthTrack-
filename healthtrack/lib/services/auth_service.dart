@@ -1,12 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart'; // Import the new API config
 import 'ip_detection_service.dart'; // Import IP detection service
 import 'fcm_service.dart'; // Import FCM service for token management
-import 'user_session.dart'; // Import user session for token storage
 
 class AuthService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
@@ -372,7 +370,8 @@ class AuthService {
       }
       
       if (response.statusCode == 200 && isSuccess) {
-        return data['admin'];
+        // Return the full response so callers can access access_token, admin, etc.
+        return data;
       } else {
         throw Exception(data['message'] ?? 'Admin login failed');
       }

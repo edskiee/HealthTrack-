@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../services/user_session.dart';
 import '../services/api_config.dart';
+import '../services/user_session_storage.dart';
 
 class Reminder {
   final int id;
@@ -80,6 +81,15 @@ class Reminder {
 class ReminderService {
   static const String _basePath = '/reminders';
 
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
   static Future<List<Reminder>> getUserReminders() async {
     final userSession = UserSession.instance;
     if (!userSession.isLoggedIn) {
@@ -87,7 +97,7 @@ class ReminderService {
     }
 
     final url = Uri.parse('${ApiConfig.baseUrl}$_basePath/user/${userSession.userId}');
-    final response = await http.get(url);
+    final response = await http.get(url, headers: await _authHeaders());
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
@@ -110,7 +120,7 @@ class ReminderService {
 
     final dateString = date.toIso8601String().split('T')[0];
     final url = Uri.parse('${ApiConfig.baseUrl}$_basePath/user/${userSession.userId}/date/$dateString');
-    final response = await http.get(url);
+    final response = await http.get(url, headers: await _authHeaders());
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
@@ -155,7 +165,7 @@ class ReminderService {
 
     final response = await http.post(
       url,
-      headers: {'Content-Type': 'application/json'},
+      headers: await _authHeaders(),
       body: body,
     );
 
@@ -192,7 +202,7 @@ class ReminderService {
 
     final response = await http.put(
       url,
-      headers: {'Content-Type': 'application/json'},
+      headers: await _authHeaders(),
       body: body,
     );
 
@@ -205,7 +215,7 @@ class ReminderService {
 
   static Future<Map<String, dynamic>> deleteReminder(int reminderId) async {
     final url = Uri.parse('${ApiConfig.baseUrl}$_basePath/$reminderId');
-    final response = await http.delete(url);
+    final response = await http.delete(url, headers: await _authHeaders());
 
     if (response.statusCode == 200) {
       return json.decode(response.body);

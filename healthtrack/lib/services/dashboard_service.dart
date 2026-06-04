@@ -3,30 +3,46 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart'; // Import the new API config
+import '../admin/services/admin_session_storage.dart'; // Admin token storage
 
 class DashboardService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
-  static String get baseUrl {
-    return ApiConfig.baseUrl;
+  static String get baseUrl => ApiConfig.baseUrl;
+  static List<String> get fallbackBaseUrls => ApiConfig.fallbackBaseUrls;
+
+  // Async headers that include the admin Bearer token
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    debugPrint('[DashboardService] token=${token == null ? "NULL" : token.isEmpty ? "EMPTY" : "${token.substring(0, token.length.clamp(0, 10))}..."}');
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
   }
 
-  // Headers for API requests
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
-  
+  /// Try a GET across all fallback URLs, return the first successful response.
+  static Future<http.Response> _getWithFallback(String path) async {
+    Object? lastError;
+    for (final url in fallbackBaseUrls) {
+      try {
+        return await http
+            .get(Uri.parse('$url$path'), headers: await _authHeaders())
+            .timeout(const Duration(seconds: 10));
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('All URLs failed for $path');
+  }
+
   // Test connection
   static Future<bool> testConnection() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/stats"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 5));
-      
+      final response = await _getWithFallback('/dashboard/stats');
       return response.statusCode == 200;
     } catch (e) {
-      print("Connection test failed: $e");
+      debugPrint("Connection test failed: $e");
       return false;
     }
   }
@@ -74,22 +90,15 @@ class DashboardService {
   // Get dashboard statistics
   static Future<Map<String, dynamic>> getDashboardStats() async {
     try {
-      final response = await http.get(
-        Uri.parse("${baseUrl}/dashboard/stats"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 10));
-
+      final response = await _getWithFallback('/dashboard/stats');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Return data or empty map if data is null
         return data['data'] as Map<String, dynamic>? ?? {};
       } else {
-        print("Failed to fetch dashboard stats. Status: ${response.statusCode}");
         throw Exception("Failed to fetch dashboard stats. Status: ${response.statusCode}");
       }
     } catch (e) {
-      print("Error fetching dashboard stats: $e");
-      // Return default values to prevent app crash
+      debugPrint("Error fetching dashboard stats: $e");
       return {
         'totalPatients': 0,
         'appointmentsToday': 0,
@@ -97,7 +106,6 @@ class DashboardService {
         'todayRecords': 0,
         'maternalPatients': 0,
         'immunizationPatients': 0,
-
         'totalPatientsChange': 0.0,
         'maternalPatientsChange': 0.0,
         'immunizationPatientsChange': 0.0,
@@ -111,25 +119,18 @@ class DashboardService {
   // Get recent activities
   static Future<List<Map<String, dynamic>>> getRecentActivities() async {
     try {
-      final response = await http.get(
-        Uri.parse("${baseUrl}/dashboard/activities"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 10));
-
+      final response = await _getWithFallback('/dashboard/activities');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Return data or empty list if data is null
         if (data['data'] is List) {
           return List<Map<String, dynamic>>.from(data['data']);
         }
         return [];
       } else {
-        print("Failed to fetch recent activities. Status: ${response.statusCode}");
         throw Exception("Failed to fetch recent activities. Status: ${response.statusCode}");
       }
     } catch (e) {
-      print("Error fetching recent activities: $e");
-      // Return empty list to prevent app crash
+      debugPrint("Error fetching recent activities: $e");
       return [];
     }
   }
@@ -137,48 +138,34 @@ class DashboardService {
   // Get today's appointments
   static Future<List<Map<String, dynamic>>> getTodayAppointments() async {
     try {
-      final response = await http.get(
-        Uri.parse("${baseUrl}/dashboard/appointments"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 10));
-
+      final response = await _getWithFallback('/dashboard/appointments');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Return data or empty list if data is null
         if (data['data'] is List) {
           return List<Map<String, dynamic>>.from(data['data']);
         }
         return [];
       } else {
-        print("Failed to fetch today's appointments. Status: ${response.statusCode}");
         throw Exception("Failed to fetch today's appointments. Status: ${response.statusCode}");
       }
     } catch (e) {
-      print("Error fetching today's appointments: $e");
-      // Return empty list to prevent app crash
+      debugPrint("Error fetching today's appointments: $e");
       return [];
     }
   }
-  
+
   // Get weekly appointments data
   static Future<Map<String, dynamic>> getWeeklyAppointments() async {
     try {
-      final response = await http.get(
-        Uri.parse("${baseUrl}/dashboard/weekly-appointments"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 10));
-
+      final response = await _getWithFallback('/dashboard/weekly-appointments');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Return data or empty map if data is null
         return data['data'] as Map<String, dynamic>? ?? {};
       } else {
-        print("Failed to fetch weekly appointments. Status: ${response.statusCode}");
         throw Exception("Failed to fetch weekly appointments. Status: ${response.statusCode}");
       }
     } catch (e) {
-      print("Error fetching weekly appointments: $e");
-      // Return default values to prevent app crash
+      debugPrint("Error fetching weekly appointments: $e");
       return {
         'Mon': 0,
         'Tue': 0,
@@ -194,25 +181,18 @@ class DashboardService {
   // Get service type distribution data
   static Future<List<Map<String, dynamic>>> getServiceTypeDistribution() async {
     try {
-      final response = await http.get(
-        Uri.parse("${baseUrl}/dashboard/service-type-distribution"),
-        headers: _headers,
-      ).timeout(const Duration(seconds: 10));
-
+      final response = await _getWithFallback('/dashboard/service-type-distribution');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Return data or empty list if data is null
         if (data['data'] is List) {
           return List<Map<String, dynamic>>.from(data['data']);
         }
         return [];
       } else {
-        print("Failed to fetch service type distribution. Status: ${response.statusCode}");
         throw Exception("Failed to fetch service type distribution. Status: ${response.statusCode}");
       }
     } catch (e) {
-      print("Error fetching service type distribution: $e");
-      // Return empty list to prevent app crash
+      debugPrint("Error fetching service type distribution: $e");
       return [];
     }
   }

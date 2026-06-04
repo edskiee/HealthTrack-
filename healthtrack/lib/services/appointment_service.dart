@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'error_handler_service.dart';
 import 'api_config.dart'; // Import the new API config
+import '../admin/services/admin_session_storage.dart';
+import 'user_session_storage.dart';
 
 class AppointmentService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
@@ -15,11 +16,28 @@ class AppointmentService {
   // Fallback URLs to try if the primary URL fails
   static List<String> get fallbackBaseUrls => ApiConfig.fallbackBaseUrls;
 
-  // Headers for API requests
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+  /// Headers for admin-protected endpoints (Bearer opaque token)
+  static Future<Map<String, String>> _adminHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    // DEBUG — remove once 401s are resolved
+    print('[AppointmentService] _adminHeaders() token='
+        '${token == null ? "NULL" : token.isEmpty ? "EMPTY" : "${token.substring(0, token.length.clamp(0, 10))}..."}');
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  /// Headers for user-protected endpoints (Bearer JWT)
+  static Future<Map<String, String>> _userHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   /// Get all appointments for a user
   static Future<List<Map<String, dynamic>>> getUserAppointments(String userId) async {
@@ -28,7 +46,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/user/$userId"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -70,7 +88,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/user/$userId/upcoming"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -112,7 +130,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments"),
-          headers: _headers,
+          headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -196,7 +214,7 @@ class AppointmentService {
         try {
           final response = await http.post(
             Uri.parse("$url/appointments"),
-            headers: _headers,
+            headers: await _userHeaders(),
             body: json.encode(backendData),
           ).timeout(const Duration(seconds: 10));
 
@@ -322,7 +340,7 @@ class AppointmentService {
         
         final response = await http.put(
           apiUrl,
-          headers: {'Content-Type': 'application/json'},
+          headers: await _adminHeaders(),
           body: jsonEncode({
             'status': status,
             'rescheduleDate': rescheduleDate,
@@ -410,7 +428,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/notifications/$userId"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -452,7 +470,7 @@ class AppointmentService {
       try {
         final response = await http.put(
           Uri.parse("$url/appointments/notifications/read/$notificationId"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -489,7 +507,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/consultation-types"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -531,7 +549,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/next/$patientId"),
-          headers: _headers,
+          headers: await _userHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -573,7 +591,7 @@ class AppointmentService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointments/upcoming"),
-          headers: _headers,
+          headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -615,7 +633,7 @@ class AppointmentService {
       try {
         final response = await http.delete(
           Uri.parse("$url/appointments/$appointmentId"),
-          headers: _headers,
+          headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200 || response.statusCode == 204) {

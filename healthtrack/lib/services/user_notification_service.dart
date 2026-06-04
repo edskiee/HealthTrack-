@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart'; // Import the new API config
+import 'user_session_storage.dart';
 
 class UserNotificationService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
@@ -10,18 +10,22 @@ class UserNotificationService {
     return ApiConfig.baseUrl;
   }
 
-  // Headers for API requests
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+  // Async headers with user JWT
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   // Get user notifications
   static Future<List<Map<String, dynamic>>> getUserNotifications(int userId) async {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/api/appointments/notifications/$userId"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -54,7 +58,7 @@ class UserNotificationService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/api/appointments/notifications/$userId/unread-count"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -87,7 +91,7 @@ class UserNotificationService {
     try {
       final response = await http.put(
         Uri.parse("$baseUrl/api/appointments/notifications/$notificationId/read"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -115,7 +119,7 @@ class UserNotificationService {
     try {
       final response = await http.put(
         Uri.parse("$baseUrl/api/appointments/notifications/user/$userId/mark-all-read"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -143,7 +147,7 @@ class UserNotificationService {
     try {
       final response = await http.delete(
         Uri.parse("$baseUrl/api/appointments/notifications/$notificationId"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -171,7 +175,7 @@ class UserNotificationService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/api/appointments/user/$userId/status-history"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {

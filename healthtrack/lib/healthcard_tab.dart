@@ -3,6 +3,7 @@ import 'settings_tab.dart';
 import 'login_screen.dart';
 import 'utils/message_utils.dart';
 import 'services/user_session.dart';
+import 'services/api_config.dart';
 import 'services/health_record_service.dart';
 import 'services/referral_service.dart';
 import 'models/referral.dart';
@@ -36,7 +37,7 @@ class _HealthCardTabState extends State<HealthCardTab> {
       final patientId = int.tryParse(userSession.patientId) ?? 0;
       
       if (patientId > 0) {
-        _socket = io.io('http://10.243.17.91:3000', <String, dynamic>{
+        _socket = io.io(ApiConfig.baseUrl, <String, dynamic>{
           'transports': ['websocket'],
           'autoConnect': true,
         });

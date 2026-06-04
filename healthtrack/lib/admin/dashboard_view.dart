@@ -1,12 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import '../services/api_config.dart';
 import '../services/dashboard_service.dart';
-import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
-import '../admin/admin_login_screen.dart';
 import '../admin/services/realtime_refresh_service.dart';
 import 'widgets/admin_header.dart';
 
@@ -23,8 +20,7 @@ class _DashboardViewState extends State<DashboardView> {
   Map<String, dynamic> dashboardStats = {};
   List<Map<String, dynamic>> activities = [];
   List<Map<String, dynamic>> appointments = [];
-  Timer? _refreshTimer;
-  
+
   // Socket.IO client for real-time updates
   io.Socket? _socket;
   
@@ -55,8 +51,8 @@ class _DashboardViewState extends State<DashboardView> {
   /// Initialize Socket.IO connection for real-time dashboard updates
   void _initSocketConnection() {
     try {
-      // Connect to the same server the API is running on
-      final serverUrl = 'http://10.243.17.91:3000'; // Use the actual server IP
+      // Connect to the Render backend (same server the API is running on)
+      final serverUrl = ApiConfig.baseUrl;
       
       _socket = io.io(serverUrl, <String, dynamic>{
         'transports': ['websocket'],

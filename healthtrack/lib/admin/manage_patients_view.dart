@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:healthtrack/admin/admin_login_screen.dart';
+import 'package:healthtrack/services/api_config.dart';
 import 'patients_service.dart';
 import '../utils/message_utils.dart';
 import '../services/dashboard_service.dart';
@@ -77,8 +78,8 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
   /// Initialize Socket.IO connection for real-time patient updates
   void _initSocketConnection() {
     try {
-      // Connect to the same server the API is running on
-      final serverUrl = 'http://10.243.17.91:3000'; // Use the actual server IP
+      // Connect to the Render backend (same server the API is running on)
+      final serverUrl = ApiConfig.baseUrl;
       
       _socket = io.io(serverUrl, <String, dynamic>{
         'transports': ['websocket'],

@@ -11,13 +11,16 @@ backend_nodejs/.env
 backend_nodejs/.env.*
 !backend_nodejs/.env.example
 
-# Firebase / Google Cloud service account JSON key files
+# Firebase / Google Cloud credential files
 **/firebase-adminsdk-*.json
 **/serviceAccountKey.json
 **/google-services-private*.json
 backend_nodejs/healthtrack-*.json
-# Allow package.json and package-lock.json but block all other JSON key files
-# Note: *.json is intentionally NOT blocked globally — only key file patterns above
+
+# Flutter Firebase config files (contain live API keys)
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+# Allow package.json and package-lock.json but block credential JSON files
 
 # ─── Node.js ─────────────────────────────────────────────────────────────────
 node_modules/

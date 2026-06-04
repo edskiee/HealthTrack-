@@ -2,18 +2,23 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../services/api_config.dart'; // Import the new API config
 import '../services/dashboard_service.dart';
+import 'services/admin_session_storage.dart';
 
 class HealthRecordsService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
   static String get baseUrl {
     return ApiConfig.baseUrl;
   }
-  
-  // Headers for API requests
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+
+  // Async headers that include the admin Bearer token
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   /// Get all health records
   static Future<List<Map<String, dynamic>>> getHealthRecords() async {
@@ -22,7 +27,7 @@ class HealthRecordsService {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final response = await http.get(
         Uri.parse("$baseUrl/health-records?_t=$timestamp"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -84,7 +89,7 @@ class HealthRecordsService {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final response = await http.get(
         Uri.parse("$baseUrl/health-records/patient/$patientId?_t=$timestamp"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -144,7 +149,7 @@ class HealthRecordsService {
     try {
       final response = await http.post(
         Uri.parse("$baseUrl/health-records"),
-        headers: _headers,
+        headers: await _authHeaders(),
         body: json.encode(recordData),
       );
 
@@ -180,7 +185,7 @@ class HealthRecordsService {
     try {
       final response = await http.put(
         Uri.parse("$baseUrl/health-records/$id"),
-        headers: _headers,
+        headers: await _authHeaders(),
         body: json.encode(recordData),
       );
 
@@ -216,7 +221,7 @@ class HealthRecordsService {
     try {
       final response = await http.delete(
         Uri.parse("$baseUrl/health-records/$id"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {

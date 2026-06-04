@@ -2,25 +2,30 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../services/api_config.dart'; // Import the new API config
 import '../services/dashboard_service.dart';
+import 'services/admin_session_storage.dart';
 
 class PatientsService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
   static String get baseUrl {
     return ApiConfig.baseUrl;
   }
-  
-  // Headers for API requests
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+
+  // Async headers that include the admin Bearer token
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   /// Get all patients (returns data in Flutter format)
   static Future<List<Map<String, String>>> getPatients() async {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -133,7 +138,7 @@ class PatientsService {
       
       final response = await http.post(
         Uri.parse("$baseUrl/patients"),
-        headers: _headers,
+        headers: await _authHeaders(),
         body: json.encode(apiData),
       ).timeout(const Duration(seconds: 10));
 
@@ -230,7 +235,7 @@ class PatientsService {
 
       final response = await http.put(
         Uri.parse("$baseUrl/patients/$id"),
-        headers: _headers,
+        headers: await _authHeaders(),
         body: json.encode(apiData),
       );
 
@@ -280,7 +285,7 @@ class PatientsService {
     try {
       final response = await http.delete(
         Uri.parse("$baseUrl/patients/$id"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -328,7 +333,7 @@ class PatientsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients/$id"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -374,7 +379,7 @@ class PatientsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients/search?q=$query"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -445,7 +450,7 @@ class PatientsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients/export/csv"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -465,7 +470,7 @@ class PatientsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients/export/excel"),
-        headers: _headers,
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {

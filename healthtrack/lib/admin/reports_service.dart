@@ -1,31 +1,29 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../services/api_config.dart';
+import 'services/admin_session_storage.dart';
 
 class ReportsService {
-  // Get base URL based on platform
-  static String get baseUrl {
-    if (kIsWeb) {
-      return "http://localhost:3000";  // Web (desktop admin)
-    } else if (Platform.isAndroid) {
-      return "http://10.0.2.2:3000";  // Android emulator
-    } else {
-      return "http://localhost:3000"; // iOS simulator & desktop
-    }
-  }
+  // Use the same centralized URL config as other admin services
+  static String get baseUrl => ApiConfig.baseUrl;
 
-  static Map<String, String> get _headers => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+  // Async headers that include the admin Bearer token
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
 
   // Get total patients count with robust error handling
   static Future<int> getTotalPatients() async {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/patients"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -58,7 +56,7 @@ class ReportsService {
       // Get appointments for the current week
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/weekly-appointments"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -110,7 +108,7 @@ class ReportsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/service-type-distribution"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -162,7 +160,7 @@ class ReportsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/baby-conditions"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -208,7 +206,7 @@ class ReportsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/age-distribution"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -254,7 +252,7 @@ class ReportsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/gender-distribution"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -300,7 +298,7 @@ class ReportsService {
     try {
       final response = await http.get(
         Uri.parse("$baseUrl/dashboard/location-distribution"),
-        headers: _headers,
+        headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {

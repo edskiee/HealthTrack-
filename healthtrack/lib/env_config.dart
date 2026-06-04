@@ -19,7 +19,7 @@ class EnvironmentConfig {
   // ── Your Render backend URL ───────────────────────────────────────────────
   // Replace this with your actual Render service URL after deployment.
   // Format: https://<your-service-name>.onrender.com
-  static const String _renderUrl = 'https://healthtrack-api.onrender.com';
+  static const String _renderUrl = 'https://healthtrack-vvbu.onrender.com';
 
   // ─── Platform Detection ───────────────────────────────────────────────────
 

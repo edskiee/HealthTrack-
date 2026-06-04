@@ -9,7 +9,7 @@ CREATE DATABASE IF NOT EXISTS healthtrack;
 USE healthtrack;
 
 -- Admin users table - Simple admin authentication
-CREATE TABLE admin_users (
+CREATE TABLE IF NOT EXISTS admin_users (
     id INT PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE admin_users (
 );
 
 -- Users table - Regular app users (parents/guardians)
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id INT PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
@@ -45,9 +45,9 @@ CREATE TABLE users (
 );
 
 -- Patients table - PEDIATRIC PATIENT RECORDS (matches your Flutter app)
-CREATE TABLE patients (
+CREATE TABLE IF NOT EXISTS patients (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    user_id INT NOT NULL,  -- Link to parent/guardian (required)
+    user_id INT NULL,  -- Link to parent/guardian (nullable for initial data)
     patient_id VARCHAR(50),  -- For admin management system
     medical_record_number VARCHAR(100),  -- For admin system
     
@@ -122,7 +122,7 @@ CREATE TABLE patients (
 );
 
 -- Appointments table - Medical appointments
-CREATE TABLE appointments (
+CREATE TABLE IF NOT EXISTS appointments (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id INT,  -- For regular users
     patient_id INT,  -- For pediatric patients
@@ -144,7 +144,7 @@ CREATE TABLE appointments (
 );
 
 -- Health records table - Medical records
-CREATE TABLE health_records (
+CREATE TABLE IF NOT EXISTS health_records (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id INT NOT NULL,  -- Links to users table
     patient_id INT,  -- Links to patients table (new field)
@@ -169,7 +169,7 @@ CREATE TABLE health_records (
 );
 
 -- Appointment notifications table - For appointment-related notifications
-CREATE TABLE appointment_notifications (
+CREATE TABLE IF NOT EXISTS appointment_notifications (
     id INT PRIMARY KEY AUTO_INCREMENT,
     appointment_id INT NOT NULL,
     user_id INT NOT NULL,
@@ -186,7 +186,7 @@ CREATE TABLE appointment_notifications (
 );
 
 -- Health tips table - For dynamic health information
-CREATE TABLE health_tips (
+CREATE TABLE IF NOT EXISTS health_tips (
     id INT PRIMARY KEY AUTO_INCREMENT,
     tip_category ENUM('maternal', 'pediatric', 'general') DEFAULT 'general',
     tip_text TEXT NOT NULL,
@@ -198,7 +198,7 @@ CREATE TABLE health_tips (
 );
 
 -- System settings table - For managing system-wide configurations
-CREATE TABLE system_settings (
+CREATE TABLE IF NOT EXISTS system_settings (
     id INT PRIMARY KEY AUTO_INCREMENT,
     setting_key VARCHAR(100) UNIQUE NOT NULL,
     setting_value TEXT,
@@ -212,7 +212,7 @@ CREATE TABLE system_settings (
 );
 
 -- Insert default admin user (matches your Flutter admin login)
-INSERT INTO admin_users (username, password, full_name, role) 
+INSERT IGNORE INTO admin_users (username, password, full_name, role) 
 VALUES (
     'admin', 
     'test',  -- Plain text password as used in your Flutter code
@@ -221,7 +221,7 @@ VALUES (
 );
 
 -- Insert default system settings
-INSERT INTO system_settings (setting_key, setting_value, setting_type, description) VALUES
+INSERT IGNORE INTO system_settings (setting_key, setting_value, setting_type, description) VALUES
 ('app_name', 'HealthTrack System', 'string', 'Application name displayed in the admin panel'),
 ('maintenance_mode', 'false', 'boolean', 'Enable/disable maintenance mode for the system'),
 ('max_appointments_per_day', '50', 'number', 'Maximum number of appointments allowed per day'),
@@ -233,14 +233,14 @@ INSERT INTO system_settings (setting_key, setting_value, setting_type, descripti
 ('notifications_enabled', 'true', 'boolean', 'Enable/disable all system notifications');
 
 -- Insert sample pediatric patients (matches your Flutter app structure)
-INSERT INTO patients (child_fullname, mother_fullname, father_fullname, dob, place_of_birth, birth_weight, birth_height, sex, address, status, record_type, service_type, record_description, health_center, barangay, family_number) VALUES
-('Ana Santos', 'Maria Santos', 'Juan Santos', '2020-03-15', 'Quezon City', '3.1 kg', '50 cm', 'Female', 'Brgy. Commonwealth, QC', 'active', 'Diagnosis', 'maternal', 'Regular checkup', '', '', ''),
-('Pedro Dela Cruz', 'Liza Dela Cruz', '', '2021-06-21', 'Manila', '3.3 kg', '49 cm', 'Male', 'Tondo, Manila', 'active', 'Immunization', 'immunization', 'Measles vaccination', 'Tondo Health Center', 'Tondo', 'FAM-001'),
-('Miko Garcia', 'Ana Garcia', 'Jose Garcia', '2022-01-10', 'Cebu City', '2.9 kg', '48 cm', 'Male', 'Mabolo, Cebu', 'active', 'Consultation', 'maternal', 'Growth monitoring', '', '', ''),
-('Lara Martinez', 'Carla Martinez', 'Pedro Martinez', '2019-09-05', 'Davao City', '3.4 kg', '51 cm', 'Female', 'Toril, Davao', 'active', 'Diagnosis', 'maternal', 'Routine checkup', '', '', ''),
-('Kai Chen', 'Lisa Chen', 'Wei Chen', '2023-02-14', 'Pasig City', '3.0 kg', '49 cm', 'Male', 'Ortigas, Pasig', 'active', 'Immunization', 'immunization', 'DPT vaccination', 'Ortigas Health Center', 'Ortigas', 'FAM-002'),
-('Ella Villanueva', 'Grace Villanueva', 'Oscar Villanueva', '2022-11-11', 'Taguig', '3.0 kg', '49 cm', 'Female', 'Taguig City', 'active', 'Consultation', 'maternal', 'Nutrition assessment', '', '', ''),
-('Baby Malunoc', 'Maria Dela Cruz', 'Edwin A. Malunoc', '2020-01-01', 'Pagadian City', '3.2 kg', '50 cm', 'Male', 'Barangay Balangasan, Pagadian City', 'active', 'Diagnosis', 'maternal', 'Wellness checkup', 'Balangasan Health Center', 'Balangasan', 'FAM-003');
+INSERT INTO patients (user_id, child_fullname, mother_fullname, father_fullname, dob, place_of_birth, birth_weight, birth_height, sex, address, status, record_type, service_type, record_description, health_center, barangay, family_number) VALUES
+(NULL, 'Ana Santos', 'Maria Santos', 'Juan Santos', '2020-03-15', 'Quezon City', '3.1 kg', '50 cm', 'Female', 'Brgy. Commonwealth, QC', 'active', 'Diagnosis', 'maternal', 'Regular checkup', '', '', ''),
+(NULL, 'Pedro Dela Cruz', 'Liza Dela Cruz', '', '2021-06-21', 'Manila', '3.3 kg', '49 cm', 'Male', 'Tondo, Manila', 'active', 'Immunization', 'immunization', 'Measles vaccination', 'Tondo Health Center', 'Tondo', 'FAM-001'),
+(NULL, 'Miko Garcia', 'Ana Garcia', 'Jose Garcia', '2022-01-10', 'Cebu City', '2.9 kg', '48 cm', 'Male', 'Mabolo, Cebu', 'active', 'Consultation', 'maternal', 'Growth monitoring', '', '', ''),
+(NULL, 'Lara Martinez', 'Carla Martinez', 'Pedro Martinez', '2019-09-05', 'Davao City', '3.4 kg', '51 cm', 'Female', 'Toril, Davao', 'active', 'Diagnosis', 'maternal', 'Routine checkup', '', '', ''),
+(NULL, 'Kai Chen', 'Lisa Chen', 'Wei Chen', '2023-02-14', 'Pasig City', '3.0 kg', '49 cm', 'Male', 'Ortigas, Pasig', 'active', 'Immunization', 'immunization', 'DPT vaccination', 'Ortigas Health Center', 'Ortigas', 'FAM-002'),
+(NULL, 'Ella Villanueva', 'Grace Villanueva', 'Oscar Villanueva', '2022-11-11', 'Taguig', '3.0 kg', '49 cm', 'Female', 'Taguig City', 'active', 'Consultation', 'maternal', 'Nutrition assessment', '', '', ''),
+(NULL, 'Baby Malunoc', 'Maria Dela Cruz', 'Edwin A. Malunoc', '2020-01-01', 'Pagadian City', '3.2 kg', '50 cm', 'Male', 'Barangay Balangasan, Pagadian City', 'active', 'Diagnosis', 'maternal', 'Wellness checkup', 'Balangasan Health Center', 'Balangasan', 'FAM-003');
 
 -- Insert sample appointments
 INSERT INTO appointments (user_id, patient_id, appointment_date, appointment_time, appointment_type, doctor_name, clinic_hospital, status) VALUES

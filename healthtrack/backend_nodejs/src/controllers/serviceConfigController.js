@@ -5,7 +5,7 @@ exports.getAllServices = async (req, res) => {
   try {
     const { service_type } = req.query;
     
-    let sql = "SELECT * FROM services_config WHERE is_enabled = 1";
+    let sql = "SELECT * FROM services_config WHERE is_active = 1";
     const params = [];
     
     if (service_type) {
@@ -35,7 +35,7 @@ exports.getServiceById = async (req, res) => {
   try {
     const { id } = req.params;
     
-    const sql = "SELECT * FROM services_config WHERE id = ? AND is_enabled = 1";
+    const sql = "SELECT * FROM services_config WHERE id = ? AND is_active = 1";
     const [results] = await db.execute(sql, [id]);
     
     if (results.length === 0) {
@@ -61,7 +61,7 @@ exports.getServiceById = async (req, res) => {
 // Create new service (admin only)
 exports.createService = async (req, res) => {
   try {
-    const { service_name, service_type, description, is_enabled = true } = req.body;
+    const { service_name, service_type, description, is_active = true } = req.body;
     
     // Validate required fields
     if (!service_name || !service_type) {
@@ -72,11 +72,11 @@ exports.createService = async (req, res) => {
     }
     
     const sql = `
-      INSERT INTO services_config (service_name, service_type, description, is_enabled)
+      INSERT INTO services_config (service_name, service_type, description, is_active)
       VALUES (?, ?, ?, ?)
     `;
     
-    const [result] = await db.execute(sql, [service_name, service_type, description, is_enabled]);
+    const [result] = await db.execute(sql, [service_name, service_type, description, is_active]);
     
     const newServiceId = result.insertId;
     
@@ -104,7 +104,7 @@ exports.createService = async (req, res) => {
 exports.updateService = async (req, res) => {
   try {
     const { id } = req.params;
-    const { service_name, service_type, description, is_enabled } = req.body;
+    const { service_name, service_type, description, is_active } = req.body;
     
     // Build update query dynamically
     const updates = [];
@@ -125,9 +125,9 @@ exports.updateService = async (req, res) => {
       params.push(description);
     }
     
-    if (is_enabled !== undefined) {
-      updates.push('is_enabled = ?');
-      params.push(is_enabled);
+    if (is_active !== undefined) {
+      updates.push('is_active = ?');
+      params.push(is_active);
     }
     
     if (updates.length === 0) {

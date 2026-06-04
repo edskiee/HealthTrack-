@@ -20,12 +20,17 @@
   ],
   "author": "Edwin Malunoc",
   "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
   "dependencies": {
     "axios": "^1.13.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
+    "express-rate-limit": "^7.5.1",
     "firebase-admin": "^13.5.0",
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.2",

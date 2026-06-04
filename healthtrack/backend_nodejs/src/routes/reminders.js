@@ -1,20 +1,15 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const remindersController = require('../controllers/remindersController');
+const remindersController = require("../controllers/remindersController");
+const { authenticateUser } = require("../middleware/auth");
 
-// Get all reminders for a user
-router.get('/user/:userId', remindersController.getUserReminders);
+// All reminder routes require user authentication
+router.use(authenticateUser);
 
-// Get reminders for a specific date
-router.get('/user/:userId/date/:date', remindersController.getDateReminders);
-
-// Create a new reminder
-router.post('/user/:userId', remindersController.createReminder);
-
-// Update a reminder
-router.put('/:reminderId', remindersController.updateReminder);
-
-// Delete a reminder
-router.delete('/:reminderId', remindersController.deleteReminder);
+router.get("/user/:userId",            remindersController.getUserReminders);
+router.get("/user/:userId/date/:date", remindersController.getDateReminders);
+router.post("/user/:userId",           remindersController.createReminder);
+router.put("/:reminderId",             remindersController.updateReminder);
+router.delete("/:reminderId",          remindersController.deleteReminder);
 
 module.exports = router;

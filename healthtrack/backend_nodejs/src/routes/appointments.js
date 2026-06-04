@@ -1,47 +1,26 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const appointmentsController = require('../controllers/appointmentsController');
+const appointmentsController = require("../controllers/appointmentsController");
+const { authenticateUser, authenticateAdmin, optionalAuthUser } = require("../middleware/auth");
 
-// Get all appointments (for admin)
-router.get('/', appointmentsController.getAllAppointments);
+// ─── Public / optional-auth ──────────────────────────────────────────────────
+router.get("/consultation-types", appointmentsController.getConsultationTypes);
 
-// Get pending appointments count (for admin notifications)
-router.get('/pending-count', appointmentsController.getPendingAppointmentsCount);
+// ─── User-authenticated routes ───────────────────────────────────────────────
+router.get("/user",                    authenticateUser, appointmentsController.getCurrentUserAppointments);
+router.get("/user/:userId",            authenticateUser, appointmentsController.getUserAppointments);
+router.get("/user/:userId/upcoming",   authenticateUser, appointmentsController.getUserUpcomingAppointments);
+router.get("/next/:patientId",         authenticateUser, appointmentsController.getNextAppointment);
+router.post("/",                       authenticateUser, appointmentsController.addAppointment);
+router.get("/notifications/:userId",   authenticateUser, appointmentsController.getUserNotifications);
+router.get("/notifications/:userId/unread-count", authenticateUser, appointmentsController.getUnreadNotificationsCount);
+router.put("/notifications/:id/read",  authenticateUser, appointmentsController.markNotificationAsRead);
 
-// Get appointments for a specific user
-router.get('/user/:userId', appointmentsController.getUserAppointments);
-
-// Get appointments for current user (simplified endpoint)
-router.get('/user', appointmentsController.getCurrentUserAppointments);
-
-// Get upcoming approved appointments for a specific user (for dashboard)
-router.get('/user/:userId/upcoming', appointmentsController.getUserUpcomingAppointments);
-
-// Get next appointment for a specific patient
-router.get('/next/:patientId', appointmentsController.getNextAppointment);
-
-// Get upcoming appointments (for admin dashboard)
-router.get('/upcoming', appointmentsController.getUpcomingAppointments);
-
-// Add new appointment
-router.post('/', appointmentsController.addAppointment);
-
-// Update appointment status (approve, cancel, reschedule)
-router.put('/status/:id', appointmentsController.updateAppointmentStatus);
-
-// Get appointment notifications for a user
-router.get('/notifications/:userId', appointmentsController.getUserNotifications);
-
-// Get unread notifications count for a user
-router.get('/notifications/:userId/unread-count', appointmentsController.getUnreadNotificationsCount);
-
-// Mark notification as read
-router.put('/notifications/:id/read', appointmentsController.markNotificationAsRead);
-
-// Delete an appointment
-router.delete('/:id', appointmentsController.deleteAppointment);
-
-// Get consultation types
-router.get('/consultation-types', appointmentsController.getConsultationTypes);
+// ─── Admin-authenticated routes ──────────────────────────────────────────────
+router.get("/",                authenticateAdmin, appointmentsController.getAllAppointments);
+router.get("/pending-count",   authenticateAdmin, appointmentsController.getPendingAppointmentsCount);
+router.get("/upcoming",        authenticateAdmin, appointmentsController.getUpcomingAppointments);
+router.put("/status/:id",      authenticateAdmin, appointmentsController.updateAppointmentStatus);
+router.delete("/:id",          authenticateAdmin, appointmentsController.deleteAppointment);
 
 module.exports = router;

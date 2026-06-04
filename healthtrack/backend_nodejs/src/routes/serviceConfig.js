@@ -1,20 +1,15 @@
-const express = require('express');
-const router = express.Router();
-const serviceConfigController = require('../controllers/serviceConfigController');
+const express = require("express");
+const router  = express.Router();
+const serviceConfigController = require("../controllers/serviceConfigController");
+const { authenticateAdmin } = require("../middleware/auth");
 
-// Get all active services
-router.get('/', serviceConfigController.getAllServices);
+// Read — public (app needs service list for booking without being logged in)
+router.get("/",    serviceConfigController.getAllServices);
+router.get("/:id", serviceConfigController.getServiceById);
 
-// Get service by ID
-router.get('/:id', serviceConfigController.getServiceById);
-
-// Create new service (admin only)
-router.post('/', serviceConfigController.createService);
-
-// Update service (admin only)
-router.put('/:id', serviceConfigController.updateService);
-
-// Delete service (admin only)
-router.delete('/:id', serviceConfigController.deleteService);
+// Write — admin only
+router.post("/",    authenticateAdmin, serviceConfigController.createService);
+router.put("/:id",  authenticateAdmin, serviceConfigController.updateService);
+router.delete("/:id", authenticateAdmin, serviceConfigController.deleteService);
 
 module.exports = router;

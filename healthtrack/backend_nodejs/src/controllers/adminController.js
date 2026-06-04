@@ -1,659 +1,354 @@
-const db = require("../config/db");
-const crypto = require("crypto");
-const { authenticator } = require("otplib");
-const { createAdminSession } = require("../utils/adminSession");
-const { ensureAdminPreferences } = require("../utils/ensureAdminPreferences");
-const { writeAudit } = require("../utils/auditLog");
+"use strict";
 
-// ✅ Admin Login Function
+const bcrypt       = require("bcryptjs");
+const { authenticator } = require("otplib");
+const db           = require("../config/db");
+const { createAdminSession }     = require("../utils/adminSession");
+const { ensureAdminPreferences } = require("../utils/ensureAdminPreferences");
+const { writeAudit }             = require("../utils/auditLog");
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const BCRYPT_ROUNDS = 12;
+
+// ─── Password Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Hash a plain-text password with bcrypt.
+ */
+async function hashAdminPassword(plain) {
+  return bcrypt.hash(plain, BCRYPT_ROUNDS);
+}
+
+/**
+ * Verify an admin password.
+ * Supports:
+ *   - bcrypt hashes  ($2a$, $2b$, $2y$ prefix)
+ *   - legacy MD5     (32 hex characters)
+ *
+ * Returns { match, isLegacyMd5 } so the caller can transparently rehash.
+ */
+async function verifyAdminPassword(plain, stored) {
+  const isBcrypt = /^\$2[aby]\$/.test(stored);
+  if (isBcrypt) {
+    const match = await bcrypt.compare(plain, stored);
+    return { match, isLegacyMd5: false };
+  }
+
+  // Legacy MD5 path — still supported for existing admins
+  const crypto   = require("crypto");
+  const md5Plain = crypto.createHash("md5").update(plain).digest("hex");
+  const match    = md5Plain === stored;
+  return { match, isLegacyMd5: match }; // flag rehash only when credentials are correct
+}
+
+// ─── Admin Login ──────────────────────────────────────────────────────────────
+
 exports.adminLogin = async (req, res) => {
   try {
-    console.log("📥 Admin login request received");
-    console.log("Request body:", req.body);
-
     const { username, password } = req.body;
 
-    // Validation
     if (!username || !password) {
-      console.log("❌ Missing username or password");
-      return res.status(400).json({
-        success: false,
-        message: "Please provide both username and password",
-      });
+      return res.status(400).json({ success: false, message: "Please provide both username and password" });
     }
-
-    // Additional validation
     if (username.length < 3) {
-      console.log("❌ Username too short");
-      return res.status(400).json({
-        success: false,
-        message: "Username must be at least 3 characters long",
-      });
+      return res.status(400).json({ success: false, message: "Username must be at least 3 characters long" });
     }
-
     if (password.length < 4) {
-      console.log("❌ Password too short");
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 4 characters long",
-      });
+      return res.status(400).json({ success: false, message: "Password must be at least 4 characters long" });
     }
 
-    // Hash password (MD5)
-    const hashedPassword = crypto.createHash("md5").update(password).digest("hex");
-    console.log("🔑 Hashed password:", hashedPassword);
+    // Fetch admin by username only — never pass password to SQL
+    const [rows] = await db.execute(
+      "SELECT id, username, password, role FROM admins WHERE username = ? LIMIT 1",
+      [username]
+    );
 
-    // ✅ Use correct table and check credentials
-    const sql = "SELECT * FROM admins WHERE username = ? AND password = ?";
-    console.log("SQL query:", sql);
+    if (!rows.length) {
+      // Constant-time response — prevent username enumeration
+      await bcrypt.compare(password, "$2b$12$invalidhashpaddingtoconsistenttime000000000000000000000");
+      return res.status(401).json({ success: false, message: "Invalid username or password" });
+    }
 
-    const [results] = await db.execute(sql, [username, hashedPassword]);
+    const adminRow = rows[0];
+    const { match, isLegacyMd5 } = await verifyAdminPassword(password, adminRow.password);
 
-    if (results.length > 0) {
-      const adminRow = results[0];
-      const adminId = adminRow.id;
+    if (!match) {
+      return res.status(401).json({ success: false, message: "Invalid username or password" });
+    }
 
+    // ── Transparent rehash: MD5 → bcrypt on next login ───────────────────────
+    if (isLegacyMd5) {
       try {
-        await ensureAdminPreferences(adminId);
-      } catch (_e) {
-        /* optional table lifecycle */
+        const newHash = await hashAdminPassword(password);
+        await db.execute("UPDATE admins SET password = ? WHERE id = ?", [newHash, adminRow.id]);
+        console.log(`🔐 Admin password rehashed to bcrypt for admin ID=${adminRow.id}`);
+      } catch (rehashErr) {
+        console.error("⚠️ Admin password rehash failed (non-fatal):", rehashErr.message);
       }
+    }
 
-      let prefs = {};
-      try {
-        const [[p]] = await db.execute(
-          "SELECT totp_enabled, totp_secret FROM admin_preferences WHERE admin_id = ? LIMIT 1",
-          [adminId]
-        );
-        prefs = p || {};
-      } catch (_e) {
-        prefs = {};
+    const adminId = adminRow.id;
+
+    try { await ensureAdminPreferences(adminId); } catch (_e) {}
+
+    // Check TOTP
+    let prefs = {};
+    try {
+      const [[p]] = await db.execute(
+        "SELECT totp_enabled, totp_secret FROM admin_preferences WHERE admin_id = ? LIMIT 1",
+        [adminId]
+      );
+      prefs = p || {};
+    } catch (_e) {}
+
+    if (prefs.totp_enabled) {
+      const code    = req.body?.totp || req.body?.totp_code;
+      const cleaned = code != null ? String(code).replace(/\s/g, "") : "";
+      if (!cleaned) {
+        return res.status(200).json({ success: false, requiresOtp: true, message: "Enter your authentication app code." });
       }
-
-      if (prefs.totp_enabled) {
-        const code = req.body?.totp || req.body?.totp_code;
-        const cleaned = code != null ? String(code).replace(/\s/g, "") : "";
-        if (!cleaned) {
-          console.log("✅ Credentials ok; OTP required");
-          return res.status(200).json({
-            success: false,
-            requiresOtp: true,
-            message: "Enter your authentication app code.",
-          });
-        }
-        const secret =
-          prefs.totp_secret instanceof Buffer
-            ? prefs.totp_secret.toString()
-            : prefs.totp_secret;
-        if (!secret || !authenticator.check(cleaned, secret)) {
-          return res.status(200).json({
-            success: false,
-            requiresOtp: true,
-            message: "Authentication code rejected — try again.",
-          });
-        }
+      const secret = prefs.totp_secret instanceof Buffer
+        ? prefs.totp_secret.toString()
+        : prefs.totp_secret;
+      if (!secret || !authenticator.check(cleaned, secret)) {
+        return res.status(200).json({ success: false, requiresOtp: true, message: "Authentication code rejected — try again." });
       }
+    }
 
-      try {
-        const { tokenPlain } = await createAdminSession(db, adminId, req);
-        console.log("✅ Admin login successful");
+    try {
+      const { tokenPlain } = await createAdminSession(db, adminId, req);
+      await writeAudit(adminId, "auth.admin.login.success", req, {});
+      console.log(`✅ Admin login successful ID=${adminId}`);
 
-        await writeAudit(adminId, "auth.admin.login.success", req, {});
-
-        return res.status(200).json({
-          success: true,
-          message: "Login success",
-          access_token: tokenPlain,
-          admin: {
-            id: adminId,
-            username: adminRow.username,
-            role: adminRow.role || "Administrator",
-          },
-        });
-      } catch (sessionErr) {
-        console.error(
-          "⚠️ Session creation failed — check admin_sessions table migration:",
-          sessionErr.message
-        );
-        return res.status(500).json({
-          success: false,
-          message:
-            "Session storage is not ready. Ensure database migrations ran (admin_sessions table).",
-        });
-      }
-    } else {
-      console.log("❌ Invalid username or password");
-      return res.status(401).json({
-        success: false,
-        message: "Invalid username or password",
+      return res.status(200).json({
+        success: true,
+        message: "Login success",
+        access_token: tokenPlain,
+        admin: {
+          id:       adminId,
+          username: adminRow.username,
+          role:     adminRow.role || "Administrator",
+        },
       });
+    } catch (sessionErr) {
+      console.error("⚠️ Session creation failed:", sessionErr.message);
+      return res.status(500).json({ success: false, message: "Session storage is not ready. Ensure database migrations ran (admin_sessions table)." });
     }
   } catch (error) {
-    console.error("❌ Unexpected error in adminLogin:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error. Please try again later.",
-    });
+    console.error("❌ adminLogin:", error);
+    return res.status(500).json({ success: false, message: "Server error. Please try again later." });
   }
 };
 
-// ✅ Admin Register Function
+// ─── Admin Register ───────────────────────────────────────────────────────────
+
 exports.adminRegister = async (req, res) => {
   try {
-    console.log("📥 Admin registration request received");
-    console.log("Request body:", req.body);
-
     const { username, password } = req.body;
 
-    // Validation
     if (!username || !password) {
-      console.log("❌ Missing required fields");
-      return res.status(400).json({
-        success: false,
-        message: "Please provide both username and password",
-      });
+      return res.status(400).json({ success: false, message: "Please provide both username and password" });
     }
-
-    // Additional validation
     if (username.length < 3) {
-      console.log("❌ Username too short");
-      return res.status(400).json({
-        success: false,
-        message: "Username must be at least 3 characters long",
-      });
+      return res.status(400).json({ success: false, message: "Username must be at least 3 characters long" });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ success: false, message: "Admin password must be at least 8 characters long" });
     }
 
-    if (password.length < 4) {
-      console.log("❌ Password too short");
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 4 characters long",
-      });
-    }
+    const hashedPassword = await hashAdminPassword(password);
 
-    // Hash password (MD5)
-    const hashedPassword = crypto.createHash("md5").update(password).digest("hex");
-    console.log("🔑 Hashed password:", hashedPassword);
+    const [results] = await db.execute(
+      "INSERT INTO admins (username, password) VALUES (?, ?)",
+      [username, hashedPassword]
+    );
 
-    // ✅ Insert new admin (no full_name column)
-    const sql = "INSERT INTO admins (username, password) VALUES (?, ?)";
-    console.log("SQL query:", sql);
+    const [fetchResults] = await db.execute(
+      "SELECT id, username FROM admins WHERE id = ?",
+      [results.insertId]
+    );
 
-    const [results] = await db.execute(sql, [username, hashedPassword]);
-
-    console.log("✅ Admin registered successfully:", results);
-
-    // Fetch the new admin data to confirm
-    const fetchSql = "SELECT id, username FROM admins WHERE id = ?";
-    const [fetchResults] = await db.execute(fetchSql, [results.insertId]);
-
-    console.log("✅ New admin fetched:", fetchResults[0]);
-    return res.status(200).json({
+    console.log(`✅ Admin registered ID=${results.insertId}`);
+    return res.status(201).json({
       success: true,
       message: "Admin registered successfully!",
       admin: fetchResults[0],
     });
   } catch (error) {
-    console.error("❌ Unexpected error in adminRegister:", error);
     if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-        message: "Username already exists. Please choose a different one.",
-      });
+      return res.status(409).json({ success: false, message: "Username already exists. Please choose a different one." });
     }
-    return res.status(500).json({
-      success: false,
-      message: "Server error. Please try again later.",
-    });
+    console.error("❌ adminRegister:", error);
+    return res.status(500).json({ success: false, message: "Server error. Please try again later." });
   }
 };
 
-// ✅ Get Admin Profile Function
+// ─── Get Admin Profile ────────────────────────────────────────────────────────
+
 exports.getAdminProfile = async (req, res) => {
   try {
-    console.log("📥 Admin profile request received");
-    console.log("Request params:", req.params);
-
     const { id } = req.params;
 
     if (req.user && parseInt(id, 10) !== Number(req.user.id)) {
-      return res.status(403).json({
-        success: false,
-        message: "You can only load your own admin profile.",
-      });
+      return res.status(403).json({ success: false, message: "You can only load your own admin profile." });
     }
-
-    // Validation
-    if (!id) {
-      console.log("❌ Missing admin ID");
-      return res.status(400).json({
-        success: false,
-        message: "Admin ID is required",
-      });
-    }
-
-    // ✅ Ensure ID is numeric to prevent "notifications" from being treated as an ID
-    if (isNaN(id) || parseInt(id) <= 0) {
-      console.log("❌ Invalid admin ID - must be a positive number");
-      return res.status(400).json({
-        success: false,
-        message: "Invalid admin ID - must be a positive number",
-      });
+    if (!id || isNaN(id) || parseInt(id) <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid admin ID — must be a positive number" });
     }
 
     const adminId = parseInt(id);
+    let results;
 
-    // ✅ Use correct table and fetch admin profile
-    // First try to get all possible fields
-    let sql = "SELECT id, username, full_name, email, last_login, created_at FROM admins WHERE id = ?";
-    console.log("SQL query:", sql);
-
-    const [resultsInitial] = await db.execute(sql, [adminId]);
-    let results = resultsInitial;
-
-    if (results.length === 0) {
-      sql = "SELECT id, username FROM admins WHERE id = ?";
-      console.log("Fallback SQL query:", sql);
-      const [fallbackRows] = await db.execute(sql, [adminId]);
-      results = fallbackRows;
-    }
-
-    if (results.length > 0) {
-      console.log("✅ Admin profile fetched successfully");
-      return res.status(200).json({
-        success: true,
-        message: "Profile fetched successfully",
-        admin: results[0],
-      });
-    } else {
-      console.log("❌ Admin not found");
-      return res.status(404).json({
-        success: false,
-        message: "Admin not found",
-      });
-    }
-  } catch (error) {
-    console.error("❌ Unexpected error in getAdminProfile:", error);
-    // Try a simpler query as fallback
     try {
-      const { id } = req.params;
-      // ✅ Ensure ID is numeric for fallback query too
-      if (isNaN(id) || parseInt(id) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid admin ID - must be a positive number",
-        });
-      }
-      
-      const adminId = parseInt(id);
-      const sql = "SELECT id, username FROM admins WHERE id = ?";
-      const [results] = await db.execute(sql, [adminId]);
-      
-      if (results.length > 0) {
-        console.log("✅ Admin profile fetched with fallback query");
-        return res.status(200).json({
-          success: true,
-          message: "Profile fetched successfully",
-          admin: results[0],
-        });
-      } else {
-        console.log("❌ Admin not found with fallback query");
-        return res.status(404).json({
-          success: false,
-          message: "Admin not found",
-        });
-      }
-    } catch (fallbackError) {
-      console.error("❌ Fallback query also failed:", fallbackError);
-      return res.status(500).json({
-        success: false,
-        message: "Server error. Please try again later.",
-      });
+      const [rows] = await db.execute(
+        "SELECT id, username, full_name, email, last_login, created_at FROM admins WHERE id = ?",
+        [adminId]
+      );
+      results = rows;
+    } catch (_e) {
+      const [rows] = await db.execute("SELECT id, username FROM admins WHERE id = ?", [adminId]);
+      results = rows;
     }
+
+    if (!results.length) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+    return res.status(200).json({ success: true, message: "Profile fetched successfully", admin: results[0] });
+  } catch (error) {
+    console.error("❌ getAdminProfile:", error);
+    return res.status(500).json({ success: false, message: "Server error. Please try again later." });
   }
 };
 
-// ✅ Update Admin Profile Function
+// ─── Update Admin Profile ─────────────────────────────────────────────────────
+
 exports.updateAdminProfile = async (req, res) => {
   try {
-    console.log("📥 Admin profile update request received");
-    console.log("Request params:", req.params);
-    console.log("Request body:", req.body);
-
     const { id } = req.params;
     const { full_name, email, current_password, new_password } = req.body;
 
     if (req.user && parseInt(id, 10) !== Number(req.user.id)) {
-      return res.status(403).json({
-        success: false,
-        message: "You can only modify your own admin profile.",
-      });
+      return res.status(403).json({ success: false, message: "You can only modify your own admin profile." });
     }
-
-    // Validation
-    if (!id) {
-      console.log("❌ Missing admin ID");
-      return res.status(400).json({
-        success: false,
-        message: "Admin ID is required",
-      });
-    }
-
-    // ✅ Ensure ID is numeric to prevent "notifications" from being treated as an ID
-    if (isNaN(id) || parseInt(id) <= 0) {
-      console.log("❌ Invalid admin ID - must be a positive number");
-      return res.status(400).json({
-        success: false,
-        message: "Invalid admin ID - must be a positive number",
-      });
+    if (!id || isNaN(id) || parseInt(id) <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid admin ID — must be a positive number" });
     }
 
     const adminId = parseInt(id);
-
-    // Build dynamic update query
     const updates = [];
-    const params = [];
+    const params  = [];
 
     if (full_name !== undefined) {
-      // Check if the column exists before adding to update
       try {
-        const checkColumnSql = "SHOW COLUMNS FROM admins LIKE 'full_name'";
-        const [columnResult] = await db.execute(checkColumnSql);
-        if (columnResult.length > 0) {
-          updates.push("full_name = ?");
-          params.push(full_name);
-        }
-      } catch (columnError) {
-        console.log("Column 'full_name' does not exist, skipping update");
-      }
+        const [colResult] = await db.execute("SHOW COLUMNS FROM admins LIKE 'full_name'");
+        if (colResult.length) { updates.push("full_name = ?"); params.push(full_name); }
+      } catch (_e) {}
     }
 
     if (email !== undefined) {
-      // Check if the column exists before adding to update
       try {
-        const checkColumnSql = "SHOW COLUMNS FROM admins LIKE 'email'";
-        const [columnResult] = await db.execute(checkColumnSql);
-        if (columnResult.length > 0) {
-          updates.push("email = ?");
-          params.push(email);
-        }
-      } catch (columnError) {
-        console.log("Column 'email' does not exist, skipping update");
-      }
+        const [colResult] = await db.execute("SHOW COLUMNS FROM admins LIKE 'email'");
+        if (colResult.length) { updates.push("email = ?"); params.push(email); }
+      } catch (_e) {}
     }
 
-    // Handle password update
     if (current_password !== undefined && new_password !== undefined) {
-      // Verify current password
-      const hashedCurrentPassword = crypto.createHash("md5").update(current_password).digest("hex");
-      const verifySql = "SELECT password FROM admins WHERE id = ?";
-      const [verifyResults] = await db.execute(verifySql, [adminId]);
-
-      if (verifyResults.length === 0 || verifyResults[0].password !== hashedCurrentPassword) {
-        return res.status(400).json({
-          success: false,
-          message: "Current password is incorrect",
-        });
+      if (new_password.length < 8) {
+        return res.status(400).json({ success: false, message: "New password must be at least 8 characters long" });
       }
 
-      // Hash new password
-      const hashedNewPassword = crypto.createHash("md5").update(new_password).digest("hex");
+      // Fetch stored password and verify using bcrypt/MD5 compatible check
+      const [verifyResults] = await db.execute("SELECT password FROM admins WHERE id = ?", [adminId]);
+      if (!verifyResults.length) {
+        return res.status(404).json({ success: false, message: "Admin not found" });
+      }
+
+      const { match } = await verifyAdminPassword(current_password, verifyResults[0].password);
+      if (!match) {
+        return res.status(400).json({ success: false, message: "Current password is incorrect" });
+      }
+
+      const hashedNew = await hashAdminPassword(new_password);
       updates.push("password = ?");
-      params.push(hashedNewPassword);
+      params.push(hashedNew);
 
       try {
-        const checkColSql = "SHOW COLUMNS FROM admins LIKE 'password_changed_at'";
-        const [colExist] = await db.execute(checkColSql);
-        if (colExist.length > 0) {
-          updates.push("password_changed_at = CURRENT_TIMESTAMP");
-        }
+        const [colExist] = await db.execute("SHOW COLUMNS FROM admins LIKE 'password_changed_at'");
+        if (colExist.length) updates.push("password_changed_at = CURRENT_TIMESTAMP");
       } catch (_c) {}
 
+      // Revoke other sessions after password change
       try {
         if (req?.user?.sessionId) {
-          await db.execute(
-            "DELETE FROM admin_sessions WHERE admin_id = ? AND id <> ?",
-            [adminId, req.user.sessionId]
-          );
+          await db.execute("DELETE FROM admin_sessions WHERE admin_id = ? AND id <> ?", [adminId, req.user.sessionId]);
         } else {
           await db.execute("DELETE FROM admin_sessions WHERE admin_id = ?", [adminId]);
         }
         await writeAudit(adminId, "security.password.changed", req, {});
       } catch (_e) {
-        console.warn("Session invalidation after password change skipped:", _e.message);
+        console.warn("Session invalidation skipped:", _e.message);
       }
     }
 
-    if (updates.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid fields provided for update",
-      });
+    if (!updates.length) {
+      return res.status(400).json({ success: false, message: "No valid fields provided for update" });
     }
 
-    // Add updated_at timestamp
     updates.push("updated_at = CURRENT_TIMESTAMP");
-    
-    // Add ID to params
     params.push(adminId);
 
-    const sql = `UPDATE admins SET ${updates.join(", ")} WHERE id = ?`;
-    console.log("SQL query:", sql);
-    console.log("Params:", params);
+    const [results] = await db.execute(
+      `UPDATE admins SET ${updates.join(", ")} WHERE id = ?`,
+      params
+    );
 
-    const [results] = await db.execute(sql, params);
-
-    if (results.affectedRows > 0) {
-      console.log("✅ Admin profile updated successfully");
-      
-      // Fetch updated admin data
-      // Try to get all possible fields first
-      let fetchSql = "SELECT id, username, full_name, email, last_login, created_at FROM admins WHERE id = ?";
-      const [fetchInitial] = await db.execute(fetchSql, [adminId]);
-      let fetchResults = fetchInitial;
-
-      if (fetchResults.length === 0) {
-        fetchSql = "SELECT id, username FROM admins WHERE id = ?";
-        const [fetchFallback] = await db.execute(fetchSql, [adminId]);
-        fetchResults = fetchFallback;
-      }
-      
-      return res.status(200).json({
-        success: true,
-        message: "Profile updated successfully",
-        admin: fetchResults[0],
-      });
-    } else {
-      console.log("❌ Admin not found or no changes made");
-      return res.status(404).json({
-        success: false,
-        message: "Admin not found",
-      });
+    if (!results.affectedRows) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
     }
+
+    let fetchResults;
+    try {
+      const [rows] = await db.execute(
+        "SELECT id, username, full_name, email, last_login, created_at FROM admins WHERE id = ?",
+        [adminId]
+      );
+      fetchResults = rows;
+    } catch (_e) {
+      const [rows] = await db.execute("SELECT id, username FROM admins WHERE id = ?", [adminId]);
+      fetchResults = rows;
+    }
+
+    return res.status(200).json({ success: true, message: "Profile updated successfully", admin: fetchResults[0] });
   } catch (error) {
-    console.error("❌ Unexpected error in updateAdminProfile:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error. Please try again later.",
-    });
+    console.error("❌ updateAdminProfile:", error);
+    return res.status(500).json({ success: false, message: "Server error. Please try again later." });
   }
 };
 
-// Add placeholder functions for missing exports
-exports.getDashboardStats = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Dashboard stats fetched successfully",
-    data: {
-      total_patients: 0,
-      total_appointments: 0,
-      pending_appointments: 0,
-      total_reminders: 0
-    }
-  });
-};
+// ─── Placeholder dashboard/patient/export stubs ───────────────────────────────
 
-exports.getDashboardPatients = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Dashboard patients fetched successfully",
-    data: []
-  });
-};
+const stub = (msg, data = {}) => (_req, res) =>
+  res.status(200).json({ success: true, message: msg, data });
 
-exports.getDashboardAppointments = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Dashboard appointments fetched successfully",
-    data: []
-  });
-};
-
-exports.getDashboardReminders = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Dashboard reminders fetched successfully",
-    data: []
-  });
-};
-
-exports.getAllPatients = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "All patients fetched successfully",
-    data: []
-  });
-};
-
-exports.getPatientById = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Patient fetched successfully",
-    data: {}
-  });
-};
-
-exports.updatePatient = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Patient updated successfully",
-    data: {}
-  });
-};
-
-exports.deletePatient = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Patient deleted successfully"
-  });
-};
-
-exports.searchPatients = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Patients search completed",
-    data: []
-  });
-};
-
-exports.getAllUsers = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "All users fetched successfully",
-    data: []
-  });
-};
-
-exports.getUserById = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "User fetched successfully",
-    data: {}
-  });
-};
-
-exports.updateUser = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "User updated successfully",
-    data: {}
-  });
-};
-
-exports.deleteUser = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "User deleted successfully"
-  });
-};
-
-exports.getAppointments = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Appointments fetched successfully",
-    data: []
-  });
-};
-
-exports.getPendingAppointmentsCount = (req, res) => {
-  res.status(200).json({
-    success: true,
-    count: 0
-  });
-};
-
-exports.getPendingAppointments = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Pending appointments fetched successfully",
-    data: []
-  });
-};
-
-exports.updateAppointmentStatus = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Appointment status updated successfully",
-    data: {}
-  });
-};
-
-exports.exportPatients = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Patients exported successfully",
-    data: []
-  });
-};
-
-exports.exportUsers = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Users exported successfully",
-    data: []
-  });
-};
-
-exports.exportAppointments = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Appointments exported successfully",
-    data: []
-  });
-};
-
-exports.getSettings = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Settings fetched successfully",
-    data: {}
-  });
-};
-
-exports.updateSettings = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Settings updated successfully",
-    data: {}
-  });
-};
+exports.getDashboardStats       = stub("Dashboard stats fetched", { total_patients: 0, total_appointments: 0, pending_appointments: 0, total_reminders: 0 });
+exports.getDashboardPatients    = stub("Dashboard patients fetched", []);
+exports.getDashboardAppointments = stub("Dashboard appointments fetched", []);
+exports.getDashboardReminders   = stub("Dashboard reminders fetched", []);
+exports.getAllPatients           = stub("All patients fetched", []);
+exports.getPatientById          = stub("Patient fetched", {});
+exports.updatePatient           = stub("Patient updated", {});
+exports.deletePatient           = stub("Patient deleted");
+exports.searchPatients          = stub("Patients search completed", []);
+exports.getAllUsers              = stub("All users fetched", []);
+exports.getUserById             = stub("User fetched", {});
+exports.updateUser              = stub("User updated", {});
+exports.deleteUser              = stub("User deleted");
+exports.getAppointments         = stub("Appointments fetched", []);
+exports.getPendingAppointmentsCount = (_req, res) => res.status(200).json({ success: true, count: 0 });
+exports.getPendingAppointments  = stub("Pending appointments fetched", []);
+exports.updateAppointmentStatus = stub("Appointment status updated", {});
+exports.exportPatients          = stub("Patients exported", []);
+exports.exportUsers             = stub("Users exported", []);
+exports.exportAppointments      = stub("Appointments exported", []);
+exports.getSettings             = stub("Settings fetched", {});
+exports.updateSettings          = stub("Settings updated", {});

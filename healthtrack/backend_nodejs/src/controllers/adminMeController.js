@@ -1,6 +1,7 @@
-const path = require("path");
-const fs = require("fs");
+const path   = require("path");
+const fs     = require("fs");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const multer = require("multer");
 const { authenticator } = require("otplib");
 const QRCode = require("qrcode");
@@ -514,18 +515,41 @@ exports.twoFactorDisable = async (req, res) => {
     const adminId = req.user.id;
     const pwd = req.body?.current_password ?? req.body?.password;
     if (!pwd || String(pwd).length < 4) {
-      return res.status(400).json({
-        success: false,
-        message: "Current password required.",
-      });
+      return res.status(400).json({ success: false, message: "Current password required." });
     }
 
-    const hashed = crypto.createHash("md5").update(String(pwd)).digest("hex");
+    // Fetch stored password and verify (supports both bcrypt and legacy MD5)
     const [verify] = await db.execute(
       "SELECT password FROM admins WHERE id = ? LIMIT 1",
       [adminId]
     );
-    if (!verify.length || verify[0].password !== hashed) {
+    if (!verify.length) {
+      return res.status(404).json({ success: false, message: "Admin not found." });
+    }
+
+    const stored   = verify[0].password;
+    const isBcrypt = /^\$2[aby]\$/.test(stored);
+    let passwordOk = false;
+
+    if (isBcrypt) {
+      passwordOk = await bcrypt.compare(String(pwd), stored);
+    } else {
+      // Legacy MD5
+      const md5 = crypto.createHash("md5").update(String(pwd)).digest("hex");
+      passwordOk = md5 === stored;
+      // Opportunistically rehash to bcrypt while we have the plaintext password
+      if (passwordOk) {
+        try {
+          const newHash = await bcrypt.hash(String(pwd), 12);
+          await db.execute("UPDATE admins SET password = ? WHERE id = ?", [newHash, adminId]);
+          console.log(`🔐 Admin password rehashed to bcrypt for admin ID=${adminId}`);
+        } catch (rehashErr) {
+          console.error("⚠️ Admin password rehash failed (non-fatal):", rehashErr.message);
+        }
+      }
+    }
+
+    if (!passwordOk) {
       return res.status(400).json({ success: false, message: "Password is incorrect." });
     }
 

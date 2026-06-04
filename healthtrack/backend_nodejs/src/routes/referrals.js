@@ -1,20 +1,15 @@
-const express = require('express');
-const router = express.Router();
-const referralsController = require('../controllers/referralsController');
+const express = require("express");
+const router  = express.Router();
+const referralsController = require("../controllers/referralsController");
+const { authenticateAdmin, authenticateUser } = require("../middleware/auth");
 
-// POST /referrals - Create a new referral
-router.post('/', referralsController.createReferral);
+// Read referrals — user can see their own patient's referrals
+router.get("/patient/:patient_id", authenticateUser,  referralsController.getPatientReferrals);
 
-// GET /referrals/patient/:patient_id - Get referrals for a specific patient
-router.get('/patient/:patient_id', referralsController.getPatientReferrals);
-
-// GET /referrals - Get all referrals (admin only)
-router.get('/', referralsController.getAllReferrals);
-
-// PUT /referrals/:id/status - Update referral status
-router.put('/:id/status', referralsController.updateReferralStatus);
-
-// DELETE /referrals/:id - Delete a referral
-router.delete('/:id', referralsController.deleteReferral);
+// Admin-only operations
+router.get("/",             authenticateAdmin, referralsController.getAllReferrals);
+router.post("/",            authenticateAdmin, referralsController.createReferral);
+router.put("/:id/status",  authenticateAdmin, referralsController.updateReferralStatus);
+router.delete("/:id",      authenticateAdmin, referralsController.deleteReferral);
 
 module.exports = router;

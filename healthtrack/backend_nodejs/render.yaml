@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: healthtrack-api
+    runtime: node
+    plan: starter          # Use 'starter' ($7/mo) — free plan sleeps after 15 min
+                           # which breaks cron jobs and Socket.IO for real users.
+    region: singapore      # Closest region to Philippines
+    buildCommand: npm install --production=false
+    startCommand: npm start
+    healthCheckPath: /health
+
+    envVars:
+      # ── Server ──────────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000        # Render auto-injects PORT; this is the fallback default
+
+      # ── Database (Railway MySQL) ─────────────────────────────────────────────
+      - key: DB_HOST
+        sync: false         # Set in Render Dashboard → Environment
+      - key: DB_USER
+        sync: false
+      - key: DB_PASS
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_PORT
+        value: "3306"
+
+      # ── JWT ──────────────────────────────────────────────────────────────────
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 24h
+
+      # ── CORS ─────────────────────────────────────────────────────────────────
+      - key: ALLOWED_ORIGINS
+        sync: false         # e.g. https://your-flutter-app.vercel.app
+
+      # ── Firebase Cloud Messaging ─────────────────────────────────────────────
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+
+      # ── Scheduler ────────────────────────────────────────────────────────────
+      - key: NOTIFICATION_TIMEZONE
+        value: Asia/Manila
+
+      # ── Misc ─────────────────────────────────────────────────────────────────
+      - key: TEST_MODE
+        value: "false"

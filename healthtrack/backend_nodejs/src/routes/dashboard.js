@@ -1,4 +1,5 @@
 const express = require("express");
+const router  = express.Router();
 const {
   getDashboardStats,
   getRecentActivities,
@@ -9,20 +10,22 @@ const {
   getGenderDistribution,
   getLocationDistribution,
   getServiceTypeDistribution,
-  emitUpdate
+  emitUpdate,
 } = require("../controllers/dashboardController");
+const { authenticateAdmin } = require("../middleware/auth");
 
-const router = express.Router();
+// All dashboard endpoints are admin-only — they expose aggregate patient data
+router.use(authenticateAdmin);
 
-router.get("/stats", getDashboardStats);
-router.get("/activities", getRecentActivities);
-router.get("/appointments", getTodayAppointments);
-router.get("/weekly-appointments", getWeeklyAppointments);
-router.get("/baby-conditions", getBabyConditions);
-router.get("/age-distribution", getAgeDistribution);
-router.get("/gender-distribution", getGenderDistribution);
-router.get("/location-distribution", getLocationDistribution);
+router.get("/stats",                  getDashboardStats);
+router.get("/activities",             getRecentActivities);
+router.get("/appointments",           getTodayAppointments);
+router.get("/weekly-appointments",    getWeeklyAppointments);
+router.get("/baby-conditions",        getBabyConditions);
+router.get("/age-distribution",       getAgeDistribution);
+router.get("/gender-distribution",    getGenderDistribution);
+router.get("/location-distribution",  getLocationDistribution);
 router.get("/service-type-distribution", getServiceTypeDistribution);
-router.post("/emit-update", emitUpdate);
+router.post("/emit-update",           emitUpdate);
 
 module.exports = router;

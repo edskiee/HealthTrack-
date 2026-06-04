@@ -1,20 +1,15 @@
-const express = require('express');
-const router = express.Router();
-const healthTipsController = require('../controllers/healthTipsController');
+const express = require("express");
+const router  = express.Router();
+const healthTipsController = require("../controllers/healthTipsController");
+const { authenticateAdmin } = require("../middleware/auth");
 
-// Get health tips by category
-router.get('/:category', healthTipsController.getHealthTipsByCategory);
+// Read — public (Flutter app fetches tips without login)
+router.get("/:category", healthTipsController.getHealthTipsByCategory);
+router.get("/",          healthTipsController.getAllHealthTips);
 
-// Get all health tips
-router.get('/', healthTipsController.getAllHealthTips);
-
-// Add new health tip (admin function)
-router.post('/', healthTipsController.addHealthTip);
-
-// Update health tip (admin function)
-router.put('/:id', healthTipsController.updateHealthTip);
-
-// Delete health tip (admin function)
-router.delete('/:id', healthTipsController.deleteHealthTip);
+// Write — admin only
+router.post("/",    authenticateAdmin, healthTipsController.addHealthTip);
+router.put("/:id",  authenticateAdmin, healthTipsController.updateHealthTip);
+router.delete("/:id", authenticateAdmin, healthTipsController.deleteHealthTip);
 
 module.exports = router;

@@ -1,12 +1,28 @@
 import 'dart:convert';
-import 'dart:async'; // Import for TimeoutException
-import 'dart:io'; // Import for SocketException
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
+import '../admin/services/admin_session_storage.dart';
 
 class AppointmentSlotService {
   static String get baseUrl => ApiConfig.baseUrl;
   static List<String> get fallbackBaseUrls => ApiConfig.fallbackBaseUrls;
+
+  /// Returns headers with Bearer token for admin-protected endpoints.
+  static Future<Map<String, String>> _adminHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  /// Plain headers for public (unauthenticated) endpoints.
+  static Map<String, String> get _publicHeaders => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
 
   /// Get available appointment slots for a service on a specific date
   static Future<List<Map<String, dynamic>>> getAvailableSlots(
@@ -16,6 +32,7 @@ class AppointmentSlotService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointment-slots/available?serviceId=$serviceId&date=$date"),
+          headers: _publicHeaders,
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -47,7 +64,6 @@ class AppointmentSlotService {
   }) async {
     Exception? lastException;
       
-    // Build query parameters
     final queryParams = <String, String>{};
     if (serviceId != null) queryParams['serviceId'] = serviceId.toString();
     if (date != null) queryParams['date'] = date;
@@ -64,6 +80,7 @@ class AppointmentSlotService {
       try {
         final response = await http.get(
           Uri.parse('$url$urlPath'),
+          headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
   
         if (response.statusCode == 200) {
@@ -88,14 +105,12 @@ class AppointmentSlotService {
   }
   
   /// Get user-viewable slots (shows all slots including booked ones for display)
-  /// This endpoint returns all slots but filters based on actual availability
   static Future<List<Map<String, dynamic>>> getUserViewableSlots({
     int? serviceId,
     String? date,
   }) async {
     Exception? lastException;
       
-    // Build query parameters
     final queryParams = <String, String>{};
     if (serviceId != null) queryParams['serviceId'] = serviceId.toString();
     if (date != null) queryParams['date'] = date;
@@ -112,6 +127,7 @@ class AppointmentSlotService {
       try {
         final response = await http.get(
           Uri.parse('$url$urlPath'),
+          headers: _publicHeaders,
         ).timeout(const Duration(seconds: 10));
   
         if (response.statusCode == 200) {
@@ -146,6 +162,7 @@ class AppointmentSlotService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointment-slots/available?serviceId=$serviceId&date=$date"),
+          headers: _publicHeaders,
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -210,7 +227,7 @@ class AppointmentSlotService {
         
         final response = await http.post(
           uri,
-          headers: {'Content-Type': 'application/json'},
+          headers: await _adminHeaders(),
           body: json.encode(requestBody),
         ).timeout(
           const Duration(seconds: 30),
@@ -294,7 +311,6 @@ class AppointmentSlotService {
     for (final url in fallbackBaseUrls) {
       try {
         final updateData = <String, dynamic>{};
-        
         if (serviceId != null) updateData['service_id'] = serviceId;
         if (appointmentDate != null) updateData['appointment_date'] = appointmentDate;
         if (startTime != null) updateData['start_time'] = startTime;
@@ -305,7 +321,7 @@ class AppointmentSlotService {
         
         final response = await http.put(
           Uri.parse('$url/appointment-slots/$slotId'),
-          headers: {'Content-Type': 'application/json'},
+          headers: await _adminHeaders(),
           body: json.encode(updateData),
         ).timeout(const Duration(seconds: 10));
 
@@ -333,7 +349,7 @@ class AppointmentSlotService {
       try {
         final response = await http.delete(
           Uri.parse('$url/appointment-slots/$slotId'),
-          headers: {'Content-Type': 'application/json'},
+          headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -365,6 +381,7 @@ class AppointmentSlotService {
       try {
         final response = await http.get(
           Uri.parse("$url/appointment-slots/availability?serviceId=$serviceId&year=$year&month=$month"),
+          headers: _publicHeaders,
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -395,7 +412,7 @@ class AppointmentSlotService {
       try {
         final response = await http.post(
           Uri.parse("$url/appointment-slots/book"),
-          headers: {'Content-Type': 'application/json'},
+          headers: _publicHeaders,
           body: json.encode({'slotId': slotId}),
         ).timeout(const Duration(seconds: 10));
 
@@ -423,7 +440,6 @@ class AppointmentSlotService {
   }) async {
     Exception? lastException;
     
-    // Build query parameters
     final queryParams = <String, String>{};
     if (serviceId != null) queryParams['serviceId'] = serviceId.toString();
     if (date != null) queryParams['date'] = date;
@@ -440,8 +456,8 @@ class AppointmentSlotService {
       try {
         final response = await http.delete(
           Uri.parse('$url$urlPath'),
-          headers: {'Content-Type': 'application/json'},
-        ).timeout(const Duration(seconds: 30)); // Increased timeout for bulk operations
+          headers: await _adminHeaders(),
+        ).timeout(const Duration(seconds: 30));
 
         if (response.statusCode == 200) {
           final data = json.decode(response.body);

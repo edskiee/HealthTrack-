@@ -228,6 +228,89 @@ async function cleanupOldAuditLogs(days = 90) {
   }
 }
 
+/**
+ * Ensures the two required service records (Immunization & Maternal Care) exist.
+ * Uses INSERT IGNORE so it is safe to run on every startup.
+ */
+async function ensureServicesConfig(conn) {
+  await logAndExecSchema(
+    conn,
+    "🔧 Ensuring services_config table exists...",
+    "CREATE TABLE services_config",
+    () =>
+      conn.execute(`
+        CREATE TABLE IF NOT EXISTS services_config (
+          id                       INT          PRIMARY KEY AUTO_INCREMENT,
+          service_name             VARCHAR(100) NOT NULL UNIQUE,
+          service_description      TEXT,
+          service_type             ENUM('immunization','maternal','dental','epi','checkup','general','other') NOT NULL DEFAULT 'general',
+          description              TEXT,
+          is_active                TINYINT(1)   NOT NULL DEFAULT 1,
+          is_enabled               TINYINT(1)   NOT NULL DEFAULT 1,
+          duration_minutes         INT          NOT NULL DEFAULT 30,
+          required_fields          JSON,
+          available_days           JSON,
+          max_appointments_per_day INT          NOT NULL DEFAULT 50,
+          created_at               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_service_type (service_type),
+          INDEX idx_is_active    (is_active),
+          INDEX idx_is_enabled   (is_enabled)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `)
+  );
+
+  // Add is_enabled column to existing tables that only have is_active
+  if (!(await columnExists(conn, "services_config", "is_enabled"))) {
+    await logAndExecSchema(
+      conn,
+      "🔧 Adding is_enabled column to services_config...",
+      "add services_config.is_enabled",
+      () =>
+        conn.execute(`
+          ALTER TABLE services_config
+            ADD COLUMN is_enabled TINYINT(1) NOT NULL DEFAULT 1
+        `)
+    );
+    // Sync is_enabled with is_active for any existing rows
+    await conn.execute(
+      `UPDATE services_config SET is_enabled = is_active`
+    );
+  }
+
+  // Seed the two required services using INSERT IGNORE (idempotent)
+  await logAndExecSchema(
+    conn,
+    "🌱 Seeding default services (Immunization & Maternal Care)...",
+    "INSERT IGNORE services_config defaults",
+    () =>
+      conn.execute(`
+        INSERT IGNORE INTO services_config
+            (service_name, service_description, service_type, is_active, is_enabled,
+             duration_minutes, required_fields, available_days, max_appointments_per_day)
+        VALUES
+        (
+          'Immunization',
+          'Child immunization and vaccination services',
+          'immunization', 1, 1, 30,
+          '["child_name", "vaccine_type", "date_of_birth", "parent_guardian"]',
+          '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]',
+          30
+        ),
+        (
+          'Maternal Care',
+          'Prenatal and postnatal care services for mothers',
+          'maternal', 1, 1, 30,
+          '["mother_name", "expected_delivery_date", "contact_number", "address"]',
+          '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]',
+          20
+        )
+      `)
+  );
+
+  console.log("✅ services_config seeded (Immunization & Maternal Care)");
+}
+
 async function initAdminTables() {
   let conn = null;
   try {
@@ -320,6 +403,8 @@ async function initAdminTables() {
 
     await ensureAdminSessionsTokenHashIndex(conn);
     console.log("✅ admin_sessions index verified");
+
+    await ensureServicesConfig(conn);
 
     await conn.commit();
 

@@ -101,9 +101,14 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
       print('✅ Loaded ${maternalServices.length} maternal services');
       
       // Combine and filter only enabled services
+      // Accept both is_enabled and is_active (handles DB column naming differences)
       print('🔧 Filtering enabled services...');
       final enabledServices = [...immunizationServices, ...maternalServices]
-          .where((service) => service['is_enabled'] == 1)
+          .where((service) =>
+              service['is_enabled'] == 1 ||
+              service['is_enabled'] == true ||
+              service['is_active'] == 1 ||
+              service['is_active'] == true)
           .toList();
       print('✅ Found ${enabledServices.length} enabled services');
       

@@ -81,3 +81,5 @@ coverage/
 *.py[cod]
 .buildlog/
 .build/
+.vercel
+.env*

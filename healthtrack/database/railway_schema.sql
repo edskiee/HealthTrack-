@@ -397,17 +397,50 @@ CREATE TABLE IF NOT EXISTS health_tips (
 -- ─── Services Config ──────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS services_config (
-    id           INT          PRIMARY KEY AUTO_INCREMENT,
-    service_name VARCHAR(100) NOT NULL,
-    service_type ENUM('immunization','maternal','general') NOT NULL DEFAULT 'general',
-    description  TEXT,
-    is_active    TINYINT(1)   NOT NULL DEFAULT 1,
-    duration_minutes INT      NOT NULL DEFAULT 30,
-    created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    id                       INT          PRIMARY KEY AUTO_INCREMENT,
+    service_name             VARCHAR(100) NOT NULL UNIQUE,
+    service_description      TEXT,
+    service_type             ENUM('immunization','maternal','dental','epi','checkup','general','other') NOT NULL DEFAULT 'general',
+    description              TEXT,
+    is_active                TINYINT(1)   NOT NULL DEFAULT 1,
+    is_enabled               TINYINT(1)   NOT NULL DEFAULT 1,
+    duration_minutes         INT          NOT NULL DEFAULT 30,
+    required_fields          JSON,
+    available_days           JSON,
+    max_appointments_per_day INT          NOT NULL DEFAULT 50,
+    created_at               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_service_type (service_type),
-    INDEX idx_is_active    (is_active)
+    INDEX idx_is_active    (is_active),
+    INDEX idx_is_enabled   (is_enabled)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─── Default Services Seed Data ───────────────────────────────────────────────
+-- These two services are required for the app to function.
+-- INSERT IGNORE is safe to re-run — it will not duplicate records.
+
+INSERT IGNORE INTO services_config
+    (service_name, service_description, service_type, is_active, is_enabled, duration_minutes,
+     required_fields, available_days, max_appointments_per_day)
+VALUES
+(
+    'Immunization',
+    'Child immunization and vaccination services',
+    'immunization',
+    1, 1, 30,
+    '["child_name", "vaccine_type", "date_of_birth", "parent_guardian"]',
+    '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]',
+    30
+),
+(
+    'Maternal Care',
+    'Prenatal and postnatal care services for mothers',
+    'maternal',
+    1, 1, 30,
+    '["mother_name", "expected_delivery_date", "contact_number", "address"]',
+    '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]',
+    20
+);
 
 -- ─── Referrals ────────────────────────────────────────────────────────────────
 

@@ -21,8 +21,9 @@ class ServiceModel {
 
   factory ServiceModel.fromJson(Map<String, dynamic> json) {
     // Handle is_enabled field that might come as int from MySQL
+    // Also fall back to is_active if is_enabled is absent
     bool? enabledValue;
-    final isEnabledField = json['is_enabled'] ?? json['isEnabled'];
+    final isEnabledField = json['is_enabled'] ?? json['isEnabled'] ?? json['is_active'];
     if (isEnabledField != null) {
       if (isEnabledField is bool) {
         enabledValue = isEnabledField;

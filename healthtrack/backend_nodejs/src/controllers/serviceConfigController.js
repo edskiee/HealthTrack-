@@ -5,7 +5,13 @@ exports.getAllServices = async (req, res) => {
   try {
     const { service_type } = req.query;
     
-    let sql = "SELECT * FROM services_config WHERE is_active = 1";
+    // Select both is_active and is_enabled so Flutter clients receive is_enabled
+    let sql = `SELECT id, service_name, service_description, service_type, description,
+                      is_active, is_enabled, duration_minutes,
+                      required_fields, available_days, max_appointments_per_day,
+                      created_at, updated_at
+               FROM services_config
+               WHERE (is_active = 1 AND is_enabled = 1)`;
     const params = [];
     
     if (service_type) {
@@ -35,7 +41,12 @@ exports.getServiceById = async (req, res) => {
   try {
     const { id } = req.params;
     
-    const sql = "SELECT * FROM services_config WHERE id = ? AND is_active = 1";
+    const sql = `SELECT id, service_name, service_description, service_type, description,
+                        is_active, is_enabled, duration_minutes,
+                        required_fields, available_days, max_appointments_per_day,
+                        created_at, updated_at
+                 FROM services_config
+                 WHERE id = ? AND is_active = 1 AND is_enabled = 1`;
     const [results] = await db.execute(sql, [id]);
     
     if (results.length === 0) {
@@ -61,7 +72,7 @@ exports.getServiceById = async (req, res) => {
 // Create new service (admin only)
 exports.createService = async (req, res) => {
   try {
-    const { service_name, service_type, description, is_active = true } = req.body;
+    const { service_name, service_type, description, is_active = 1, is_enabled = 1 } = req.body;
     
     // Validate required fields
     if (!service_name || !service_type) {
@@ -72,17 +83,21 @@ exports.createService = async (req, res) => {
     }
     
     const sql = `
-      INSERT INTO services_config (service_name, service_type, description, is_active)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO services_config (service_name, service_type, description, is_active, is_enabled)
+      VALUES (?, ?, ?, ?, ?)
     `;
     
-    const [result] = await db.execute(sql, [service_name, service_type, description, is_active]);
+    const [result] = await db.execute(sql, [service_name, service_type, description, is_active, is_enabled]);
     
     const newServiceId = result.insertId;
     
     // Get the created service
     const [createdService] = await db.execute(
-      "SELECT * FROM services_config WHERE id = ?",
+      `SELECT id, service_name, service_description, service_type, description,
+              is_active, is_enabled, duration_minutes,
+              required_fields, available_days, max_appointments_per_day,
+              created_at, updated_at
+       FROM services_config WHERE id = ?`,
       [newServiceId]
     );
     
@@ -104,7 +119,7 @@ exports.createService = async (req, res) => {
 exports.updateService = async (req, res) => {
   try {
     const { id } = req.params;
-    const { service_name, service_type, description, is_active } = req.body;
+    const { service_name, service_type, description, is_active, is_enabled } = req.body;
     
     // Build update query dynamically
     const updates = [];
@@ -130,6 +145,11 @@ exports.updateService = async (req, res) => {
       params.push(is_active);
     }
     
+    if (is_enabled !== undefined) {
+      updates.push('is_enabled = ?');
+      params.push(is_enabled);
+    }
+    
     if (updates.length === 0) {
       return res.status(400).json({
         success: false,
@@ -152,7 +172,11 @@ exports.updateService = async (req, res) => {
     
     // Get updated service
     const [updatedService] = await db.execute(
-      "SELECT * FROM services_config WHERE id = ?",
+      `SELECT id, service_name, service_description, service_type, description,
+              is_active, is_enabled, duration_minutes,
+              required_fields, available_days, max_appointments_per_day,
+              created_at, updated_at
+       FROM services_config WHERE id = ?`,
       [id]
     );
     

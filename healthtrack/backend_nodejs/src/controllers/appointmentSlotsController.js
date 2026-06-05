@@ -265,7 +265,7 @@ exports.createSlot = async (req, res) => {
     }
     
     // Validate that the service exists
-    const serviceCheckSql = "SELECT id FROM services_config WHERE id = ? AND is_enabled = 1";
+    const serviceCheckSql = "SELECT id FROM services_config WHERE id = ? AND is_active = 1 AND is_enabled = 1";
     const [serviceResults] = await db.execute(serviceCheckSql, [serviceId]);
     
     if (serviceResults.length === 0) {

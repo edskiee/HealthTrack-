@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'getstarted_screen.dart'; // para makalipat sa WelcomeScreen
+import 'getstarted_screen.dart';
+import 'services/startup_health_check.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -20,15 +21,13 @@ class _SplashScreenState extends State<SplashScreen>
 
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 3), // total time animation
+      duration: const Duration(seconds: 3),
     );
 
-    // zoom in effect
     _scaleAnimation = Tween<double>(begin: 0.8, end: 1.2).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
 
-    // fade in + fade out
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: _controller,
@@ -38,8 +37,14 @@ class _SplashScreenState extends State<SplashScreen>
 
     _controller.forward();
 
-    // Pagkatapos ng animation, lilipat sa WelcomeScreen
-    Future.delayed(const Duration(seconds: 3), () {
+    // After the splash animation, check backend before navigating
+    Future.delayed(const Duration(seconds: 3), () async {
+      if (!mounted) return;
+
+      // Check backend health — shows wakeup overlay if Render is sleeping
+      await StartupHealthCheck.run(context);
+
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const GetStartedScreen()),
@@ -56,14 +61,14 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color.fromARGB(255, 0, 29, 196), // pwede mong baguhin
+      backgroundColor: const Color.fromARGB(255, 0, 29, 196),
       body: Center(
         child: FadeTransition(
           opacity: _fadeAnimation,
           child: ScaleTransition(
             scale: _scaleAnimation,
             child: Image.asset(
-              "assets/images/logo.png", // palitan mo ng path ng logo mo
+              'assets/images/logo.png',
               width: 200,
               height: 200,
             ),

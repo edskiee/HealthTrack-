@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import '../services/api_config.dart'; // Import the API config
+import '../services/api_config.dart';
+import '../services/connection_status_service.dart';
+import '../services/startup_health_check.dart';
 import 'admin_dashboard_screen.dart';
 import '../utils/message_utils.dart';
 import 'services/admin_session_storage.dart';
@@ -52,181 +54,120 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
 
     setState(() => _isLoading = true);
 
-    // ✅ Try login via backend API using centralized configuration
+    // Check backend availability first — shows wakeup overlay if Render is sleeping
+    final serverOk = await StartupHealthCheck.run(context, forceCheck: true);
+    if (!mounted) return;
+    if (!serverOk) {
+      setState(() => _isLoading = false);
+      MessageUtils.showErrorMessage(
+        context,
+        'Unable to connect to HealthTrack services at the moment. '
+        'Please check your internet connection or try again shortly.',
+        title: 'Connection Error',
+      );
+      return;
+    }
+
     try {
-      print("=== Admin Login Debug Info ===");
-      print("API Base URL: '${ApiConfig.baseUrl}'");
-      print("API Base URL length: ${ApiConfig.baseUrl.length}");
-      print("Is API Base URL empty: ${ApiConfig.baseUrl.isEmpty}");
-      print("Admin Login Endpoint: '${ApiConfig.adminLoginEndpoint}'");
-      
-      String adminLoginUrl = "${ApiConfig.baseUrl}${ApiConfig.adminLoginEndpoint}";
-      print("Constructed URL: '$adminLoginUrl'");
-      
-      // Add validation for the URL
-      if (ApiConfig.baseUrl.isEmpty) {
-        print("ERROR: API Base URL is empty!");
-        throw Exception("API Base URL is not configured properly");
-      }
-      
-      // Validate that the URL is properly formed
-      if (!adminLoginUrl.startsWith('http')) {
-        print("ERROR: Malformed URL: $adminLoginUrl");
-        throw Exception("Malformed URL: $adminLoginUrl");
-      }
-      
+      final String adminLoginUrl =
+          '${ApiConfig.baseUrl}${ApiConfig.adminLoginEndpoint}';
+
       http.Response? response;
-      
+
       try {
-        final url = Uri.parse(adminLoginUrl);
-        print("🔗 Trying URL: $url");
-        
         response = await http
             .post(
-              url,
-              headers: {"Content-Type": "application/json"},
+              Uri.parse(adminLoginUrl),
+              headers: {'Content-Type': 'application/json'},
               body: jsonEncode({
-                "username": _username.text.trim(),
-                "password": _password.text.trim(),
+                'username': _username.text.trim(),
+                'password': _password.text.trim(),
                 if (_awaitingTotp || _totp.text.trim().isNotEmpty)
-                  "totp": _totp.text.trim(),
+                  'totp': _totp.text.trim(),
               }),
             )
-            .timeout(const Duration(seconds: 10)); // 10 second timeout
-        
-        print("✅ Successfully connected to: $adminLoginUrl");
-      } catch (e) {
-        print("❌ Failed to connect to $adminLoginUrl: $e");
-        
-        // If primary URL fails, try fallback URLs
-        print("Primary URL failed, trying fallback URLs");
-        print("Fallback URLs: ${ApiConfig.fallbackBaseUrls}");
-        for (String fallbackUrl in ApiConfig.fallbackBaseUrls) {
+            .timeout(const Duration(seconds: 12));
+      } catch (_) {
+        // Primary URL failed — try fallbacks
+        for (final fallbackUrl in ApiConfig.fallbackBaseUrls) {
+          if (fallbackUrl.isEmpty || !fallbackUrl.startsWith('http')) continue;
           try {
-            String fallbackAdminLoginUrl = "$fallbackUrl${ApiConfig.adminLoginEndpoint}";
-            print("🔗 Trying fallback URL: $fallbackAdminLoginUrl (from base: $fallbackUrl)");
-            
-            // Validate fallback URL
-            if (fallbackUrl.isEmpty) {
-              print("Skipping empty fallback URL");
-              continue;
-            }
-            
-            // Validate that the URL is properly formed
-            if (!fallbackAdminLoginUrl.startsWith('http')) {
-              print("Skipping malformed fallback URL: $fallbackAdminLoginUrl");
-              continue;
-            }
-            
             response = await http
                 .post(
-                  Uri.parse(fallbackAdminLoginUrl),
-                  headers: {"Content-Type": "application/json"},
+                  Uri.parse('$fallbackUrl${ApiConfig.adminLoginEndpoint}'),
+                  headers: {'Content-Type': 'application/json'},
                   body: jsonEncode({
-                    "username": _username.text.trim(),
-                    "password": _password.text.trim(),
+                    'username': _username.text.trim(),
+                    'password': _password.text.trim(),
                     if (_awaitingTotp || _totp.text.trim().isNotEmpty)
-                      "totp": _totp.text.trim(),
+                      'totp': _totp.text.trim(),
                   }),
                 )
-                .timeout(const Duration(seconds: 10));
-            
-            print("✅ Successfully connected to fallback URL: $fallbackAdminLoginUrl");
-            break; // Exit loop on successful connection
-          } catch (fallbackError) {
-            print("❌ Failed to connect to fallback URL $fallbackUrl: $fallbackError");
-            continue; // Try next URL
+                .timeout(const Duration(seconds: 12));
+            break;
+          } catch (_) {
+            continue;
           }
         }
       }
 
       if (response == null) {
-        throw Exception("Could not connect to server. Check if it's running.");
+        throw Exception('Could not connect to HealthTrack services. Please check your connection.');
       }
-      
-      // Print detailed response information
-      print("=== Response Details ===");
-      print("Status Code: ${response.statusCode}");
-      print("Headers: ${response.headers}");
-      print("Body: '${response.body}'");
-      print("Body Length: ${response.body.length}");
-      print("========================");
 
-      // ✅ Handle empty or invalid response body
-      print("Response object: $response");
-      print("Response status: ${response.statusCode}");
-      print("Response headers: ${response.headers}");
-      print("Response body: '${response.body}'");
-      print("Response body length: ${response.body.length}");
-      
       if (response.body.isEmpty || response.body.trim().isEmpty) {
-        print("Throwing empty response exception");
-        throw Exception("Server returned an empty response. Please try again.");
+        throw Exception('Server returned an empty response. Please try again.');
       }
 
-      // ✅ Handle non-JSON responses
-      if (!response.headers.containsKey('content-type') || 
-          !response.headers['content-type']!.contains('application/json')) {
-        throw Exception("Server returned an invalid response format. Please try again.");
-      }
-
-      // ✅ Safely parse JSON response
       Map<String, dynamic> data;
       try {
         data = jsonDecode(response.body);
-      } catch (parseError) {
-        print("❌ JSON Parse Error: $parseError");
-        print("❌ Response body: ${response.body}");
-        print("❌ Response headers: ${response.headers}");
-        throw Exception("Server returned an invalid JSON response. Please try again.");
+      } catch (_) {
+        throw Exception('Server returned an invalid response. Please try again.');
       }
 
-      final bool wantsOtp = data["requiresOtp"] == true;
+      final bool wantsOtp = data['requiresOtp'] == true;
       if (wantsOtp) {
         if (!mounted) return;
         setState(() => _awaitingTotp = true);
         MessageUtils.showErrorMessage(
           context,
-          data["message"] ??
-              "Enter the 6-digit code from your authentication app.",
-          title: "Two-factor verification",
+          data['message'] ?? 'Enter the 6-digit code from your authentication app.',
+          title: 'Two-factor verification',
         );
         return;
       }
 
-      bool isSuccess = data["success"] == true ||
-          data["success"].toString().toLowerCase() == "true" ||
-          data["success"] == 1;
+      final bool isSuccess = data['success'] == true ||
+          data['success'].toString().toLowerCase() == 'true' ||
+          data['success'] == 1;
 
       if (!isSuccess) {
         if (!mounted) return;
         MessageUtils.showErrorMessage(
           context,
-          data["message"] ?? "Invalid administrator credentials.",
-          title: "Admin Login Failed",
+          data['message'] ?? 'Invalid administrator credentials.',
+          title: 'Admin Login Failed',
         );
         return;
       }
 
-      final tokenValue = data["access_token"]?.toString();
+      final tokenValue = data['access_token']?.toString();
       if (tokenValue != null && tokenValue.isNotEmpty) {
         await AdminSessionStorage.setToken(tokenValue);
-        // ── DIAGNOSTIC: confirm token round-trip ──────────────────────────
         final savedToken = await AdminSessionStorage.getToken();
         final tokenOk = savedToken != null && savedToken.isNotEmpty;
-        print('[AdminLogin] LOGIN RESPONSE data keys: ${data.keys.toList()}');
-        print('[AdminLogin] access_token from response: '
-            '${tokenValue.substring(0, tokenValue.length.clamp(0, 20))}... (${tokenValue.length} chars)');
-        print('[AdminLogin] token saved to storage → '
-            '${tokenOk ? "${savedToken.substring(0, savedToken.length.clamp(0, 20))}... (${savedToken.length} chars)" : "FAILED — NULL or EMPTY"}');
         if (!tokenOk) {
           throw Exception(
-              "Token received but could not be saved to local storage. "
-              "This can happen in private/incognito mode on web.");
+            'Token received but could not be saved to local storage. '
+            'This can happen in private/incognito mode on web.',
+          );
         }
       } else {
         throw Exception(
-            "Server authenticated you but omitted a session token — check admin_sessions migration.");
+          'Server authenticated you but omitted a session token — '
+          'check admin_sessions migration.',
+        );
       }
 
       if (!mounted) return;
@@ -247,8 +188,8 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       if (!mounted) return;
       MessageUtils.showErrorMessage(
         context,
-        "Login error: $e",
-        title: "Connection Error",
+        ConnectionStatusService.friendlyError(e),
+        title: 'Connection Error',
       );
     }
 

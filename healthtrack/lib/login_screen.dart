@@ -8,6 +8,8 @@ import 'services/user_session_storage.dart';
 import 'services/auth_service.dart';
 import 'services/websocket_service.dart';
 import 'services/fcm_service.dart';
+import 'services/connection_status_service.dart';
+import 'services/startup_health_check.dart';
 import 'dashboard.dart';
 import 'unified_register_screen.dart';
 
@@ -64,18 +66,26 @@ class _LoginScreenState extends State<LoginScreen>
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
-    // Trim whitespace from inputs
+    // Check backend availability first — shows wakeup overlay if needed
+    final serverOk = await StartupHealthCheck.run(context, forceCheck: true);
+    if (!mounted) return;
+    if (!serverOk) {
+      setState(() => _isLoading = false);
+      _showErrorDialog(
+        'Unable to connect to HealthTrack services at the moment. '
+        'Please check your internet connection or try again shortly.',
+      );
+      return;
+    }
+
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
 
     try {
-      debugPrint("🔗 Attempting login with username: $username");
+      debugPrint('🔗 Attempting login with username: $username');
       
-      // Use AuthService for login
       final userData = await AuthService.loginUser(username, password);
       
       if (userData != null) {
@@ -162,20 +172,8 @@ class _LoginScreenState extends State<LoginScreen>
       }
     } catch (e) {
       if (!mounted) return;
-      debugPrint("❌ Login error: $e");
-      
-      String errorMessage;
-      if (e.toString().contains("SocketException")) {
-        errorMessage = "Network error. Please check your internet connection and ensure the server is running.";
-      } else if (e.toString().contains("TimeoutException")) {
-        errorMessage = "Connection timeout. Please check your internet connection or try again later.";
-      } else if (e.toString().contains("Could not connect to server")) {
-        errorMessage = "Server connection failed. Please check if the Node.js server is running on port 3000.";
-      } else {
-        errorMessage = "Login failed: ${e.toString().replaceAll("Exception: ", "")}";
-      }
-      
-      _showErrorDialog(errorMessage);
+      debugPrint('❌ Login error: $e');
+      _showErrorDialog(ConnectionStatusService.friendlyError(e));
     } finally {
       if (mounted) {
         setState(() {

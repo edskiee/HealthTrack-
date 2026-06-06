@@ -75,6 +75,7 @@ const corsOptions = {
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
+  allowedHeaders: ["Content-Type", "Accept", "Authorization"],
 };
 
 app.use(cors(corsOptions));

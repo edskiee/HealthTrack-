@@ -14,6 +14,8 @@ const { ADMIN_ROLES } = require("../constants/adminRoles");
 
 async function authenticateAdmin(req, res, next) {
   try {
+    // DEBUG — remove once 401s are resolved
+    console.log("Auth Header:", req.headers.authorization ?? "(missing)");
     const raw = req.headers.authorization || "";
     if (!raw.startsWith("Bearer ")) {
       return res.status(401).json({ success: false, message: "Authentication required." });

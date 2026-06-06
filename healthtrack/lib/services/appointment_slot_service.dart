@@ -10,12 +10,7 @@ class AppointmentSlotService {
 
   /// Returns headers with Bearer token for admin-protected endpoints.
   static Future<Map<String, String>> _adminHeaders() async {
-    final token = await AdminSessionStorage.getToken();
-    return {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
-    };
+    return AdminSessionStorage.authHeaders();
   }
 
   /// Plain headers for public (unauthenticated) endpoints.
@@ -78,9 +73,12 @@ class AppointmentSlotService {
       
     for (final url in fallbackBaseUrls) {
       try {
+        final headers = await _adminHeaders();
+        print('[AppointmentSlotService] GET $url$urlPath headers=$headers');
+
         final response = await http.get(
           Uri.parse('$url$urlPath'),
-          headers: await _adminHeaders(),
+          headers: headers,
         ).timeout(const Duration(seconds: 10));
   
         if (response.statusCode == 200) {
@@ -224,10 +222,14 @@ class AppointmentSlotService {
         };
         
         print('📦 Request body: ${json.encode(requestBody)}');
-        
+
+        final headers = await _adminHeaders();
+        print('[AppointmentSlotService] POST $uri headers=$headers');
+        print('[AppointmentSlotService] Authorization present: ${headers.containsKey('Authorization')}');
+
         final response = await http.post(
           uri,
-          headers: await _adminHeaders(),
+          headers: headers,
           body: json.encode(requestBody),
         ).timeout(
           const Duration(seconds: 30),

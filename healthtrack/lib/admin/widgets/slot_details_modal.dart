@@ -149,13 +149,12 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
     });
 
     try {
+      final headers = await AdminSessionStorage.authHeaders();
+      print('[SlotDetailsModal] DELETE /appointment-slots/$slotId headers=$headers');
+
       final response = await http.delete(
         Uri.parse('${ApiConfig.baseUrl}/appointment-slots/$slotId'),
-        headers: {
-          'Content-Type': 'application/json',
-          if (await AdminSessionStorage.getToken() != null)
-            'Authorization': 'Bearer ${await AdminSessionStorage.getToken()}',
-        },
+        headers: headers,
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {

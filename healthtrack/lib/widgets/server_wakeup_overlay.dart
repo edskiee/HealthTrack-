@@ -79,7 +79,7 @@ class _SharedLoadingContent extends StatefulWidget {
 
 class _SharedLoadingContentState extends State<_SharedLoadingContent> {
   String _message =
-      'Please wait while we establish a secure connection to the server. '
+      'Please wflutter analyzeait while we establish a secure connection to the server. '
       'This may take a few moments if the system is waking up.';
   bool _showRetry  = false;
   bool _isRetrying = false;

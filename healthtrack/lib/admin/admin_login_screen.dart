@@ -152,9 +152,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
         return;
       }
 
-      final tokenValue = data['access_token']?.toString();
+      final tokenValue = data['access_token']?.toString().trim();
       if (tokenValue != null && tokenValue.isNotEmpty) {
         await AdminSessionStorage.setToken(tokenValue);
+        print('Token stored (login): ${tokenValue.substring(0, tokenValue.length.clamp(0, 12))}...');
         final savedToken = await AdminSessionStorage.getToken();
         final tokenOk = savedToken != null && savedToken.isNotEmpty;
         if (!tokenOk) {

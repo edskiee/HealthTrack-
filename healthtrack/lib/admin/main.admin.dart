@@ -4,10 +4,12 @@ import 'package:provider/provider.dart';
 
 import 'admin_login_screen.dart';
 import 'theme_provider.dart';
+import 'services/admin_session_storage.dart';
 import '../services/startup_health_check.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AdminSessionStorage.warmUp();
   final themeProvider = ThemeProvider();
   await themeProvider.loadTheme();
 

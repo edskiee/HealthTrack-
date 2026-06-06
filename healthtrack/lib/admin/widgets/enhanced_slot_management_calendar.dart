@@ -286,7 +286,7 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
         setState(() {
           // Reserved for service fetch state
         });
-        MessageUtils.showErrorMessage(context, "Failed to load services: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }

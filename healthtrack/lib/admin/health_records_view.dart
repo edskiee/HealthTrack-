@@ -6,6 +6,7 @@ import 'health_records_service.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/dashboard_service.dart';
+import '../services/connection_status_service.dart';
 import 'widgets/admin_header.dart';
 import 'widgets/referral_modal.dart';
 
@@ -62,16 +63,11 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
       });
     } catch (e) {
       setState(() {
-        errorMessage = e.toString();
+        errorMessage = ConnectionStatusService.friendlyError(e);
         isLoading = false;
       });
-      
       if (mounted) {
-        MessageUtils.showErrorMessage(
-          context,
-          'Error loading health records: $e',
-          title: "Load Error",
-        );
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }

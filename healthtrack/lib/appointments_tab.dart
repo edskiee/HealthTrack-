@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'services/appointment_service.dart';
 import 'services/appointment_slot_service.dart';
 import 'services/service_config_service.dart';
+import 'services/connection_status_service.dart';
 import 'services/user_session.dart';
 import 'services/websocket_service.dart';
 import 'services/appointment_reminder_service.dart';
@@ -189,10 +190,10 @@ class _AppointmentTabState extends State<AppointmentTab> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = e.toString();
+          _errorMessage = ConnectionStatusService.friendlyError(e);
           _isLoadingServices = false;
         });
-        MessageUtils.showErrorMessage(context, "Failed to load services: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }
@@ -225,10 +226,10 @@ class _AppointmentTabState extends State<AppointmentTab> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = e.toString();
+          _errorMessage = ConnectionStatusService.friendlyError(e);
           _isLoadingAppointments = false;
         });
-        MessageUtils.showErrorMessage(context, "Failed to load appointments: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }
@@ -311,12 +312,10 @@ class _AppointmentTabState extends State<AppointmentTab> {
       print('✅ User: Slots loading complete');
     } catch (e) {
       if (!mounted) return;
-      
       setState(() {
         _isLoadingSlots = false;
       });
-      MessageUtils.showErrorMessage(context, "Failed to load appointment slots: $e");
-      print('❌ User: Error loading slots: $e');
+      MessageUtils.showNetworkError(context, e);
     }
   }
 

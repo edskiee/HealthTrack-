@@ -7,6 +7,7 @@ import 'package:healthtrack/admin/services/admin_preferences_api_service.dart';
 import 'package:healthtrack/admin/theme_provider.dart';
 import 'package:healthtrack/admin/services/admin_session_storage.dart';
 import 'package:healthtrack/admin/signals/admin_dashboard_signals.dart';
+import 'package:healthtrack/services/startup_health_check.dart';
 
 import 'dashboard_view.dart';
 import 'manage_patients_view.dart';
@@ -111,6 +112,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
     adminDashboardSignals.addListener(_dashboardSignalsListener);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _reloadShellPreferences();
+      // Silently verify backend is still reachable after logging in
+      StartupHealthCheck.run(context);
     });
     _initializeScreens();
   }

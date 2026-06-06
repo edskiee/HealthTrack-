@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:healthtrack/services/connection_status_service.dart';
 
 /// Utility class for showing centralized success/error messages
 class MessageUtils {
@@ -43,6 +44,21 @@ class MessageUtils {
       backgroundColor: Colors.red.shade50,
       titleColor: Colors.red.shade700,
       duration: duration,
+    );
+  }
+
+  /// Show a user-friendly network / connection error message.
+  /// Converts raw exceptions (SocketException, TimeoutException, etc.)
+  /// into readable copy via [ConnectionStatusService.friendlyError].
+  static void showNetworkError(
+    BuildContext context,
+    Object error, {
+    String title = 'Connection Error',
+  }) {
+    showErrorMessage(
+      context,
+      ConnectionStatusService.friendlyError(error),
+      title: title,
     );
   }
 

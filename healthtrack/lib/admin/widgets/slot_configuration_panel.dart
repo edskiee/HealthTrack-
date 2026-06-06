@@ -185,7 +185,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
         setState(() {
           _isGenerating = false;
         });
-        MessageUtils.showErrorMessage(context, "Failed to generate slots: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }

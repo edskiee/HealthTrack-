@@ -8,6 +8,7 @@ import 'maternal_healthcard_tab.dart';
 import 'utils/message_utils.dart';
 
 import 'services/user_session.dart';
+import 'services/startup_health_check.dart';
 import 'widgets/common/real_time_notification_badge.dart';
 import 'services/notification_service.dart';
 import 'services/fcm_service.dart';
@@ -72,6 +73,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ];
 
     _notificationTapSub = FCMService.notificationTapStream.listen(_handleNotificationTapData);
+
+    // Check backend on dashboard load — silently skips if recently confirmed online
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await StartupHealthCheck.run(context);
+    });
   }
 
   void _handleNotificationTapData(Map<String, dynamic> payload) {

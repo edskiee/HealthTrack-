@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'health_records_service.dart';
 import '../utils/message_utils.dart';
 import '../services/dashboard_service.dart';
+import '../services/connection_status_service.dart';
 
 class HealthRecordsView extends StatefulWidget {
   const HealthRecordsView({super.key});
@@ -60,16 +61,11 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
       });
     } catch (e) {
       setState(() {
-        errorMessage = e.toString();
+        errorMessage = ConnectionStatusService.friendlyError(e);
         isLoading = false;
       });
-      
       if (mounted) {
-        MessageUtils.showErrorMessage(
-          context,
-          'Error loading health records: $e',
-          title: "Load Error",
-        );
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }

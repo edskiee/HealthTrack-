@@ -5,6 +5,7 @@ import 'package:overlay_support/overlay_support.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/appointment_service.dart';
+import '../services/connection_status_service.dart';
 import 'widgets/admin_header.dart';
 
 class AppointmentsView extends StatefulWidget {
@@ -143,12 +144,11 @@ class _AppointmentsViewState extends State<AppointmentsView> {
       });
     } catch (e) {
       if (!mounted) return;
-      
       setState(() {
-        _errorMessage = e.toString();
+        _errorMessage = ConnectionStatusService.friendlyError(e);
         _isLoading = false;
       });
-      MessageUtils.showErrorMessage(context, "Failed to load appointments: $e");
+      MessageUtils.showNetworkError(context, e);
     }
   }
 
@@ -258,7 +258,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
       }
     } catch (e) {
       setState(() => _isLoading = false);
-      _showErrorMessage('Error deleting appointment: $e');
+      _showErrorMessage(ConnectionStatusService.friendlyError(e));
     }
   }
 
@@ -302,7 +302,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
         _showErrorMessage(result['message'] ?? 'Failed to update appointment status');
       }
     } catch (e) {
-      _showErrorMessage('Error updating appointment: $e');
+      _showErrorMessage(ConnectionStatusService.friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => _updatingAppointmentIds.remove(appointmentId));
@@ -453,7 +453,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                       }
                     } catch (e) {
                       setState(() => _isLoading = false);
-                      _showErrorMessage('Error rescheduling appointment: $e');
+                      _showErrorMessage(ConnectionStatusService.friendlyError(e));
                     }
                   },
                   child: Text('Reschedule'),

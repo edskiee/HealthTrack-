@@ -70,7 +70,7 @@ class _AdminToolsViewState extends State<AdminToolsView> {
       }
     } catch (e) {
       if (mounted) {
-        MessageUtils.showErrorMessage(context, "Failed to load services: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }
@@ -135,7 +135,7 @@ class _AdminToolsViewState extends State<AdminToolsView> {
         setState(() {
           _isGenerating = false;
         });
-        MessageUtils.showErrorMessage(context, "Failed to generate slots: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }
@@ -270,7 +270,7 @@ class _AdminToolsViewState extends State<AdminToolsView> {
         setState(() {
           _isDeleting = false;
         });
-        MessageUtils.showErrorMessage(context, "Failed to delete slots: $e");
+        MessageUtils.showNetworkError(context, e);
       }
     }
   }

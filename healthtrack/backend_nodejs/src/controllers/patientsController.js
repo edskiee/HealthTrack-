@@ -229,35 +229,15 @@ exports.addPatient = async (req, res) => {
     const [result] = await connection.execute(sql, values);
     const patientId = result.insertId;
 
-    // Create initial health record for the patient
+    // Automatically create initial health record for every new patient
     const healthRecordSql = `
       INSERT INTO health_records (
         user_id, patient_id, record_type, title, description, date_recorded
-      ) VALUES (?, ?, ?, ?, ?, CURDATE())
+      ) VALUES (?, ?, 'Immunization', 'Initial Patient Record', 'Automatically created during patient registration', CURDATE())
     `;
 
-    const healthRecordValues = [
-      userId, // galing sa req.body.userId
-      patientId,
-      recordType || 'Diagnosis',
-      'Initial Health Record',
-      recordDescription || 'Initial health record created upon patient registration'
-    ];
-
-    // Always create health record when createHealthRecord flag is true or not specified
-    const shouldCreateHealthRecord = req.body.createHealthRecord !== false;
-
-    if (shouldCreateHealthRecord) {
-      try {
-        await connection.execute(healthRecordSql, healthRecordValues);
-        console.log("✅ Health record created successfully for patient ID:", patientId);
-      } catch (healthErr) {
-        console.error("❌ Database error creating health record:", healthErr);
-        // Continue even if health record creation fails
-      }
-    } else {
-      console.log("⚠️ Health record creation skipped based on request flag for patient ID:", patientId);
-    }
+    await connection.execute(healthRecordSql, [userId, patientId]);
+    console.log("✅ Health record created successfully for patient ID:", patientId);
 
     // Fetch the created patient data
     let fetchSql = `

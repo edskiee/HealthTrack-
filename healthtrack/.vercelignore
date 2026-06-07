@@ -1,4 +1,4 @@
-# ── Ignore Flutter platform source directories ────────────────────────────────
+# ── Flutter platform source (not needed for web deployment) ──────────────────
 android/
 android_backup/
 ios/
@@ -6,7 +6,7 @@ macos/
 windows/
 linux/
 
-# ── Ignore Flutter source & Dart tool artifacts ──────────────────────────────
+# ── Flutter/Dart source & tooling ────────────────────────────────────────────
 lib/
 assets/
 web/
@@ -16,12 +16,12 @@ web/
 .qoder/
 .vscode/
 
-# ── Ignore Node/backend ───────────────────────────────────────────────────────
+# ── Node / backend ────────────────────────────────────────────────────────────
 backend_nodejs/
 node_modules/
 database/
 
-# ── Ignore non-web build artifacts ───────────────────────────────────────────
+# ── Non-web build artifacts (keep build/web intact) ──────────────────────────
 build/app/
 build/.cxx/
 build/firebase_core/
@@ -41,24 +41,5 @@ build/c6d7d221ac7baa3f988416538c2ed756/
 build/*.dill
 build/*.cache
 
-# ── Ignore large canvaskit/wasm inside build/web (optional, reduces upload) ──
+# ── Reduce upload size: skip canvaskit binaries ──────────────────────────────
 build/web/canvaskit/
-build/web/**/*.wasm
-
-# ── Ignore root-level scripts, test files, docs ──────────────────────────────
-*.js
-*.dart
-*.sql
-*.yaml
-*.lock
-*.md
-*.iml
-*.html
-*.local
-*.bat
-*.ps1
-*.py
-*.txt
-
-# ── Always keep vercel.json ───────────────────────────────────────────────────
-!vercel.json

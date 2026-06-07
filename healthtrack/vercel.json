@@ -1,51 +1,18 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "build/web/**",
-      "use": "@vercel/static"
-    }
-  ],
+  "outputDirectory": "build/web",
   "routes": [
     {
       "src": "/flutter_service_worker.js",
-      "dest": "/build/web/flutter_service_worker.js"
+      "headers": { "cache-control": "no-cache" },
+      "dest": "/flutter_service_worker.js"
     },
     {
-      "src": "/flutter_bootstrap.js",
-      "dest": "/build/web/flutter_bootstrap.js"
-    },
-    {
-      "src": "/flutter.js",
-      "dest": "/build/web/flutter.js"
-    },
-    {
-      "src": "/main.dart.js",
-      "dest": "/build/web/main.dart.js"
-    },
-    {
-      "src": "/manifest.json",
-      "dest": "/build/web/manifest.json"
-    },
-    {
-      "src": "/favicon.png",
-      "dest": "/build/web/favicon.png"
-    },
-    {
-      "src": "/version.json",
-      "dest": "/build/web/version.json"
-    },
-    {
-      "src": "/assets/(.*)",
-      "dest": "/build/web/assets/$1"
-    },
-    {
-      "src": "/icons/(.*)",
-      "dest": "/build/web/icons/$1"
+      "handle": "filesystem"
     },
     {
       "src": "/(.*)",
-      "dest": "/build/web/index.html"
+      "dest": "/index.html"
     }
   ]
 }

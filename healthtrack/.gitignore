@@ -31,8 +31,29 @@ yarn-error.log*
 .npm
 
 # ─── Build outputs ────────────────────────────────────────────────────────────
-/build/
-**/build/
+# Allow build/web for Vercel static deployment — Flutter web must be pre-built
+/build/[^w]*
+/build/w[^e]*
+/build/we[^b]*
+build/app/
+build/.cxx/
+build/firebase_core/
+build/firebase_messaging/
+build/flutter_local_notifications/
+build/flutter_plugin_android_lifecycle/
+build/flutter_timezone/
+build/image_picker_android/
+build/native_assets/
+build/network_info_plus/
+build/path_provider_android/
+build/printing/
+build/reports/
+build/shared_preferences_android/
+build/3a99825705ea5132e65ecf51c322b5aa/
+build/c6d7d221ac7baa3f988416538c2ed756/
+build/*.dill
+build/*.cache
+build/*.txt
 dist/
 .dart_tool/
 

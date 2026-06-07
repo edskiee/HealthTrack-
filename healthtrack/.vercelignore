@@ -1,30 +1,31 @@
-# Explicitly ignore non-web source directories
-assets/
-node_modules/
-.dart_tool/
+# ── Ignore Flutter platform source directories ────────────────────────────────
 android/
 android_backup/
 ios/
 macos/
 windows/
 linux/
+
+# ── Ignore Flutter source & Dart tool artifacts ──────────────────────────────
 lib/
-backend_nodejs/
-database/
+assets/
 web/
+.dart_tool/
 .idea/
 .kiro/
 .qoder/
 .vscode/
 
-# Ignore all non-web build artifacts explicitly
+# ── Ignore Node/backend ───────────────────────────────────────────────────────
+backend_nodejs/
+node_modules/
+database/
+
+# ── Ignore non-web build artifacts ───────────────────────────────────────────
 build/app/
-build/3a99825705ea5132e65ecf51c322b5aa/
-build/c6d7d221ac7baa3f988416538c2ed756/
 build/.cxx/
 build/firebase_core/
 build/firebase_messaging/
-build/flutter_assets/
 build/flutter_local_notifications/
 build/flutter_plugin_android_lifecycle/
 build/flutter_timezone/
@@ -35,27 +36,29 @@ build/path_provider_android/
 build/printing/
 build/reports/
 build/shared_preferences_android/
+build/3a99825705ea5132e65ecf51c322b5aa/
+build/c6d7d221ac7baa3f988416538c2ed756/
 build/*.dill
 build/*.cache
-build/*.txt
 
-# Ignore canvaskit and wasm inside build/web to reduce upload size
+# ── Ignore large canvaskit/wasm inside build/web (optional, reduces upload) ──
 build/web/canvaskit/
 build/web/**/*.wasm
-**/*.wasm
 
-# Ignore files at root level ONLY (do not affect build/web/)
-/*.js
-/*.dart
-/*.sql
-/*.yaml
-/*.lock
-/*.bat
-/*.ps1
-/*.md
-/*.iml
-/*.html
-/*.local
+# ── Ignore root-level scripts, test files, docs ──────────────────────────────
+*.js
+*.dart
+*.sql
+*.yaml
+*.lock
+*.md
+*.iml
+*.html
+*.local
+*.bat
+*.ps1
+*.py
+*.txt
 
-# Ensure vercel.json is not ignored
+# ── Always keep vercel.json ───────────────────────────────────────────────────
 !vercel.json

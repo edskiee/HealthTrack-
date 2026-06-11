@@ -1,44 +1,18 @@
 {
   "version": 2,
-  "buildCommand": null,
-  "installCommand": null,
-  "outputDirectory": "build/web",
-  "builds": [
-    {
-      "src": "build/web/**",
-      "use": "@vercel/static"
-    }
+  "rewrites": [
+    { "source": "/flutter_service_worker.js", "destination": "/flutter_service_worker.js" },
+    { "source": "/flutter_bootstrap.js", "destination": "/flutter_bootstrap.js" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ],
-  "routes": [
+  "headers": [
     {
-      "src": "/flutter_service_worker.js",
-      "headers": { "cache-control": "no-cache, no-store, must-revalidate" },
-      "dest": "/build/web/flutter_service_worker.js"
+      "source": "/flutter_service_worker.js",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
     },
     {
-      "src": "/flutter_bootstrap.js",
-      "headers": { "cache-control": "no-cache, no-store, must-revalidate" },
-      "dest": "/build/web/flutter_bootstrap.js"
-    },
-    {
-      "src": "/canvaskit/(.*)",
-      "dest": "/build/web/canvaskit/$1"
-    },
-    {
-      "src": "/assets/(.*)",
-      "dest": "/build/web/assets/$1"
-    },
-    {
-      "src": "/icons/(.*)",
-      "dest": "/build/web/icons/$1"
-    },
-    {
-      "src": "/(.*\\.(js|css|png|jpg|wasm|json|ico|frag|otf|ttf|woff|woff2|symbols))",
-      "dest": "/build/web/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/build/web/index.html"
+      "source": "/flutter_bootstrap.js",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
     }
   ]
 }

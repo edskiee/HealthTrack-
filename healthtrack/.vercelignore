@@ -1,49 +1,50 @@
-# ── Flutter platform source (not needed for web deployment) ──────────────────
+# Vercel only needs build/web/ — exclude everything else to keep upload small
+
+# Flutter source code (not needed — we deploy pre-built)
+lib/
+web/
+test/
+assets/
+
+# Platform-specific native code
 android/
-android_backup/
 ios/
 macos/
 windows/
 linux/
+android_backup/
 
-# ── Flutter/Dart source & tooling ────────────────────────────────────────────
-lib/
-assets/
-web/
-.dart_tool/
-.idea/
-.kiro/
-.qoder/
-.vscode/
-
-# ── Node / backend ────────────────────────────────────────────────────────────
+# Backend (separate deployment)
 backend_nodejs/
-node_modules/
 database/
 
-# ── Non-web build artifacts (keep build/web fully intact) ────────────────────
+# Dependencies & tooling
+node_modules/
+.dart_tool/
+.pub-cache/
+.pub/
+
+# IDE
+.idea/
+.vscode/
+.kiro/
+.qoder/
+
+# All build artifacts EXCEPT build/web/
 build/app/
 build/.cxx/
+build/native_assets/
 build/firebase_core/
 build/firebase_messaging/
 build/flutter_local_notifications/
 build/flutter_plugin_android_lifecycle/
 build/flutter_timezone/
 build/image_picker_android/
-build/native_assets/
 build/network_info_plus/
 build/path_provider_android/
 build/printing/
 build/reports/
 build/shared_preferences_android/
-build/3a99825705ea5132e65ecf51c322b5aa/
-build/c6d7d221ac7baa3f988416538c2ed756/
-build/*.dill
-build/*.cache
 
-# NOTE: build/web/ and ALL its contents (including canvaskit/) must be uploaded.
-# canvaskit .wasm and .js files are required for Flutter CanvasKit renderer.
-# Do NOT add build/web/ or build/web/canvaskit/ here.
-
-# Vercel generated build output — never deploy this, it overrides vercel.json
+# Vercel generated files
 .vercel/output/

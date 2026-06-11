@@ -324,61 +324,103 @@ exports.createSlot = async (req, res) => {
       });
     }
     
-    // If generate_slots is true, use the safe stored procedure
+    // If generate_slots is true, generate multiple slots using inline logic (no stored procedure needed)
     if (generate_slots) {
       connection = await db.getConnection();
       await connection.beginTransaction();
       
       try {
-        // Call the safe slot generation procedure
-        const [results] = await connection.execute(
-          'CALL GenerateSlotsSafely(?, ?, ?, ?, ?, ?, @generated_count, @error_message)',
-          [serviceId, appointment_date, start_time, end_time, duration, maxPatients]
+        const MAX_DAILY_SLOTS = 100;
+
+        // Check existing slot count for this service/date
+        const [existingCountRows] = await connection.execute(
+          'SELECT COUNT(*) as count FROM appointment_slots WHERE service_id = ? AND appointment_date = ?',
+          [serviceId, appointment_date]
         );
-        
-        // Get output parameters
-        const [output] = await connection.execute(
-          'SELECT @generated_count as generated_count, @error_message as error_message'
-        );
-        
-        const generatedCount = output[0].generated_count;
-        const errorMessage = output[0].error_message;
-        
-        if (errorMessage) {
+        const existingCount = existingCountRows[0].count;
+
+        // Calculate how many slots will be generated
+        const totalMinutes =
+          (endHours * 60 + endMinutes) - (startHours * 60 + startMinutes);
+        const totalSlots = Math.floor(totalMinutes / duration);
+
+        if (totalSlots <= 0) {
           await connection.rollback();
           return res.status(400).json({
             success: false,
-            message: errorMessage,
+            message: 'Time range is too short to generate any slots with the given duration',
           });
         }
-        
+
+        if (existingCount + totalSlots > MAX_DAILY_SLOTS) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Cannot generate slots: would exceed daily limit of ${MAX_DAILY_SLOTS} slots`,
+          });
+        }
+
+        // Generate slots one by one, skipping overlaps
+        let generatedCount = 0;
+        let currentMinutes = startHours * 60 + startMinutes;
+        const endTotalMinutes = endHours * 60 + endMinutes;
+
+        while (currentMinutes < endTotalMinutes) {
+          const slotEndMinutes = currentMinutes + duration;
+          if (slotEndMinutes > endTotalMinutes) break;
+
+          // Format times as HH:MM:SS
+          const slotStart = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}:00`;
+          const slotEnd   = `${String(Math.floor(slotEndMinutes / 60)).padStart(2, '0')}:${String(slotEndMinutes % 60).padStart(2, '0')}:00`;
+
+          // Check for overlap
+          const [overlapRows] = await connection.execute(
+            `SELECT COUNT(*) as cnt FROM appointment_slots
+             WHERE service_id = ? AND appointment_date = ?
+               AND (start_time < ? AND end_time > ?)`,
+            [serviceId, appointment_date, slotEnd, slotStart]
+          );
+
+          if (overlapRows[0].cnt === 0) {
+            await connection.execute(
+              `INSERT INTO appointment_slots
+               (service_id, appointment_date, start_time, end_time, slot_duration_minutes, max_patients, is_available, booked_patients, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, TRUE, 0, NOW(), NOW())`,
+              [serviceId, appointment_date, slotStart, slotEnd, duration, maxPatients]
+            );
+            generatedCount++;
+          }
+
+          currentMinutes = slotEndMinutes;
+        }
+
         await connection.commit();
-        
-        // Get the created slots for notification
+
+        // Fetch the newly created slots for the response
         const [createdSlots] = await db.execute(
-          'SELECT * FROM appointment_slots WHERE service_id = ? AND appointment_date = ? AND created_at >= NOW() - INTERVAL 1 SECOND ORDER BY start_time',
+          'SELECT * FROM appointment_slots WHERE service_id = ? AND appointment_date = ? ORDER BY start_time',
           [serviceId, appointment_date]
         );
-        
+
         // Emit real-time update notification
         if (req.app.locals.io) {
-          req.app.locals.io.emit('slotsUpdated', { 
-            action: 'bulk_created', 
+          req.app.locals.io.emit('slotsUpdated', {
+            action: 'bulk_created',
             slotIds: createdSlots.map(slot => slot.id),
             serviceId: serviceId,
             date: appointment_date,
-            count: generatedCount
+            count: generatedCount,
           });
         }
-        
+
         return res.status(201).json({
           success: true,
-          message: `${generatedCount} appointment slots generated successfully`,
+          message: `${generatedCount} appointment slot(s) generated successfully`,
           data: createdSlots,
         });
-      } catch (procError) {
+      } catch (genError) {
         await connection.rollback();
-        throw procError;
+        throw genError;
       }
     } else {
       // Create a single slot with enhanced validation

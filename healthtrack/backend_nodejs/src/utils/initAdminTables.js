@@ -306,12 +306,38 @@ async function ensureServicesConfig(conn) {
     console.warn("⚠️  Dedup step failed (non-fatal):", dedupErr.message);
   }
 
-  // ── Disable (don't delete) any extra services that are NOT Immunization/Maternal Care ──
+  // ── Add UNIQUE constraint on service_name if it doesn't exist yet ─────────
+  try {
+    const [indexes] = await conn.execute(`
+      SELECT INDEX_NAME FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'services_config'
+        AND INDEX_NAME = 'uq_service_name'
+    `);
+    if (indexes.length === 0) {
+      // Also try to drop the old non-unique index on service_name if present
+      try {
+        await conn.execute(`ALTER TABLE services_config DROP INDEX service_name`);
+      } catch (_) { /* ignore if not present */ }
+      await conn.execute(`ALTER TABLE services_config ADD UNIQUE INDEX uq_service_name (service_name)`);
+      console.log("  ✔ Added UNIQUE constraint on services_config.service_name");
+    }
+  } catch (idxErr) {
+    console.warn("⚠️  Could not add UNIQUE constraint (non-fatal):", idxErr.message);
+  }
+
+  // ── Keep only Immunization and Maternal Care active ───────────────────────
   try {
     await conn.execute(`
       UPDATE services_config
       SET is_active = 0, is_enabled = 0
       WHERE service_name NOT IN ('Immunization', 'Maternal Care')
+    `);
+    // Make sure the two required ones are active
+    await conn.execute(`
+      UPDATE services_config
+      SET is_active = 1, is_enabled = 1
+      WHERE service_name IN ('Immunization', 'Maternal Care')
     `);
   } catch (e) {
     console.warn("⚠️  Could not disable extra services:", e.message);

@@ -7,7 +7,7 @@ exports.cleanupDuplicates = async (req, res) => {
     connection = await db.getConnection();
     await connection.beginTransaction();
 
-    // Find duplicates
+    // Step 1: Find and delete duplicates (keep lowest id per service_name)
     const [dupes] = await connection.execute(`
       SELECT service_name, MIN(id) AS keep_id, COUNT(*) AS total
       FROM services_config
@@ -24,14 +24,14 @@ exports.cleanupDuplicates = async (req, res) => {
       deletedTotal += del.affectedRows;
     }
 
-    // Disable (not delete) any services other than the two required ones
+    // Step 2: Disable any services other than the two required ones
     const [disabled] = await connection.execute(`
       UPDATE services_config
       SET is_active = 0, is_enabled = 0
       WHERE service_name NOT IN ('Immunization', 'Maternal Care')
     `);
 
-    // Make sure the two required services are active
+    // Step 3: Make sure the two required services are active
     await connection.execute(`
       UPDATE services_config
       SET is_active = 1, is_enabled = 1
@@ -39,6 +39,20 @@ exports.cleanupDuplicates = async (req, res) => {
     `);
 
     await connection.commit();
+
+    // Step 4: Add UNIQUE constraint if missing (prevents future duplicates)
+    try {
+      const [indexes] = await db.execute(`
+        SELECT INDEX_NAME FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'services_config'
+          AND INDEX_NAME = 'uq_service_name'
+      `);
+      if (indexes.length === 0) {
+        try { await db.execute(`ALTER TABLE services_config DROP INDEX service_name`); } catch (_) {}
+        await db.execute(`ALTER TABLE services_config ADD UNIQUE INDEX uq_service_name (service_name)`);
+      }
+    } catch (_) { /* non-fatal */ }
 
     const [remaining] = await db.execute(
       'SELECT id, service_name, service_type, is_active, is_enabled FROM services_config ORDER BY id'

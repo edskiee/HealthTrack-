@@ -102,5 +102,7 @@ coverage/
 *.py[cod]
 .buildlog/
 .build/
-.vercel
+# Vercel — keep project binding, ignore generated build output and local env
+.vercel/output/
+.vercel/.env.*
 .env*

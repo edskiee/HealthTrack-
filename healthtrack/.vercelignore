@@ -44,3 +44,6 @@ build/*.cache
 # NOTE: build/web/ and ALL its contents (including canvaskit/) must be uploaded.
 # canvaskit .wasm and .js files are required for Flutter CanvasKit renderer.
 # Do NOT add build/web/ or build/web/canvaskit/ here.
+
+# Vercel generated build output — never deploy this, it overrides vercel.json
+.vercel/output/

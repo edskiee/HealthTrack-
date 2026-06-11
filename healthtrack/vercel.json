@@ -1,11 +1,18 @@
 {
   "version": 2,
+  "buildCommand": "",
+  "installCommand": "",
   "outputDirectory": "build/web",
   "routes": [
     {
       "src": "/flutter_service_worker.js",
-      "headers": { "cache-control": "no-cache" },
+      "headers": { "cache-control": "no-cache, no-store, must-revalidate" },
       "dest": "/flutter_service_worker.js"
+    },
+    {
+      "src": "/flutter_bootstrap.js",
+      "headers": { "cache-control": "no-cache, no-store, must-revalidate" },
+      "dest": "/flutter_bootstrap.js"
     },
     {
       "handle": "filesystem"

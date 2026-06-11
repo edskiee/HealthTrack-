@@ -21,7 +21,7 @@ backend_nodejs/
 node_modules/
 database/
 
-# ── Non-web build artifacts (keep build/web intact) ──────────────────────────
+# ── Non-web build artifacts (keep build/web fully intact) ────────────────────
 build/app/
 build/.cxx/
 build/firebase_core/
@@ -41,5 +41,6 @@ build/c6d7d221ac7baa3f988416538c2ed756/
 build/*.dill
 build/*.cache
 
-# ── Reduce upload size: skip canvaskit binaries ──────────────────────────────
-build/web/canvaskit/
+# NOTE: build/web/ and ALL its contents (including canvaskit/) must be uploaded.
+# canvaskit .wasm and .js files are required for Flutter CanvasKit renderer.
+# Do NOT add build/web/ or build/web/canvaskit/ here.

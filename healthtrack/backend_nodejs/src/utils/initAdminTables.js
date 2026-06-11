@@ -278,6 +278,45 @@ async function ensureServicesConfig(conn) {
     );
   }
 
+  // ── Deduplicate services_config — keep lowest id per service_name ──────────
+  // This fixes any duplicates that were inserted before the UNIQUE constraint
+  // was enforced, or before this dedup step existed.
+  console.log("🧹 Deduplicating services_config...");
+  try {
+    // Find all service names that have more than one row
+    const [dupes] = await conn.execute(`
+      SELECT service_name, MIN(id) AS keep_id
+      FROM services_config
+      GROUP BY service_name
+      HAVING COUNT(*) > 1
+    `);
+
+    for (const { service_name, keep_id } of dupes) {
+      await conn.execute(
+        `DELETE FROM services_config WHERE service_name = ? AND id != ?`,
+        [service_name, keep_id]
+      );
+      console.log(`  ✔ Kept id=${keep_id} for "${service_name}", removed duplicates`);
+    }
+
+    if (dupes.length === 0) {
+      console.log("  ✔ No duplicates found");
+    }
+  } catch (dedupErr) {
+    console.warn("⚠️  Dedup step failed (non-fatal):", dedupErr.message);
+  }
+
+  // ── Disable (don't delete) any extra services that are NOT Immunization/Maternal Care ──
+  try {
+    await conn.execute(`
+      UPDATE services_config
+      SET is_active = 0, is_enabled = 0
+      WHERE service_name NOT IN ('Immunization', 'Maternal Care')
+    `);
+  } catch (e) {
+    console.warn("⚠️  Could not disable extra services:", e.message);
+  }
+
   // Seed the two required services using INSERT IGNORE (idempotent)
   await logAndExecSchema(
     conn,

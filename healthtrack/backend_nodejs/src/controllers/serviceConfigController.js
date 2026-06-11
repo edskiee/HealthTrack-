@@ -1,5 +1,63 @@
 const db = require('../config/db');
 
+// Cleanup duplicate services — keeps lowest id for each name, disables non-standard ones (admin only)
+exports.cleanupDuplicates = async (req, res) => {
+  let connection;
+  try {
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // Find duplicates
+    const [dupes] = await connection.execute(`
+      SELECT service_name, MIN(id) AS keep_id, COUNT(*) AS total
+      FROM services_config
+      GROUP BY service_name
+      HAVING COUNT(*) > 1
+    `);
+
+    let deletedTotal = 0;
+    for (const { service_name, keep_id } of dupes) {
+      const [del] = await connection.execute(
+        `DELETE FROM services_config WHERE service_name = ? AND id != ?`,
+        [service_name, keep_id]
+      );
+      deletedTotal += del.affectedRows;
+    }
+
+    // Disable (not delete) any services other than the two required ones
+    const [disabled] = await connection.execute(`
+      UPDATE services_config
+      SET is_active = 0, is_enabled = 0
+      WHERE service_name NOT IN ('Immunization', 'Maternal Care')
+    `);
+
+    // Make sure the two required services are active
+    await connection.execute(`
+      UPDATE services_config
+      SET is_active = 1, is_enabled = 1
+      WHERE service_name IN ('Immunization', 'Maternal Care')
+    `);
+
+    await connection.commit();
+
+    const [remaining] = await db.execute(
+      'SELECT id, service_name, service_type, is_active, is_enabled FROM services_config ORDER BY id'
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Cleanup done: ${deletedTotal} duplicate row(s) deleted, ${disabled.affectedRows} extra service(s) disabled`,
+      data: remaining,
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('❌ cleanupDuplicates error:', err);
+    return res.status(500).json({ success: false, message: 'Cleanup failed', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
 // Get all active services
 exports.getAllServices = async (req, res) => {
   try {

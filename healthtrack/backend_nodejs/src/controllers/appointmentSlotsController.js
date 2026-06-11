@@ -1,413 +1,306 @@
 const db = require('../config/db');
 
-// Get all appointment slots (admin)
+// ─── Column mapping (real DB schema):
+//   slot_date        → the date of the slot        (was: appointment_date)
+//   slot_time        → the start time of the slot  (was: start_time)
+//   capacity         → max patients per slot        (was: max_patients)
+//   booked_count     → how many booked             (was: booked_patients)
+//   is_available     → 0/1 availability flag
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Helper: normalise a raw DB row to a consistent API shape
+function normaliseSlot(row) {
+  if (!row) return row;
+  return {
+    id:                    row.id,
+    service_id:            row.service_id,
+    service_name:          row.service_name,          // from JOIN (may be undefined)
+    // expose under both names so the Flutter app keeps working regardless of which it reads
+    appointment_date:      row.slot_date   ?? row.appointment_date,
+    slot_date:             row.slot_date   ?? row.appointment_date,
+    start_time:            row.slot_time   ?? row.start_time,
+    slot_time:             row.slot_time   ?? row.start_time,
+    end_time:              row.end_time    ?? null,    // not stored – kept for compatibility
+    slot_duration_minutes: row.slot_duration_minutes ?? null,
+    max_patients:          row.capacity    ?? row.max_patients,
+    capacity:              row.capacity    ?? row.max_patients,
+    booked_patients:       row.booked_count ?? row.booked_patients ?? 0,
+    booked_count:          row.booked_count ?? row.booked_patients ?? 0,
+    is_available:          row.is_available,
+    created_by:            row.created_by  ?? null,
+    created_at:            row.created_at,
+    updated_at:            row.updated_at,
+  };
+}
+
+// ─── Get all appointment slots (admin) ───────────────────────────────────────
 exports.getAllSlots = async (req, res) => {
   try {
     const { serviceId, date } = req.query;
-    
+
     let sql = `
-      SELECT 
+      SELECT
         s.id,
         s.service_id,
         sc.service_name,
-        s.appointment_date,
-        s.start_time,
-        s.end_time,
-        s.slot_duration_minutes,
-        s.max_patients,
-        s.booked_patients,
+        s.slot_date,
+        s.slot_time,
+        s.capacity,
+        s.booked_count,
         s.is_available,
+        s.created_by,
         s.created_at,
         s.updated_at
       FROM appointment_slots s
       LEFT JOIN services_config sc ON s.service_id = sc.id
       WHERE 1=1
     `;
-    
+
     const params = [];
-    
+
     if (serviceId) {
       sql += ' AND s.service_id = ?';
       params.push(serviceId);
     }
-    
+
     if (date) {
-      sql += ' AND s.appointment_date = ?';
+      sql += ' AND s.slot_date = ?';
       params.push(date);
     }
-    
-    sql += ' ORDER BY s.appointment_date ASC, s.start_time ASC';
-    
+
+    sql += ' ORDER BY s.slot_date ASC, s.slot_time ASC';
+
     const [results] = await db.execute(sql, params);
-    
+
     res.status(200).json({
       success: true,
-      data: results,
+      data: results.map(normaliseSlot),
     });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch appointment slots",
-    });
+    console.error('❌ getAllSlots error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch appointment slots' });
   }
 };
 
-// Get available appointment slots for users
+// ─── Get available slots for users ───────────────────────────────────────────
 exports.getAvailableSlots = async (req, res) => {
   try {
     const { serviceId, date } = req.query;
-    
+
     if (!serviceId || !date) {
-      return res.status(400).json({
-        success: false,
-        message: "Service ID and date are required",
-      });
+      return res.status(400).json({ success: false, message: 'Service ID and date are required' });
     }
-    
+
     const sql = `
-      SELECT 
+      SELECT
         s.id,
         s.service_id,
-        s.appointment_date,
-        s.start_time,
-        s.end_time,
-        s.slot_duration_minutes,
-        s.max_patients,
-        s.booked_patients,
+        s.slot_date,
+        s.slot_time,
+        s.capacity,
+        s.booked_count,
         s.is_available,
-        (s.max_patients - s.booked_patients) as available_spots
+        (s.capacity - s.booked_count) AS available_spots
       FROM appointment_slots s
-      WHERE s.service_id = ? 
-        AND s.appointment_date = ? 
-        AND s.is_available = TRUE
-        AND s.booked_patients < s.max_patients
-      ORDER BY s.start_time ASC
+      WHERE s.service_id = ?
+        AND s.slot_date = ?
+        AND s.is_available = 1
+        AND s.booked_count < s.capacity
+      ORDER BY s.slot_time ASC
     `;
-    
+
     const [results] = await db.execute(sql, [serviceId, date]);
-    
-    res.status(200).json({
-      success: true,
-      data: results,
-    });
+
+    res.status(200).json({ success: true, data: results.map(normaliseSlot) });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch available appointment slots",
-    });
+    console.error('❌ getAvailableSlots error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch available slots' });
   }
 };
 
-// Get user-viewable slots (shows all slots including booked ones for calendar display)
-// This returns all slots but properly marks their availability status
+// ─── Get user-viewable slots (all slots with status) ─────────────────────────
 exports.getUserViewableSlots = async (req, res) => {
   try {
     const { serviceId, date } = req.query;
-    
+
     let sql = `
-      SELECT 
+      SELECT
         s.id,
         s.service_id,
-        s.appointment_date,
-        s.start_time,
-        s.end_time,
-        s.slot_duration_minutes,
-        s.max_patients,
-        s.booked_patients,
+        s.slot_date,
+        s.slot_time,
+        s.capacity,
+        s.booked_count,
         s.is_available,
-        CASE 
-          WHEN s.is_available = TRUE AND s.booked_patients < s.max_patients THEN TRUE
-          ELSE FALSE
-        END as is_user_available,
-        (s.max_patients - s.booked_patients) as available_spots
+        CASE
+          WHEN s.is_available = 1 AND s.booked_count < s.capacity THEN 1
+          ELSE 0
+        END AS is_user_available,
+        (s.capacity - s.booked_count) AS available_spots
       FROM appointment_slots s
       WHERE 1=1
     `;
-    
+
     const params = [];
-    
+
     if (serviceId) {
       sql += ' AND s.service_id = ?';
       params.push(serviceId);
     }
-    
+
     if (date) {
-      sql += ' AND s.appointment_date = ?';
+      sql += ' AND s.slot_date = ?';
       params.push(date);
     }
-    
-    sql += ' ORDER BY s.appointment_date ASC, s.start_time ASC';
-    
+
+    sql += ' ORDER BY s.slot_date ASC, s.slot_time ASC';
+
     const [results] = await db.execute(sql, params);
-    
-    res.status(200).json({
-      success: true,
-      data: results,
-    });
+
+    res.status(200).json({ success: true, data: results.map(normaliseSlot) });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch user-viewable appointment slots",
-    });
+    console.error('❌ getUserViewableSlots error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch slots' });
   }
 };
 
-// Create new appointment slot (admin) with enhanced validation and overflow prevention
+// ─── Create / Generate appointment slots (admin) ──────────────────────────────
 exports.createSlot = async (req, res) => {
   let connection;
   try {
     const {
       service_id,
-      appointment_date,
-      start_time,
-      end_time,
+      appointment_date,   // Flutter sends this name
+      start_time,         // Flutter sends this name
+      end_time,           // used only for bulk generation
       slot_duration_minutes = 30,
       max_patients = 1,
-      generate_slots = false
+      generate_slots = false,
     } = req.body;
-    
-    // Enhanced validation for required parameters
-    if (!service_id) {
-      return res.status(400).json({
-        success: false,
-        message: "Service ID is required",
-      });
-    }
-    
-    if (!appointment_date) {
-      return res.status(400).json({
-        success: false,
-        message: "Appointment date is required",
-      });
-    }
-    
-    if (!start_time) {
-      return res.status(400).json({
-        success: false,
-        message: "Start time is required",
-      });
-    }
-    
-    if (!end_time) {
-      return res.status(400).json({
-        success: false,
-        message: "End time is required",
-      });
-    }
-    
-    // Validate service ID format
-    const serviceId = parseInt(service_id);
-    if (isNaN(serviceId) || serviceId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid service ID. Must be a positive integer",
-      });
-    }
-    
-    // Validate date format
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(appointment_date)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid date format. Expected YYYY-MM-DD",
-      });
-    }
-    
-    // Validate time formats
-    const timeRegex = /^\d{2}:\d{2}:\d{2}$/;
-    if (!timeRegex.test(start_time)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid start time format. Expected HH:MM:SS",
-      });
-    }
-    
-    if (!timeRegex.test(end_time)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid end time format. Expected HH:MM:SS",
-      });
-    }
-    
-    // Validate slot duration
-    const duration = parseInt(slot_duration_minutes);
-    if (isNaN(duration) || duration <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Slot duration must be a positive integer (minutes)",
-      });
-    }
-    
-    if (duration > 480) {
-      return res.status(400).json({
-        success: false,
-        message: "Slot duration cannot exceed 8 hours (480 minutes)",
-      });
-    }
-    
-    // Validate max patients
-    const maxPatients = parseInt(max_patients);
-    if (isNaN(maxPatients) || maxPatients <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Max patients must be a positive integer",
-      });
-    }
-    
-    if (maxPatients > 20) {
-      return res.status(400).json({
-        success: false,
-        message: "Max patients cannot exceed 20 per slot",
-      });
-    }
-    
-    // Validate that the service exists
-    const serviceCheckSql = "SELECT id FROM services_config WHERE id = ? AND is_active = 1 AND is_enabled = 1";
-    const [serviceResults] = await db.execute(serviceCheckSql, [serviceId]);
-    
-    if (serviceResults.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid service ID: ${serviceId}. Service not found or not enabled.`,
-      });
-    }
-    
-    // Validate date (must be today or future) - handle as pure date string to avoid timezone issues
+
+    // ── Basic validation ──────────────────────────────────────────────────────
+    if (!service_id)       return res.status(400).json({ success: false, message: 'Service ID is required' });
+    if (!appointment_date) return res.status(400).json({ success: false, message: 'Appointment date is required' });
+    if (!start_time)       return res.status(400).json({ success: false, message: 'Start time is required' });
+
+    const serviceId  = parseInt(service_id);
+    const capacity   = parseInt(max_patients);
+    const duration   = parseInt(slot_duration_minutes);
+
+    if (isNaN(serviceId) || serviceId <= 0)
+      return res.status(400).json({ success: false, message: 'Invalid service ID' });
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(appointment_date))
+      return res.status(400).json({ success: false, message: 'Invalid date format. Expected YYYY-MM-DD' });
+
+    if (!/^\d{2}:\d{2}(:\d{2})?$/.test(start_time))
+      return res.status(400).json({ success: false, message: 'Invalid start time format. Expected HH:MM or HH:MM:SS' });
+
+    if (isNaN(duration) || duration <= 0 || duration > 480)
+      return res.status(400).json({ success: false, message: 'Slot duration must be 1–480 minutes' });
+
+    if (isNaN(capacity) || capacity <= 0 || capacity > 100)
+      return res.status(400).json({ success: false, message: 'Max patients must be 1–100' });
+
+    // ── Service must exist and be enabled ────────────────────────────────────
+    const [svcRows] = await db.execute(
+      'SELECT id FROM services_config WHERE id = ? AND is_active = 1 AND is_enabled = 1',
+      [serviceId]
+    );
+    if (svcRows.length === 0)
+      return res.status(400).json({ success: false, message: `Service ${serviceId} not found or not enabled` });
+
+    // ── Date must be today or future ─────────────────────────────────────────
     const today = new Date();
-    const year = today.getFullYear();
-    const month = (today.getMonth() + 1).toString().padStart(2, '0');
-    const day = today.getDate().toString().padStart(2, '0');
-    const todayStr = `${year}-${month}-${day}`;
-    
-    if (appointment_date < todayStr) {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot create slots for past dates",
-      });
-    }
-    
-    // Validate time range
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    if (appointment_date < todayStr)
+      return res.status(400).json({ success: false, message: 'Cannot create slots for past dates' });
+
+    // ── Parse start time ─────────────────────────────────────────────────────
     const [startHours, startMinutes] = start_time.split(':').map(Number);
-    const [endHours, endMinutes] = end_time.split(':').map(Number);
-    
-    const startTimeObj = new Date(0);
-    startTimeObj.setHours(startHours, startMinutes, 0, 0);
-    
-    const endTimeObj = new Date(0);
-    endTimeObj.setHours(endHours, endMinutes, 0, 0);
-    
-    if (startTimeObj >= endTimeObj) {
-      return res.status(400).json({
-        success: false,
-        message: "End time must be later than start time",
-      });
-    }
-    
-    // Validate business hours (optional - can be configured)
     const startTotalMinutes = startHours * 60 + startMinutes;
-    const endTotalMinutes = endHours * 60 + endMinutes;
-    
-    if (startTotalMinutes < 8 * 60) { // 8:00 AM
-      return res.status(400).json({
-        success: false,
-        message: "Start time cannot be earlier than 8:00 AM",
-      });
-    }
-    
-    if (endTotalMinutes > 18 * 60) { // 6:00 PM
-      return res.status(400).json({
-        success: false,
-        message: "End time cannot be later than 6:00 PM",
-      });
-    }
-    
-    // If generate_slots is true, generate multiple slots using inline logic (no stored procedure needed)
+
+    if (startTotalMinutes < 8 * 60)
+      return res.status(400).json({ success: false, message: 'Start time cannot be earlier than 8:00 AM' });
+
+    // ── BULK GENERATION (generate_slots = true) ───────────────────────────────
     if (generate_slots) {
+      if (!end_time)
+        return res.status(400).json({ success: false, message: 'End time is required when generating slots' });
+
+      if (!/^\d{2}:\d{2}(:\d{2})?$/.test(end_time))
+        return res.status(400).json({ success: false, message: 'Invalid end time format. Expected HH:MM or HH:MM:SS' });
+
+      const [endHours, endMinutes] = end_time.split(':').map(Number);
+      const endTotalMinutes = endHours * 60 + endMinutes;
+
+      if (startTotalMinutes >= endTotalMinutes)
+        return res.status(400).json({ success: false, message: 'End time must be later than start time' });
+
+      if (endTotalMinutes > 18 * 60)
+        return res.status(400).json({ success: false, message: 'End time cannot be later than 6:00 PM' });
+
+      const totalSlots = Math.floor((endTotalMinutes - startTotalMinutes) / duration);
+      if (totalSlots <= 0)
+        return res.status(400).json({ success: false, message: 'Time range is too short to generate any slots with the given duration' });
+
       connection = await db.getConnection();
       await connection.beginTransaction();
-      
-      try {
-        const MAX_DAILY_SLOTS = 100;
 
-        // Check existing slot count for this service/date
-        const [existingCountRows] = await connection.execute(
-          'SELECT COUNT(*) as count FROM appointment_slots WHERE service_id = ? AND appointment_date = ?',
+      try {
+        // Check existing slot count for daily limit
+        const [existingRows] = await connection.execute(
+          'SELECT COUNT(*) AS count FROM appointment_slots WHERE service_id = ? AND slot_date = ?',
           [serviceId, appointment_date]
         );
-        const existingCount = existingCountRows[0].count;
+        const existingCount = existingRows[0].count;
 
-        // Calculate how many slots will be generated
-        const totalMinutes =
-          (endHours * 60 + endMinutes) - (startHours * 60 + startMinutes);
-        const totalSlots = Math.floor(totalMinutes / duration);
-
-        if (totalSlots <= 0) {
-          await connection.rollback();
+        if (existingCount + totalSlots > 100)
           return res.status(400).json({
             success: false,
-            message: 'Time range is too short to generate any slots with the given duration',
+            message: `Cannot generate: would exceed the daily limit of 100 slots (${existingCount} already exist)`,
           });
-        }
 
-        if (existingCount + totalSlots > MAX_DAILY_SLOTS) {
-          await connection.rollback();
-          return res.status(400).json({
-            success: false,
-            message: `Cannot generate slots: would exceed daily limit of ${MAX_DAILY_SLOTS} slots`,
-          });
-        }
-
-        // Generate slots one by one, skipping overlaps
         let generatedCount = 0;
-        let currentMinutes = startHours * 60 + startMinutes;
-        const endTotalMinutes = endHours * 60 + endMinutes;
+        let currentMin = startTotalMinutes;
 
-        while (currentMinutes < endTotalMinutes) {
-          const slotEndMinutes = currentMinutes + duration;
-          if (slotEndMinutes > endTotalMinutes) break;
+        while (currentMin < endTotalMinutes) {
+          const slotEndMin = currentMin + duration;
+          if (slotEndMin > endTotalMinutes) break;
 
-          // Format times as HH:MM:SS
-          const slotStart = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}:00`;
-          const slotEnd   = `${String(Math.floor(slotEndMinutes / 60)).padStart(2, '0')}:${String(slotEndMinutes % 60).padStart(2, '0')}:00`;
+          const slotTime = `${String(Math.floor(currentMin / 60)).padStart(2,'0')}:${String(currentMin % 60).padStart(2,'0')}:00`;
 
-          // Check for overlap
-          const [overlapRows] = await connection.execute(
-            `SELECT COUNT(*) as cnt FROM appointment_slots
-             WHERE service_id = ? AND appointment_date = ?
-               AND (start_time < ? AND end_time > ?)`,
-            [serviceId, appointment_date, slotEnd, slotStart]
+          // Skip if a slot at this exact time already exists for this service/date
+          const [dupRows] = await connection.execute(
+            'SELECT COUNT(*) AS cnt FROM appointment_slots WHERE service_id = ? AND slot_date = ? AND slot_time = ?',
+            [serviceId, appointment_date, slotTime]
           );
 
-          if (overlapRows[0].cnt === 0) {
+          if (dupRows[0].cnt === 0) {
             await connection.execute(
-              `INSERT INTO appointment_slots
-               (service_id, appointment_date, start_time, end_time, slot_duration_minutes, max_patients, is_available, booked_patients, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, TRUE, 0, NOW(), NOW())`,
-              [serviceId, appointment_date, slotStart, slotEnd, duration, maxPatients]
+              `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 0, 1, NOW(), NOW())`,
+              [serviceId, appointment_date, slotTime, capacity]
             );
             generatedCount++;
           }
 
-          currentMinutes = slotEndMinutes;
+          currentMin = slotEndMin;
         }
 
         await connection.commit();
 
-        // Fetch the newly created slots for the response
+        // Return the freshly created slots
         const [createdSlots] = await db.execute(
-          'SELECT * FROM appointment_slots WHERE service_id = ? AND appointment_date = ? ORDER BY start_time',
+          'SELECT * FROM appointment_slots WHERE service_id = ? AND slot_date = ? ORDER BY slot_time',
           [serviceId, appointment_date]
         );
 
-        // Emit real-time update notification
         if (req.app.locals.io) {
           req.app.locals.io.emit('slotsUpdated', {
             action: 'bulk_created',
-            slotIds: createdSlots.map(slot => slot.id),
-            serviceId: serviceId,
+            slotIds: createdSlots.map(s => s.id),
+            serviceId,
             date: appointment_date,
             count: generatedCount,
           });
@@ -416,92 +309,63 @@ exports.createSlot = async (req, res) => {
         return res.status(201).json({
           success: true,
           message: `${generatedCount} appointment slot(s) generated successfully`,
-          data: createdSlots,
+          data: createdSlots.map(normaliseSlot),
         });
       } catch (genError) {
         await connection.rollback();
         throw genError;
       }
+
+    // ── SINGLE SLOT ───────────────────────────────────────────────────────────
     } else {
-      // Create a single slot with enhanced validation
+      const slotTime = `${String(startHours).padStart(2,'0')}:${String(startMinutes).padStart(2,'0')}:00`;
+
       connection = await db.getConnection();
       await connection.beginTransaction();
-      
+
       try {
-        // Check for overlapping slots
-        const [overlapCheck] = await connection.execute(
-          `SELECT id FROM appointment_slots 
-           WHERE service_id = ? 
-             AND appointment_date = ? 
-             AND (
-               (start_time < ? AND end_time > ?) OR
-               (start_time < ? AND end_time > ?) OR
-               (start_time >= ? AND end_time <= ?)
-             )`,
-          [serviceId, appointment_date, end_time, start_time, start_time, end_time, start_time, end_time]
+        // No duplicate at same service/date/time
+        const [dupRows] = await connection.execute(
+          'SELECT id FROM appointment_slots WHERE service_id = ? AND slot_date = ? AND slot_time = ?',
+          [serviceId, appointment_date, slotTime]
         );
-        
-        if (overlapCheck.length > 0) {
+        if (dupRows.length > 0) {
           await connection.rollback();
-          return res.status(409).json({
-            success: false,
-            message: "Slot time range conflicts with existing slots",
-          });
+          return res.status(409).json({ success: false, message: 'A slot at this time already exists' });
         }
-        
-        // Check daily slot limit
-        const [dailyCount] = await connection.execute(
-          'SELECT COUNT(*) as count FROM appointment_slots WHERE service_id = ? AND appointment_date = ?',
+
+        // Daily limit
+        const [dailyRows] = await connection.execute(
+          'SELECT COUNT(*) AS count FROM appointment_slots WHERE service_id = ? AND slot_date = ?',
           [serviceId, appointment_date]
         );
-        
-        if (dailyCount[0].count >= 100) {
+        if (dailyRows[0].count >= 100) {
           await connection.rollback();
-          return res.status(429).json({
-            success: false,
-            message: "Daily slot limit exceeded (maximum 100 slots per service per day)",
-          });
+          return res.status(429).json({ success: false, message: 'Daily slot limit (100) exceeded' });
         }
-        
-        const sql = `
-          INSERT INTO appointment_slots 
-          (service_id, appointment_date, start_time, end_time, slot_duration_minutes, max_patients)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `;
-        
-        const [result] = await connection.execute(sql, [
-          serviceId,
-          appointment_date,
-          start_time,
-          end_time,
-          duration,
-          maxPatients
-        ]);
-        
+
+        const [result] = await connection.execute(
+          `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 0, 1, NOW(), NOW())`,
+          [serviceId, appointment_date, slotTime, capacity]
+        );
+
         const newSlotId = result.insertId;
-        
-        // Get the created slot details
         const [createdSlot] = await connection.execute(
           'SELECT * FROM appointment_slots WHERE id = ?',
           [newSlotId]
         );
-        
+
         await connection.commit();
-        
-        // Emit real-time update notification
+
         if (req.app.locals.io) {
-          req.app.locals.io.emit('slotsUpdated', { 
-            action: 'created', 
-            slotId: newSlotId,
-            serviceId: serviceId,
-            date: appointment_date
-          });
+          req.app.locals.io.emit('slotsUpdated', { action: 'created', slotId: newSlotId, serviceId, date: appointment_date });
         }
-        
-        res.status(201).json({
+
+        return res.status(201).json({
           success: true,
-          message: "Appointment slot created successfully",
-          data: createdSlot[0],
+          message: 'Appointment slot created successfully',
+          data: normaliseSlot(createdSlot[0]),
         });
       } catch (slotError) {
         await connection.rollback();
@@ -509,623 +373,294 @@ exports.createSlot = async (req, res) => {
       }
     }
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create appointment slot",
-      error: err.message // Include error details in development
-    });
+    console.error('❌ createSlot error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to create appointment slot', error: err.message });
   } finally {
     if (connection) connection.release();
   }
 };
 
-// Delete appointment slot (admin)
+// ─── Delete single appointment slot (admin) ───────────────────────────────────
 exports.deleteSlot = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // First get the slot details for notification
+
     const [slots] = await db.execute(
-      'SELECT service_id, appointment_date FROM appointment_slots WHERE id = ?',
+      'SELECT service_id, slot_date FROM appointment_slots WHERE id = ?',
       [id]
     );
-    
-    if (slots.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Appointment slot not found",
-      });
-    }
-    
+    if (slots.length === 0)
+      return res.status(404).json({ success: false, message: 'Appointment slot not found' });
+
     const slot = slots[0];
-    
-    const sql = 'DELETE FROM appointment_slots WHERE id = ?';
-    const [result] = await db.execute(sql, [id]);
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Appointment slot not found",
-      });
-    }
-    
-    // Emit real-time update notification
+    await db.execute('DELETE FROM appointment_slots WHERE id = ?', [id]);
+
     if (req.app.locals.io) {
-      req.app.locals.io.emit('slotsUpdated', { 
-        action: 'deleted', 
-        slotId: id,
-        serviceId: slot.service_id,
-        date: slot.appointment_date
-      });
+      req.app.locals.io.emit('slotsUpdated', { action: 'deleted', slotId: id, serviceId: slot.service_id, date: slot.slot_date });
     }
-    
-    res.status(200).json({
-      success: true,
-      message: "Appointment slot deleted successfully",
-    });
+
+    res.status(200).json({ success: true, message: 'Appointment slot deleted successfully' });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete appointment slot",
-    });
+    console.error('❌ deleteSlot error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to delete appointment slot' });
   }
 };
 
-// Update appointment slot (admin)
+// ─── Update appointment slot (admin) ─────────────────────────────────────────
 exports.updateSlot = async (req, res) => {
   try {
     const { id } = req.params;
     const {
       service_id,
-      appointment_date,
-      start_time,
-      end_time,
-      slot_duration_minutes,
-      max_patients,
-      is_available
+      appointment_date, slot_date,  // accept both names
+      start_time, slot_time,         // accept both names
+      max_patients, capacity,        // accept both names
+      is_available,
     } = req.body;
-    
-    // Build update query dynamically
+
+    const resolvedDate     = slot_date     ?? appointment_date;
+    const resolvedTime     = slot_time     ?? start_time;
+    const resolvedCapacity = capacity      ?? max_patients;
+
     const updates = [];
-    const params = [];
-    
-    if (service_id !== undefined) {
-      updates.push('service_id = ?');
-      params.push(service_id);
-    }
-    
-    if (appointment_date !== undefined) {
-      updates.push('appointment_date = ?');
-      params.push(appointment_date);
-    }
-    
-    if (start_time !== undefined) {
-      updates.push('start_time = ?');
-      params.push(start_time);
-    }
-    
-    if (end_time !== undefined) {
-      updates.push('end_time = ?');
-      params.push(end_time);
-    }
-    
-    if (slot_duration_minutes !== undefined) {
-      updates.push('slot_duration_minutes = ?');
-      params.push(slot_duration_minutes);
-    }
-    
-    if (max_patients !== undefined) {
-      updates.push('max_patients = ?');
-      params.push(max_patients);
-    }
-    
-    if (is_available !== undefined) {
-      updates.push('is_available = ?');
-      params.push(is_available);
-    }
-    
-    if (updates.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid fields provided for update",
-      });
-    }
-    
+    const params  = [];
+
+    if (service_id      !== undefined) { updates.push('service_id = ?');  params.push(service_id); }
+    if (resolvedDate    !== undefined) { updates.push('slot_date = ?');   params.push(resolvedDate); }
+    if (resolvedTime    !== undefined) { updates.push('slot_time = ?');   params.push(resolvedTime); }
+    if (resolvedCapacity !== undefined){ updates.push('capacity = ?');    params.push(resolvedCapacity); }
+    if (is_available    !== undefined) { updates.push('is_available = ?');params.push(is_available); }
+
+    if (updates.length === 0)
+      return res.status(400).json({ success: false, message: 'No valid fields provided for update' });
+
     params.push(id);
-    
-    const sql = `UPDATE appointment_slots SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
-    
-    const [result] = await db.execute(sql, params);
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Appointment slot not found",
-      });
-    }
-    
-    // Get updated slot details
-    const [updatedSlot] = await db.execute(
-      'SELECT * FROM appointment_slots WHERE id = ?',
-      [id]
+    const [result] = await db.execute(
+      `UPDATE appointment_slots SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      params
     );
-    
-    // Emit real-time update notification
+
+    if (result.affectedRows === 0)
+      return res.status(404).json({ success: false, message: 'Appointment slot not found' });
+
+    const [updatedSlot] = await db.execute('SELECT * FROM appointment_slots WHERE id = ?', [id]);
+
     if (req.app.locals.io) {
-      req.app.locals.io.emit('slotsUpdated', { 
-        action: 'updated', 
+      req.app.locals.io.emit('slotsUpdated', {
+        action: 'updated',
         slotId: id,
         serviceId: updatedSlot[0].service_id,
-        date: updatedSlot[0].appointment_date
+        date: updatedSlot[0].slot_date,
       });
     }
-    
+
     res.status(200).json({
       success: true,
-      message: "Appointment slot updated successfully",
-      data: updatedSlot[0],
+      message: 'Appointment slot updated successfully',
+      data: normaliseSlot(updatedSlot[0]),
     });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update appointment slot",
-    });
+    console.error('❌ updateSlot error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to update appointment slot' });
   }
 };
 
-// Book an appointment slot (user) with enhanced race condition protection
+// ─── Book a slot (user) ───────────────────────────────────────────────────────
 exports.bookSlot = async (req, res) => {
   let connection;
   try {
     const { slotId } = req.body;
-    
-    if (!slotId) {
-      return res.status(400).json({
-        success: false,
-        message: "Slot ID is required",
-      });
-    }
-    
+    if (!slotId) return res.status(400).json({ success: false, message: 'Slot ID is required' });
+
     connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     try {
-      // Get slot details with row-level lock
+      // Lock the row
       const [slots] = await connection.execute(
         'SELECT * FROM appointment_slots WHERE id = ? FOR UPDATE',
         [slotId]
       );
-      
       if (slots.length === 0) {
         await connection.rollback();
-        return res.status(404).json({
-          success: false,
-          message: "Appointment slot not found",
-        });
+        return res.status(404).json({ success: false, message: 'Appointment slot not found' });
       }
-      
+
       const slot = slots[0];
-      
-      // Simple availability check without stored procedure dependency
-      const [availabilityCheck] = await connection.execute(
-        'SELECT is_available, booked_patients, max_patients FROM appointment_slots WHERE id = ? FOR UPDATE',
-        [slotId]
-      );
-      
-      if (availabilityCheck.length === 0) {
-        await connection.rollback();
-        return res.status(404).json({
-          success: false,
-          message: "Appointment slot not found",
-        });
-      }
-      
-      const slotData = availabilityCheck[0];
-      const isAvailable = slotData.is_available === 1 && slotData.booked_patients < slotData.max_patients;
-      
+      const isAvailable = slot.is_available === 1 && slot.booked_count < slot.capacity;
+
       if (!isAvailable) {
         await connection.rollback();
-        return res.status(409).json({
-          success: false,
-          message: "This slot is no longer available (just booked by another user)",
-        });
+        return res.status(409).json({ success: false, message: 'This slot is no longer available' });
       }
-      
-      // Increment booked_patients atomically
-      const [result] = await connection.execute(
-        'UPDATE appointment_slots SET booked_patients = booked_patients + 1 WHERE id = ? AND booked_patients < max_patients',
+
+      // Atomic increment
+      const [upd] = await connection.execute(
+        'UPDATE appointment_slots SET booked_count = booked_count + 1 WHERE id = ? AND booked_count < capacity',
         [slotId]
       );
-      
-      if (result.affectedRows === 0) {
+      if (upd.affectedRows === 0) {
         await connection.rollback();
-        return res.status(409).json({
-          success: false,
-          message: "Failed to book slot - it may have been just booked by another user",
-        });
+        return res.status(409).json({ success: false, message: 'Slot was just fully booked by another user' });
       }
-      
-      // Check if slot is now full and update availability
-      const [updatedSlot] = await connection.execute(
-        'SELECT * FROM appointment_slots WHERE id = ?',
-        [slotId]
-      );
-      
-      const newBookedCount = updatedSlot[0].booked_patients;
-      if (newBookedCount >= updatedSlot[0].max_patients) {
-        await connection.execute(
-          'UPDATE appointment_slots SET is_available = FALSE WHERE id = ?',
-          [slotId]
-        );
+
+      // Mark unavailable if now full
+      const newBooked = slot.booked_count + 1;
+      if (newBooked >= slot.capacity) {
+        await connection.execute('UPDATE appointment_slots SET is_available = 0 WHERE id = ?', [slotId]);
       }
-      
+
       await connection.commit();
-      
-      // Emit real-time update notification to all connected clients
+
+      const remainingSpots = slot.capacity - newBooked;
+
       if (req.app.locals.io) {
-        req.app.locals.io.emit('slotsUpdated', { 
-          action: 'booked', 
-          slotId: slotId,
+        req.app.locals.io.emit('slotsUpdated', {
+          action: 'booked',
+          slotId,
           serviceId: slot.service_id,
-          date: slot.appointment_date,
-          remainingSpots: slot.max_patients - newBookedCount,
-          isFullyBooked: newBookedCount >= slot.max_patients,
-          timestamp: new Date().toISOString()
+          date: slot.slot_date,
+          remainingSpots,
+          isFullyBooked: newBooked >= slot.capacity,
+          timestamp: new Date().toISOString(),
         });
-        
-        console.log(`📡 Emitted real-time slot update: slot ${slotId} booked, ${slot.max_patients - newBookedCount} spots remaining`);
       }
-      
+
       res.status(200).json({
         success: true,
-        message: "Slot booked successfully",
-        data: {
-          slotId: slotId,
-          remainingSpots: slot.max_patients - newBookedCount,
-          isFullyBooked: newBookedCount >= slot.max_patients
-        },
+        message: 'Slot booked successfully',
+        data: { slotId, remainingSpots, isFullyBooked: newBooked >= slot.capacity },
       });
     } catch (err) {
       await connection.rollback();
       throw err;
     }
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to book appointment slot",
-      error: err.message
-    });
+    console.error('❌ bookSlot error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to book appointment slot', error: err.message });
   } finally {
     if (connection) connection.release();
   }
 };
 
-// Get slots availability for a month (for user calendar)
+// ─── Monthly availability (user calendar) ────────────────────────────────────
 exports.getSlotsAvailabilityForMonth = async (req, res) => {
   try {
     const { serviceId, year, month } = req.query;
-    
-    if (!serviceId || !year || !month) {
-      return res.status(400).json({
-        success: false,
-        message: "Service ID, year, and month are required",
-      });
-    }
-    
-    // Validate year and month
-    const yearNum = parseInt(year);
+
+    if (!serviceId || !year || !month)
+      return res.status(400).json({ success: false, message: 'Service ID, year, and month are required' });
+
+    const yearNum  = parseInt(year);
     const monthNum = parseInt(month);
-    
-    if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid year or month parameters",
-      });
-    }
-    
-    // Calculate first and last day of the month
-    const firstDay = `${yearNum}-${monthNum.toString().padStart(2, '0')}-01`;
-    const lastDay = `${yearNum}-${monthNum.toString().padStart(2, '0')}-31`;
-    
+
+    if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12)
+      return res.status(400).json({ success: false, message: 'Invalid year or month' });
+
+    const firstDay = `${yearNum}-${String(monthNum).padStart(2,'0')}-01`;
+    const lastDay  = `${yearNum}-${String(monthNum).padStart(2,'0')}-31`;
+
     const sql = `
-      SELECT 
-        appointment_date,
-        COUNT(*) as total_slots,
-        SUM(CASE WHEN is_available = TRUE AND booked_patients < max_patients THEN 1 ELSE 0 END) as available_slots,
-        SUM(CASE WHEN is_available = TRUE AND booked_patients >= max_patients THEN 1 ELSE 0 END) as fully_booked_slots,
-        SUM(CASE WHEN is_available = FALSE THEN 1 ELSE 0 END) as unavailable_slots,
-        SUM(booked_patients) as total_booked_patients,
-        SUM(max_patients) as total_max_patients,
-        CASE 
-          WHEN SUM(CASE WHEN is_available = TRUE AND booked_patients < max_patients THEN 1 ELSE 0 END) > 0 THEN 'available'
-          WHEN SUM(CASE WHEN is_available = TRUE AND booked_patients >= max_patients THEN 1 ELSE 0 END) > 0 THEN 'fully_booked'
+      SELECT
+        slot_date AS appointment_date,
+        COUNT(*) AS total_slots,
+        SUM(CASE WHEN is_available = 1 AND booked_count < capacity THEN 1 ELSE 0 END) AS available_slots,
+        SUM(CASE WHEN is_available = 1 AND booked_count >= capacity THEN 1 ELSE 0 END) AS fully_booked_slots,
+        SUM(CASE WHEN is_available = 0 THEN 1 ELSE 0 END) AS unavailable_slots,
+        SUM(booked_count) AS total_booked_patients,
+        SUM(capacity)     AS total_max_patients,
+        CASE
+          WHEN SUM(CASE WHEN is_available = 1 AND booked_count < capacity THEN 1 ELSE 0 END) > 0 THEN 'available'
+          WHEN SUM(CASE WHEN is_available = 1 AND booked_count >= capacity THEN 1 ELSE 0 END) > 0 THEN 'fully_booked'
           ELSE 'unavailable'
-        END as day_status
-      FROM appointment_slots 
-      WHERE service_id = ? 
-        AND appointment_date >= ? 
-        AND appointment_date <= ?
-      GROUP BY appointment_date
-      ORDER BY appointment_date ASC
+        END AS day_status
+      FROM appointment_slots
+      WHERE service_id = ?
+        AND slot_date >= ?
+        AND slot_date <= ?
+      GROUP BY slot_date
+      ORDER BY slot_date ASC
     `;
-    
+
     const [results] = await db.execute(sql, [serviceId, firstDay, lastDay]);
-    
+
     res.status(200).json({
       success: true,
       data: results,
       summary: {
-        total_days_with_slots: results.length,
-        available_days: results.filter(r => r.day_status === 'available').length,
-        fully_booked_days: results.filter(r => r.day_status === 'fully_booked').length,
-        unavailable_days: results.filter(r => r.day_status === 'unavailable').length,
-      }
+        total_days_with_slots:  results.length,
+        available_days:         results.filter(r => r.day_status === 'available').length,
+        fully_booked_days:      results.filter(r => r.day_status === 'fully_booked').length,
+        unavailable_days:       results.filter(r => r.day_status === 'unavailable').length,
+      },
     });
   } catch (err) {
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch slots availability for month",
-    });
+    console.error('❌ getSlotsAvailabilityForMonth error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch monthly availability' });
   }
 };
 
-// Delete all appointment slots (admin)
+// ─── Delete all / filtered slots (admin) ─────────────────────────────────────
 exports.deleteAllSlots = async (req, res) => {
   let connection;
   try {
-    // Get optional filters from query parameters
     const { serviceId, date } = req.query;
-    
+
     connection = await db.getConnection();
     await connection.beginTransaction();
-    
-    // Build the WHERE clause based on provided filters
+
     let whereClause = 'WHERE 1=1';
     const params = [];
-    
-    if (serviceId) {
-      whereClause += ' AND service_id = ?';
-      params.push(serviceId);
-    }
-    
-    if (date) {
-      whereClause += ' AND appointment_date = ?';
-      params.push(date);
-    }
-    
-    // First, get the slots that will be deleted for notification
+
+    if (serviceId) { whereClause += ' AND service_id = ?';  params.push(serviceId); }
+    if (date)      { whereClause += ' AND slot_date = ?';   params.push(date); }
+
     const [slotsToDelete] = await connection.execute(
-      `SELECT id, service_id, appointment_date FROM appointment_slots ${whereClause}`,
+      `SELECT id, service_id, slot_date FROM appointment_slots ${whereClause}`,
       params
     );
-    
+
     if (slotsToDelete.length === 0) {
       await connection.rollback();
-      return res.status(404).json({
-        success: false,
-        message: serviceId || date 
-          ? "No appointment slots found matching the specified criteria"
-          : "No appointment slots found in the system",
-      });
+      return res.status(404).json({ success: false, message: 'No appointment slots found matching the criteria' });
     }
-    
-    // Delete all slots matching the criteria
+
     const [result] = await connection.execute(
       `DELETE FROM appointment_slots ${whereClause}`,
       params
     );
-    
+
     await connection.commit();
-    
-    // Emit real-time update notification for all deleted slots
+
     if (req.app.locals.io && slotsToDelete.length > 0) {
-      // Group slots by service for efficient notification
       const slotsByService = {};
-      slotsToDelete.forEach(slot => {
-        if (!slotsByService[slot.service_id]) {
-          slotsByService[slot.service_id] = [];
-        }
-        slotsByService[slot.service_id].push(slot);
+      slotsToDelete.forEach(s => {
+        if (!slotsByService[s.service_id]) slotsByService[s.service_id] = [];
+        slotsByService[s.service_id].push(s);
       });
-      
-      // Emit notifications for each service
-      Object.keys(slotsByService).forEach(serviceId => {
-        const serviceSlots = slotsByService[serviceId];
+      Object.keys(slotsByService).forEach(sid => {
+        const ss = slotsByService[sid];
         req.app.locals.io.emit('slotsUpdated', {
           action: 'bulk_deleted',
-          serviceId: parseInt(serviceId),
-          slotIds: serviceSlots.map(slot => slot.id),
-          dates: [...new Set(serviceSlots.map(slot => slot.appointment_date))],
-          count: serviceSlots.length,
-          timestamp: new Date().toISOString()
+          serviceId: parseInt(sid),
+          slotIds: ss.map(s => s.id),
+          dates: [...new Set(ss.map(s => s.slot_date))],
+          count: ss.length,
+          timestamp: new Date().toISOString(),
         });
       });
-      
-      console.log(`📡 Emitted real-time bulk deletion notification: ${result.affectedRows} slots deleted`);
     }
-    
+
     res.status(200).json({
       success: true,
       message: `${result.affectedRows} appointment slot(s) deleted successfully`,
-      data: {
-        deletedCount: result.affectedRows,
-        serviceId: serviceId || null,
-        date: date || null,
-        deletedSlots: slotsToDelete
-      }
+      data: { deletedCount: result.affectedRows, serviceId: serviceId || null, date: date || null },
     });
   } catch (err) {
     if (connection) await connection.rollback();
-    console.error("❌ Database error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete appointment slots",
-      error: err.message
-    });
+    console.error('❌ deleteAllSlots error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to delete appointment slots', error: err.message });
   } finally {
     if (connection) connection.release();
   }
 };
-
-// Enhanced helper function to generate multiple slots with custom duration support
-async function generateMultipleSlots(service_id, appointment_date, start_time, end_time, slot_duration_minutes, max_patients) {
-  const slots = [];
-  
-  try {
-    // Validate required parameters
-    if (!service_id || !appointment_date || !start_time || !end_time) {
-      throw new Error("Missing required parameters for slot generation");
-    }
-    
-    if (slot_duration_minutes <= 0) {
-      throw new Error("Slot duration must be greater than 0 minutes");
-    }
-    
-    if (max_patients <= 0) {
-      throw new Error("Max patients must be greater than 0");
-    }
-
-    // Parse times with proper validation
-    const [startHours, startMinutes] = start_time.split(':').map(Number);
-    const [endHours, endMinutes] = end_time.split(':').map(Number);
-    
-    // Parse date string without timezone conversion - only for validation, not stored
-    const [year, month, day] = appointment_date.split('-').map(Number);
-    
-    // Validate that the date components are valid
-    if (isNaN(year) || isNaN(month) || isNaN(day) || 
-        year < 2020 || year > 2030 || month < 1 || month > 12 || day < 1 || day > 31) {
-      throw new Error("Invalid date components. Please provide a valid date in YYYY-MM-DD format.");
-    }
-    
-    // Validate time format
-    if (isNaN(startHours) || isNaN(startMinutes) || isNaN(endHours) || isNaN(endMinutes)) {
-      throw new Error("Invalid time format. Expected HH:MM:SS");
-    }
-    
-    if (startHours < 0 || startHours > 23 || startMinutes < 0 || startMinutes > 59) {
-      throw new Error("Invalid start time. Hours must be 0-23, minutes must be 0-59");
-    }
-    
-    if (endHours < 0 || endHours > 23 || endMinutes < 0 || endMinutes > 59) {
-      throw new Error("Invalid end time. Hours must be 0-23, minutes must be 0-59");
-    }
-
-    const startTime = new Date(0);
-    startTime.setHours(startHours, startMinutes, 0, 0);
-    
-    const endTime = new Date(0);
-    endTime.setHours(endHours, endMinutes, 0, 0);
-    
-    // Validate time range
-    if (startTime >= endTime) {
-      throw new Error("End time must be later than start time");
-    }
-    
-    // Calculate total available time
-    const totalMinutes = (endTime.getTime() - startTime.getTime()) / (1000 * 60);
-    
-    // Validate that we can fit at least one slot
-    if (totalMinutes < slot_duration_minutes) {
-      throw new Error(`Time range (${totalMinutes} minutes) is too short for ${slot_duration_minutes}-minute slots`);
-    }
-    
-    // Generate slots with precise calculation
-    const slotInterval = slot_duration_minutes;
-    let currentTime = new Date(startTime);
-    let slotCount = 0;
-    const maxSlots = Math.floor(totalMinutes / slot_duration_minutes);
-    
-    console.log(`🔄 Generating up to ${maxSlots} slots with ${slot_duration_minutes}-minute intervals`);
-    
-    while (currentTime < endTime && slotCount < maxSlots) {
-      const slotStartTime = new Date(currentTime);
-      const slotEndTime = new Date(currentTime);
-      slotEndTime.setMinutes(slotEndTime.getMinutes() + slot_duration_minutes);
-      
-      // Check if slot end time exceeds the end time
-      if (slotEndTime > endTime) {
-        console.log(`⏭️  Skipping slot that would end at ${slotEndTime} (after end time ${endTime})`);
-        break;
-      }
-      
-      // Format times for database with proper padding
-      const formattedStartTime = `${slotStartTime.getHours().toString().padStart(2, '0')}:${slotStartTime.getMinutes().toString().padStart(2, '0')}:00`;
-      const formattedEndTime = `${slotEndTime.getHours().toString().padStart(2, '0')}:${slotEndTime.getMinutes().toString().padStart(2, '0')}:00`;
-      
-      // Check for overlapping slots in database to prevent duplicates
-      const overlapCheckSql = `
-        SELECT id FROM appointment_slots 
-        WHERE service_id = ? 
-          AND appointment_date = ? 
-          AND (
-            (start_time < ? AND end_time > ?) OR
-            (start_time < ? AND end_time > ?) OR
-            (start_time >= ? AND end_time <= ?)
-          )
-      `;
-      
-      const [existingSlots] = await db.execute(overlapCheckSql, [
-        service_id, appointment_date,
-        formattedEndTime, formattedStartTime,  // New slot starts before existing ends
-        formattedStartTime, formattedEndTime,  // New slot ends after existing starts
-        formattedStartTime, formattedEndTime   // New slot is completely within existing
-      ]);
-      
-      if (existingSlots.length > 0) {
-        console.log(`⚠️  Skipping overlapping slot ${formattedStartTime} - ${formattedEndTime}`);
-        currentTime.setMinutes(currentTime.getMinutes() + slotInterval);
-        continue;
-      }
-      
-      // Insert slot with proper error handling
-      const sql = `
-        INSERT INTO appointment_slots 
-        (service_id, appointment_date, start_time, end_time, slot_duration_minutes, max_patients)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `;
-      
-      try {
-        const [result] = await db.execute(sql, [
-          service_id,
-          appointment_date,
-          formattedStartTime,
-          formattedEndTime,
-          slot_duration_minutes,
-          max_patients
-        ]);
-        
-        // Get created slot details
-        const [createdSlot] = await db.execute(
-          'SELECT * FROM appointment_slots WHERE id = ?',
-          [result.insertId]
-        );
-        
-        if (createdSlot && createdSlot.length > 0) {
-          slots.push(createdSlot[0]);
-          slotCount++;
-          console.log(`✅ Created slot ${slotCount}: ${formattedStartTime} - ${formattedEndTime}`);
-        }
-        
-      } catch (insertError) {
-        console.error(`❌ Failed to insert slot: ${insertError.message}`);
-        throw new Error(`Failed to create slot ${slotCount + 1}: ${insertError.message}`);
-      }
-      
-      // Move to next slot time
-      currentTime.setMinutes(currentTime.getMinutes() + slotInterval);
-    }
-    
-    console.log(`✅ Successfully generated ${slots.length} slots for ${appointment_date}`);
-    return slots;
-    
-  } catch (error) {
-    console.error("❌ Error in generateMultipleSlots:", error);
-    throw error;
-  }
-}

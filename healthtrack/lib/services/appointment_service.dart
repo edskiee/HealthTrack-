@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'error_handler_service.dart';
-import 'api_config.dart'; // Import the new API config
+import 'api_config.dart';
 import '../admin/services/admin_session_storage.dart';
 import 'user_session_storage.dart';
 
@@ -358,37 +358,8 @@ class AppointmentService {
               // Get the updated appointment data
               final appointmentData = data['data'] as Map<String, dynamic>?;
               if (appointmentData != null) {
-                final userId = appointmentData['user_id']?.toString();
-                if (userId != null) {
-                  // Create a meaningful message based on the status
-                  String notificationMessage;
-                  switch (status) {
-                    case 'approved':
-                      notificationMessage = 'Your appointment has been approved.';
-                      break;
-                    case 'cancelled':
-                      notificationMessage = 'Your appointment has been cancelled.';
-                      break;
-                    case 'rescheduled':
-                      notificationMessage = 'Your appointment has been rescheduled.';
-                      break;
-                    case 'completed':
-                      notificationMessage = 'Your appointment has been marked complete.';
-                      break;
-                    case 'no_show':
-                      notificationMessage = 'Your appointment has been marked as missed.';
-                      break;
-                    default:
-                      notificationMessage = 'Your appointment status has been updated to $status.';
-                  }
-                  
-                  // Add any notes if provided
-                  if (notes != null && notes.isNotEmpty) {
-                    notificationMessage += ' Notes: $notes';
-                  }
-                  
-                  // Appointment status notification functionality has been moved to automated system
-                }
+                // Backend handles all notifications automatically when status is updated.
+                // No client-side notification call needed here.
               }
             } catch (notificationError) {
               print('Warning: Failed to send notification after appointment status update: $notificationError');

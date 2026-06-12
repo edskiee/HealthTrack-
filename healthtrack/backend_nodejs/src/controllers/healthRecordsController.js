@@ -1,8 +1,66 @@
 const db = require("../config/db");
 
-// Get all health records with complete patient information
+// Get all health records with complete patient information — paginated
 exports.getHealthRecords = async (req, res) => {
   try {
+    // ── Pagination ──────────────────────────────────────────────────────────
+    const page   = Math.max(1, parseInt(req.query.page  || '1',  10));
+    const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
+    const offset = (page - 1) * limit;
+
+    // ── Server-side filters ─────────────────────────────────────────────────
+    const searchQ      = (req.query.q           || '').trim();
+    const serviceType  = (req.query.serviceType || '').trim();
+    const recordType   = (req.query.recordType  || '').trim();
+    const genderFilter = (req.query.gender      || '').trim();
+    const startDate    = (req.query.startDate   || '').trim();
+    const endDate      = (req.query.endDate     || '').trim();
+
+    const whereClauses = [];
+    const params       = [];
+
+    if (searchQ) {
+      whereClauses.push('(p.child_fullname LIKE ? OR p.mother_fullname LIKE ? OR hr.title LIKE ?)');
+      const term = `%${searchQ}%`;
+      params.push(term, term, term);
+    }
+    if (serviceType && serviceType !== 'All') {
+      whereClauses.push('p.service_type = ?');
+      params.push(serviceType);
+    }
+    if (recordType && recordType !== 'All') {
+      whereClauses.push('hr.record_type = ?');
+      params.push(recordType);
+    }
+    if (genderFilter && genderFilter !== 'All') {
+      whereClauses.push('p.sex = ?');
+      params.push(genderFilter);
+    }
+    if (startDate) {
+      whereClauses.push('DATE(hr.created_at) >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereClauses.push('DATE(hr.created_at) <= ?');
+      params.push(endDate);
+    }
+
+    const whereSQL = whereClauses.length
+      ? `WHERE ${whereClauses.join(' AND ')}`
+      : '';
+
+    // ── COUNT ───────────────────────────────────────────────────────────────
+    const [countRows] = await db.execute(
+      `SELECT COUNT(*) AS total
+       FROM health_records hr
+       LEFT JOIN patients p ON hr.patient_id = p.id
+       ${whereSQL}`,
+      params
+    );
+    const total      = countRows[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    // ── Fetch page ──────────────────────────────────────────────────────────
     const sql = `
       SELECT
         hr.id,
@@ -51,10 +109,12 @@ exports.getHealthRecords = async (req, res) => {
         p.facility_type
       FROM health_records hr
       LEFT JOIN patients p ON hr.patient_id = p.id
+      ${whereSQL}
       ORDER BY hr.created_at DESC
+      LIMIT ? OFFSET ?
     `;
 
-    const [results] = await db.execute(sql);
+    const [results] = await db.execute(sql, [...params, limit, offset]);
 
     const processedResults = (results || []).map(record => ({
       id:                       record.id || null,
@@ -104,16 +164,18 @@ exports.getHealthRecords = async (req, res) => {
       occupation:               record.occupation || "",
       birth_attendant:          record.birth_attendant || "",
       facility_type:            record.facility_type || "",
-      // Legacy aliases expected by some Flutter screens
+      // Legacy aliases
       status:                   "Active",
       age:                      record.patient_age || 0,
       date_of_visit:            record.date_recorded || new Date().toISOString().split("T")[0],
     }));
 
     res.status(200).json({
-      success: true,
-      data:    processedResults,
-      count:   processedResults.length,
+      success:    true,
+      data:       processedResults,
+      total,
+      page,
+      totalPages,
     });
   } catch (error) {
     console.error("❌ Unexpected error in getHealthRecords:", error);
@@ -124,7 +186,6 @@ exports.getHealthRecords = async (req, res) => {
     });
   }
 };
-
 // Get all patients with their health records (including patients with no records)
 exports.getAllPatientsWithRecords = async (req, res) => {
   try {

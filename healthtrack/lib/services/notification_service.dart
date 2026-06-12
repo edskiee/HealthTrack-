@@ -1,249 +1,177 @@
 import 'dart:convert';
 import 'dart:async';
-import 'api_service.dart'; // Import the new API service
+import 'package:http/http.dart' as http;
+import 'api_config.dart';
+import 'user_session_storage.dart';
 
+/// Service for user-facing notification operations.
+/// Uses direct HTTP (no ApiService health-check overhead) with the user JWT.
 class NotificationService {
-  static final ApiService _apiService = ApiService.instance;
+  static List<String> get _urls => ApiConfig.fallbackBaseUrls;
 
-  // Initialize the service
-  static Future<void> initialize() async {
-    await _apiService.initialize();
+  // No-op initialize kept for compatibility with callers.
+  static Future<void> initialize() async {}
+
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
   }
 
-  // Get user notifications
+  static bool _isSuccess(dynamic data) {
+    final s = data['success'];
+    if (s is bool) return s;
+    if (s is String) return s.toLowerCase() == 'true';
+    if (s is int) return s == 1;
+    return false;
+  }
+
+  // ── GET user notifications ────────────────────────────────────────────────
+
   static Future<List<Map<String, dynamic>>> getUserNotifications(int userId) async {
-    try {
-      final response = await _apiService.get('/notifications/user/$userId');
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
-        }
-        
-        if (isSuccess) {
-          return List<Map<String, dynamic>>.from(data['data'] ?? []);
+    final headers = await _authHeaders();
+    Exception? last;
+    for (final base in _urls) {
+      try {
+        final res = await http
+            .get(Uri.parse('$base/notifications/user/$userId'), headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (_isSuccess(data)) {
+            return List<Map<String, dynamic>>.from(data['data'] ?? []);
+          }
+          last = Exception(data['message'] ?? 'Failed to fetch notifications');
         } else {
-          throw Exception(data['message'] ?? 'Failed to fetch notifications');
+          last = Exception('HTTP ${res.statusCode}: Failed to fetch notifications');
         }
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to fetch notifications");
-      }
-    } catch (e) {
-      // Enhanced error handling
-      if (e.toString().contains('Connection refused') || 
-          e.toString().contains('SocketException') ||
-          e.toString().contains('Network is unreachable')) {
-        throw Exception(
-          'Unable to connect to the server. Please check your network connection '
-          'and ensure the backend server is running.'
-        );
-      } else if (e.toString().contains('timeout')) {
-        throw Exception(
-          'Request timed out. Please check your internet connection and try again.'
-        );
-      } else {
-        throw Exception("Failed to fetch user notifications: $e");
+      } catch (e) {
+        last = Exception('Failed to fetch notifications: $e');
       }
     }
+    throw last ?? Exception('Failed to fetch notifications');
   }
 
-  // Get unread notifications count
+  // ── GET unread count ──────────────────────────────────────────────────────
+
   static Future<int> getUnreadNotificationsCount(int userId) async {
-    try {
-      final response = await _apiService.get('/notifications/user/$userId/unread-count');
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
-        }
-        
-        if (isSuccess) {
-          return data['count'] ?? 0;
+    final headers = await _authHeaders();
+    Exception? last;
+    for (final base in _urls) {
+      try {
+        final res = await http
+            .get(Uri.parse('$base/notifications/user/$userId/unread-count'),
+                headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (_isSuccess(data)) return data['count'] ?? 0;
+          last = Exception(data['message'] ?? 'Failed to fetch unread count');
         } else {
-          throw Exception(data['message'] ?? 'Failed to fetch unread count');
+          last = Exception('HTTP ${res.statusCode}: Failed to fetch unread count');
         }
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to fetch unread count");
-      }
-    } catch (e) {
-      // Enhanced error handling
-      if (e.toString().contains('Connection refused') || 
-          e.toString().contains('SocketException') ||
-          e.toString().contains('Network is unreachable')) {
-        throw Exception(
-          'Unable to connect to server. Please check your network connection '
-          'and ensure backend server is running.'
-        );
-      } else if (e.toString().contains('timeout')) {
-        throw Exception(
-          'Request timed out. Please check your internet connection and try again.'
-        );
-      } else {
-        throw Exception("Failed to fetch unread notifications count: $e");
+      } catch (e) {
+        last = Exception('Failed to fetch unread count: $e');
       }
     }
+    throw last ?? Exception('Failed to fetch unread count');
   }
 
-  // Mark notification as read
+  // ── Mark single notification as read ─────────────────────────────────────
+
   static Future<bool> markNotificationAsRead(int notificationId) async {
-    try {
-      final response = await _apiService.put('/notifications/$notificationId/read');
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+    final headers = await _authHeaders();
+    for (final base in _urls) {
+      try {
+        final res = await http
+            .put(Uri.parse('$base/notifications/$notificationId/read'),
+                headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          return _isSuccess(data);
         }
-        return isSuccess;
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to mark as read");
-      }
-    } catch (e) {
-      // Enhanced error handling for non-critical operations
-      if (e.toString().contains('Connection refused') || 
-          e.toString().contains('SocketException') ||
-          e.toString().contains('Network is unreachable') ||
-          e.toString().contains('timeout')) {
-        print('⚠️ Network error marking notification as read: $e');
-        return false; // Silent fail for non-critical operations
-      } else {
-        print('❌ Error marking notification as read: $e');
-        return false;
+      } catch (_) {
+        continue;
       }
     }
+    return false; // silent fail — non-critical
   }
 
-  // Mark all notifications as read
+  // ── Mark all notifications as read ───────────────────────────────────────
+
   static Future<bool> markAllNotificationsAsRead(int userId) async {
-    try {
-      final response = await _apiService.put('/notifications/user/$userId/mark-all-read');
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+    final headers = await _authHeaders();
+    for (final base in _urls) {
+      try {
+        final res = await http
+            .put(Uri.parse('$base/notifications/user/$userId/mark-all-read'),
+                headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          return _isSuccess(data);
         }
-        return isSuccess;
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to mark all as read");
-      }
-    } catch (e) {
-      // Enhanced error handling for non-critical operations
-      if (e.toString().contains('Connection refused') || 
-          e.toString().contains('SocketException') ||
-          e.toString().contains('Network is unreachable') ||
-          e.toString().contains('timeout')) {
-        print('⚠️ Network error marking all notifications as read: $e');
-        return false; // Silent fail for non-critical operations
-      } else {
-        print('❌ Error marking all notifications as read: $e');
-        return false;
+      } catch (_) {
+        continue;
       }
     }
+    return false; // silent fail — non-critical
   }
 
-  // Delete notification
+  // ── Delete notification ───────────────────────────────────────────────────
+
   static Future<bool> deleteNotification(int notificationId) async {
-    try {
-      final response = await _apiService.delete('/notifications/$notificationId');
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+    final headers = await _authHeaders();
+    for (final base in _urls) {
+      try {
+        final res = await http
+            .delete(Uri.parse('$base/notifications/$notificationId'),
+                headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          return _isSuccess(data);
         }
-        return isSuccess;
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to delete notification");
-      }
-    } catch (e) {
-      // Enhanced error handling for non-critical operations
-      if (e.toString().contains('Connection refused') || 
-          e.toString().contains('SocketException') ||
-          e.toString().contains('Network is unreachable') ||
-          e.toString().contains('timeout')) {
-        print('⚠️ Network error deleting notification: $e');
-        return false; // Silent fail for non-critical operations
-      } else {
-        print('❌ Error deleting notification: $e');
-        return false;
+      } catch (_) {
+        continue;
       }
     }
+    return false; // silent fail — non-critical
   }
 
-  // Stream notifications (for real-time updates)
+  // ── Streams (polling) ─────────────────────────────────────────────────────
+
+  /// Polls every 15 seconds (reduced from 5s to lower server load).
   static Stream<List<Map<String, dynamic>>> streamUserNotifications(int userId) async* {
-    // Emit initial data
     try {
-      final notifications = await getUserNotifications(userId);
-      yield notifications;
-    } catch (e) {
-      print('Error fetching initial notifications: $e');
+      yield await getUserNotifications(userId);
+    } catch (_) {
       yield [];
     }
-    
-    // Set up periodic updates with more frequent checks
-    await for (final _ in Stream.periodic(const Duration(seconds: 5))) {
+    await for (final _ in Stream.periodic(const Duration(seconds: 15))) {
       try {
-        final notifications = await getUserNotifications(userId);
-        yield notifications;
-      } catch (e) {
-        print('Error streaming notifications: $e');
+        yield await getUserNotifications(userId);
+      } catch (_) {
         yield [];
       }
     }
   }
 
-  // Stream unread count (for real-time badge updates)
+  /// Polls every 30 seconds — badge only, no full reload needed.
   static Stream<int> streamUnreadCount(int userId) async* {
-    // Emit initial count
     try {
-      final count = await getUnreadNotificationsCount(userId);
-      yield count;
-    } catch (e) {
-      print('Error fetching initial unread count: $e');
+      yield await getUnreadNotificationsCount(userId);
+    } catch (_) {
       yield 0;
     }
-    
-    // Set up periodic updates with more frequent checks
-    await for (final _ in Stream.periodic(const Duration(seconds: 5))) {
+    await for (final _ in Stream.periodic(const Duration(seconds: 30))) {
       try {
-        final count = await getUnreadNotificationsCount(userId);
-        yield count;
-      } catch (e) {
-        print('Error streaming unread count: $e');
+        yield await getUnreadNotificationsCount(userId);
+      } catch (_) {
         yield 0;
       }
     }

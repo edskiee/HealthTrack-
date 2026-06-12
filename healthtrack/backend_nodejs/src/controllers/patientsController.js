@@ -1,91 +1,185 @@
 const db = require("../config/db");
 
-// Get all patients with error handling for missing columns
+// ─── Column existence cache (avoids repeated INFORMATION_SCHEMA lookups) ───────
+let _cachedMaternalColumns = null;
+async function getMaternalColumns(conn) {
+  if (_cachedMaternalColumns) return _cachedMaternalColumns;
+  const [rows] = await (conn || db).execute(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'patients'
+      AND COLUMN_NAME IN (
+        'lmp_date','edd_date','gestational_age_weeks',
+        'gravida','para','abortus','stillbirth',
+        'blood_pressure','weight','height','bmi',
+        'fundal_height','fetal_heart_rate'
+      )
+  `);
+  _cachedMaternalColumns = rows.map(r => r.COLUMN_NAME);
+  return _cachedMaternalColumns;
+}
+
+// ─── Build the patient SELECT column list (list view only – no heavy cols) ─────
+function buildListSelectCols(existingMaternalCols) {
+  // Only the columns needed for the admin patient list view
+  let cols = `
+      id,
+      user_id,
+      child_fullname  AS childName,
+      mother_fullname AS motherName,
+      father_fullname AS fatherName,
+      dob,
+      sex,
+      address,
+      record_type     AS recordType,
+      service_type    AS serviceType,
+      health_center,
+      barangay,
+      family_number,
+      status,
+      created_at`;
+  // Keep lightweight maternal columns that the list displays
+  if (existingMaternalCols.includes('gravida'))  cols += ',\n      gravida';
+  if (existingMaternalCols.includes('para'))     cols += ',\n      para';
+  return cols;
+}
+
+// ─── Build the patient SELECT column list (full detail – for single record) ────
+function buildFullSelectCols(existingMaternalCols) {
+  let cols = `
+      id,
+      user_id,
+      child_fullname  AS childName,
+      mother_fullname AS motherName,
+      father_fullname AS fatherName,
+      dob,
+      place_of_birth  AS placeOfBirth,
+      birth_weight    AS birthWeight,
+      birth_height    AS birthHeight,
+      sex,
+      address,
+      record_type     AS recordType,
+      service_type    AS serviceType,
+      record_description AS recordDescription,
+      family_serial_number,
+      contact_number,
+      spouse_name,
+      living_children_count,
+      monthly_income,
+      religion,
+      city,
+      province,
+      age,
+      education,
+      occupation,
+      birth_attendant,
+      facility_type,
+      health_center,
+      barangay,
+      family_number,
+      status,
+      created_at`;
+  for (const col of [
+    'lmp_date','edd_date','gestational_age_weeks',
+    'gravida','para','abortus','stillbirth',
+    'blood_pressure','weight','height','bmi',
+    'fundal_height','fetal_heart_rate',
+  ]) {
+    if (existingMaternalCols.includes(col)) cols += `,\n      ${col}`;
+  }
+  return cols;
+}
+
+// Get patients with pagination, server-side filtering, and search
 exports.getPatients = async (req, res) => {
   try {
-    // First, check if the new columns exist
-    const checkColumnsSql = `
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'patients' 
-      AND COLUMN_NAME IN ('lmp_date', 'edd_date', 'gestational_age_weeks', 'gravida', 'para', 'abortus', 'stillbirth', 'blood_pressure', 'weight', 'height', 'bmi', 'fundal_height', 'fetal_heart_rate')
-    `;
+    // ── Pagination params ─────────────────────────────────────────────────────
+    const page     = Math.max(1, parseInt(req.query.page  || '1',  10));
+    const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
+    const offset   = (page - 1) * limit;
 
-    const [columnResults] = await db.execute(checkColumnsSql);
+    // ── Filter / search params ────────────────────────────────────────────────
+    const searchQ      = (req.query.q           || '').trim();
+    const serviceType  = (req.query.serviceType || '').trim();
+    const genderFilter = (req.query.gender      || '').trim();
+    const statusFilter = (req.query.status      || '').trim();
+    const startDate    = (req.query.startDate   || '').trim();
+    const endDate      = (req.query.endDate     || '').trim();
+    const ageRange     = (req.query.ageRange    || '').trim(); // e.g. "0-1","1-5","5-10","10+"
 
-    // Get list of existing columns
-    const existingColumns = columnResults.map(row => row.COLUMN_NAME);
-    
-    // Build SQL query based on existing columns
-    let sql = `
-      SELECT 
-        id,
-        user_id,
-        child_fullname as childName,
-        mother_fullname as motherName,
-        father_fullname as fatherName,
-        dob,
-        place_of_birth as placeOfBirth,
-        birth_weight as birthWeight,
-        birth_height as birthHeight,
-        sex,
-        address,
-        record_type as recordType,
-        service_type as serviceType,
-        record_description as recordDescription,
-        family_serial_number,
-        contact_number,
-        spouse_name,
-        living_children_count,
-        monthly_income,
-        religion,
-        city,
-        province,
-        age,
-        education,
-        occupation,
-        birth_attendant,
-        facility_type,
-        health_center,
-        barangay,
-        family_number,
-        status,
-        created_at
-    `;
+    const existingCols = await getMaternalColumns();
+    const selectCols   = buildListSelectCols(existingCols);
 
-    // Add maternal care columns only if they exist
-    if (existingColumns.includes('lmp_date')) sql += ',\n      lmp_date';
-    if (existingColumns.includes('edd_date')) sql += ',\n      edd_date';
-    if (existingColumns.includes('gestational_age_weeks')) sql += ',\n      gestational_age_weeks';
-    if (existingColumns.includes('gravida')) sql += ',\n      gravida';
-    if (existingColumns.includes('para')) sql += ',\n      para';
-    if (existingColumns.includes('abortus')) sql += ',\n      abortus';
-    if (existingColumns.includes('stillbirth')) sql += ',\n      stillbirth';
-    if (existingColumns.includes('blood_pressure')) sql += ',\n      blood_pressure';
-    if (existingColumns.includes('weight')) sql += ',\n      weight';
-    if (existingColumns.includes('height')) sql += ',\n      height';
-    if (existingColumns.includes('bmi')) sql += ',\n      bmi';
-    if (existingColumns.includes('fundal_height')) sql += ',\n      fundal_height';
-    if (existingColumns.includes('fetal_heart_rate')) sql += ',\n      fetal_heart_rate';
+    // ── Build WHERE clauses ───────────────────────────────────────────────────
+    const whereClauses = [];
+    const params       = [];
 
-    sql += `
-      FROM patients 
-      ORDER BY created_at DESC
-    `;
+    if (searchQ) {
+      whereClauses.push('(child_fullname LIKE ? OR mother_fullname LIKE ? OR father_fullname LIKE ?)');
+      const term = `%${searchQ}%`;
+      params.push(term, term, term);
+    }
+    if (serviceType && serviceType !== 'All') {
+      whereClauses.push('service_type = ?');
+      params.push(serviceType);
+    }
+    if (genderFilter && genderFilter !== 'All') {
+      whereClauses.push('sex = ?');
+      params.push(genderFilter);
+    }
+    if (statusFilter && statusFilter !== 'All') {
+      whereClauses.push('status = ?');
+      params.push(statusFilter);
+    }
+    if (startDate) {
+      whereClauses.push('DATE(created_at) >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereClauses.push('DATE(created_at) <= ?');
+      params.push(endDate);
+    }
+    if (ageRange && ageRange !== 'All') {
+      // Age derived from dob at query time
+      if (ageRange === '0-1') {
+        whereClauses.push('TIMESTAMPDIFF(YEAR, dob, CURDATE()) BETWEEN 0 AND 1');
+      } else if (ageRange === '1-5') {
+        whereClauses.push('TIMESTAMPDIFF(YEAR, dob, CURDATE()) BETWEEN 1 AND 5');
+      } else if (ageRange === '5-10') {
+        whereClauses.push('TIMESTAMPDIFF(YEAR, dob, CURDATE()) BETWEEN 5 AND 10');
+      } else if (ageRange === '10+') {
+        whereClauses.push('TIMESTAMPDIFF(YEAR, dob, CURDATE()) >= 10');
+      }
+    }
 
-    const [results] = await db.execute(sql);
+    const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    // ── COUNT total matching rows ─────────────────────────────────────────────
+    const [countRows] = await db.execute(
+      `SELECT COUNT(*) AS total FROM patients ${whereSQL}`,
+      params
+    );
+    const total      = countRows[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    // ── Fetch the page ────────────────────────────────────────────────────────
+    const dataSQL = `SELECT ${selectCols} FROM patients ${whereSQL} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    const [results] = await db.execute(dataSQL, [...params, limit, offset]);
 
     res.status(200).json({
-      success: true,
-      data: results,
+      success:    true,
+      data:       results,
+      total,
+      page,
+      totalPages,
     });
   } catch (error) {
-    console.error("❌ Database error:", error);
+    console.error("❌ Database error in getPatients:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch patients",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -152,19 +246,8 @@ exports.addPatient = async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // First, check if the new columns exist
-    const checkColumnsSql = `
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'patients' 
-      AND COLUMN_NAME IN ('lmp_date', 'edd_date', 'gestational_age_weeks', 'gravida', 'para', 'abortus', 'stillbirth', 'blood_pressure', 'weight', 'height', 'bmi', 'fundal_height', 'fetal_heart_rate')
-    `;
-
-    const [columnResults] = await connection.execute(checkColumnsSql);
-
-    // Get list of existing columns
-    const existingColumns = columnResults.map(row => row.COLUMN_NAME);
+    // Use cached column list (invalidates only on server restart)
+    const existingColumns = await getMaternalColumns();
     
     // Build INSERT query based on existing columns
     let sql = `INSERT INTO patients (user_id, child_fullname, mother_fullname, father_fullname, dob, place_of_birth, birth_weight, birth_height, sex, address, status, record_type, service_type, record_description, family_serial_number, contact_number, spouse_name, living_children_count, monthly_income, religion, city, province, age, education, occupation, birth_attendant, facility_type, health_center, barangay, family_number`;
@@ -239,63 +322,9 @@ exports.addPatient = async (req, res) => {
     await connection.execute(healthRecordSql, [userId, patientId]);
     console.log("✅ Health record created successfully for patient ID:", patientId);
 
-    // Fetch the created patient data
-    let fetchSql = `
-      SELECT 
-        id,
-        user_id,
-        child_fullname as childName,
-        mother_fullname as motherName,
-        father_fullname as fatherName,
-        dob,
-        place_of_birth as placeOfBirth,
-        birth_weight as birthWeight,
-        birth_height as birthHeight,
-        sex,
-        address,
-        status,
-        record_type as recordType,
-        service_type as serviceType,
-        record_description as recordDescription,
-        family_serial_number,
-        contact_number,
-        spouse_name,
-        living_children_count,
-        monthly_income,
-        religion,
-        city,
-        province,
-        age,
-        education,
-        occupation,
-        birth_attendant,
-        facility_type,
-        health_center,
-        barangay,
-        family_number,
-        created_at,
-        updated_at
-    `;
-
-    // Add maternal care columns only if they exist
-    if (existingColumns.includes('lmp_date')) fetchSql += ',\n      lmp_date';
-    if (existingColumns.includes('edd_date')) fetchSql += ',\n      edd_date';
-    if (existingColumns.includes('gestational_age_weeks')) fetchSql += ',\n      gestational_age_weeks';
-    if (existingColumns.includes('gravida')) fetchSql += ',\n      gravida';
-    if (existingColumns.includes('para')) fetchSql += ',\n      para';
-    if (existingColumns.includes('abortus')) fetchSql += ',\n      abortus';
-    if (existingColumns.includes('stillbirth')) fetchSql += ',\n      stillbirth';
-    if (existingColumns.includes('blood_pressure')) fetchSql += ',\n      blood_pressure';
-    if (existingColumns.includes('weight')) fetchSql += ',\n      weight';
-    if (existingColumns.includes('height')) fetchSql += ',\n      height';
-    if (existingColumns.includes('bmi')) fetchSql += ',\n      bmi';
-    if (existingColumns.includes('fundal_height')) fetchSql += ',\n      fundal_height';
-    if (existingColumns.includes('fetal_heart_rate')) fetchSql += ',\n      fetal_heart_rate';
-
-    fetchSql += `
-      FROM patients 
-      WHERE id = ?
-    `;
+    // Fetch the created patient data using shared helper
+    const fetchCols = buildFullSelectCols(existingColumns);
+    const fetchSql = `SELECT ${fetchCols} FROM patients WHERE id = ?`;
 
     const [fetchResults] = await connection.execute(fetchSql, [patientId]);
 
@@ -395,19 +424,8 @@ exports.updatePatient = async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // First, check if the new columns exist
-    const checkColumnsSql = `
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'patients' 
-      AND COLUMN_NAME IN ('lmp_date', 'edd_date', 'gestational_age_weeks', 'gravida', 'para', 'abortus', 'stillbirth', 'blood_pressure', 'weight', 'height', 'bmi', 'fundal_height', 'fetal_heart_rate')
-    `;
-
-    const [columnResults] = await connection.execute(checkColumnsSql);
-
-    // Get list of existing columns
-    const existingColumns = columnResults.map(row => row.COLUMN_NAME);
+    // Use cached column list
+    const existingColumns = await getMaternalColumns();
     
     // Build UPDATE query based on existing columns
     let sql = `UPDATE patients SET user_id = ?, child_fullname = ?, mother_fullname = ?, father_fullname = ?, dob = ?, place_of_birth = ?, birth_weight = ?, birth_height = ?, sex = ?, address = ?, record_type = ?, service_type = ?, record_description = ?, family_serial_number = ?, contact_number = ?, spouse_name = ?, living_children_count = ?, monthly_income = ?, religion = ?, city = ?, province = ?, age = ?, education = ?, occupation = ?, birth_attendant = ?, facility_type = ?, health_center = ?, barangay = ?, family_number = ?, updated_at = CURRENT_TIMESTAMP`;
@@ -638,92 +656,17 @@ exports.deletePatient = async (req, res) => {
   }
 };
 
-// Search patients
+// Search patients — delegates to getPatients with q param
+// (kept for backward compat with older clients)
 exports.searchPatients = async (req, res) => {
-  const { q } = req.query;
-
-  if (!q) {
+  if (!req.query.q) {
     return res.status(400).json({
       success: false,
       message: "Search query is required",
     });
   }
-
-  try {
-    // First, check if the new columns exist
-    const checkColumnsSql = `
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'patients' 
-      AND COLUMN_NAME IN ('lmp_date', 'edd_date', 'gestational_age_weeks', 'gravida', 'para', 'abortus', 'stillbirth', 'blood_pressure', 'weight', 'height', 'bmi', 'fundal_height', 'fetal_heart_rate')
-    `;
-
-    const [columnResults] = await db.execute(checkColumnsSql);
-
-    // Get list of existing columns
-    const existingColumns = columnResults.map(row => row.COLUMN_NAME);
-    
-    let sql = `
-      SELECT 
-        id,
-        user_id,
-        child_fullname as childName,
-        mother_fullname as motherName,
-        father_fullname as fatherName,
-        dob,
-        place_of_birth as placeOfBirth,
-        birth_weight as birthWeight,
-        birth_height as birthHeight,
-        sex,
-        address,
-        record_type as recordType,
-        service_type as serviceType,
-        status,
-        created_at
-    `;
-
-    // Add maternal care columns only if they exist
-    if (existingColumns.includes('lmp_date')) sql += ',\n      lmp_date';
-    if (existingColumns.includes('edd_date')) sql += ',\n      edd_date';
-    if (existingColumns.includes('gestational_age_weeks')) sql += ',\n      gestational_age_weeks';
-    if (existingColumns.includes('gravida')) sql += ',\n      gravida';
-    if (existingColumns.includes('para')) sql += ',\n      para';
-    if (existingColumns.includes('abortus')) sql += ',\n      abortus';
-    if (existingColumns.includes('stillbirth')) sql += ',\n      stillbirth';
-    if (existingColumns.includes('blood_pressure')) sql += ',\n      blood_pressure';
-    if (existingColumns.includes('weight')) sql += ',\n      weight';
-    if (existingColumns.includes('height')) sql += ',\n      height';
-    if (existingColumns.includes('bmi')) sql += ',\n      bmi';
-    if (existingColumns.includes('fundal_height')) sql += ',\n      fundal_height';
-    if (existingColumns.includes('fetal_heart_rate')) sql += ',\n      fetal_heart_rate';
-
-    const searchTerm = `%${q}%`;
-
-    sql += `
-      FROM patients 
-      WHERE (
-          child_fullname LIKE ? OR 
-          mother_fullname LIKE ? OR 
-          father_fullname LIKE ?
-        )
-      ORDER BY created_at DESC
-    `;
-
-    const [results] = await db.execute(sql, [searchTerm, searchTerm, searchTerm]);
-
-    res.status(200).json({
-      success: true,
-      data: results,
-    });
-  } catch (error) {
-    console.error("❌ Database error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to search patients",
-      error: error.message
-    });
-  }
+  // Reuse the paginated getPatients handler
+  return exports.getPatients(req, res);
 };
 
 // Get patient data for specific user
@@ -738,61 +681,10 @@ exports.getUserPatient = async (req, res) => {
   }
 
   try {
-    // First, check if the new columns exist
-    const checkColumnsSql = `
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'patients' 
-      AND COLUMN_NAME IN ('lmp_date', 'edd_date', 'gestational_age_weeks', 'gravida', 'para', 'abortus', 'stillbirth', 'blood_pressure', 'weight', 'height', 'bmi', 'fundal_height', 'fetal_heart_rate')
-    `;
+    const existingColumns = await getMaternalColumns();
+    const selectCols = buildFullSelectCols(existingColumns);
 
-    const [columnResults] = await db.execute(checkColumnsSql);
-
-    // Get list of existing columns
-    const existingColumns = columnResults.map(row => row.COLUMN_NAME);
-    
-    let sql = `
-      SELECT 
-        id,
-        user_id,
-        child_fullname,
-        mother_fullname,
-        father_fullname,
-        dob,
-        place_of_birth,
-        birth_weight,
-        birth_height,
-        sex,
-        address,
-        record_type as recordType,
-        service_type as serviceType,
-        status,
-        created_at,
-        updated_at
-    `;
-
-    // Add maternal care columns only if they exist
-    if (existingColumns.includes('lmp_date')) sql += ',\n      lmp_date';
-    if (existingColumns.includes('edd_date')) sql += ',\n      edd_date';
-    if (existingColumns.includes('gestational_age_weeks')) sql += ',\n      gestational_age_weeks';
-    if (existingColumns.includes('gravida')) sql += ',\n      gravida';
-    if (existingColumns.includes('para')) sql += ',\n      para';
-    if (existingColumns.includes('abortus')) sql += ',\n      abortus';
-    if (existingColumns.includes('stillbirth')) sql += ',\n      stillbirth';
-    if (existingColumns.includes('blood_pressure')) sql += ',\n      blood_pressure';
-    if (existingColumns.includes('weight')) sql += ',\n      weight';
-    if (existingColumns.includes('height')) sql += ',\n      height';
-    if (existingColumns.includes('bmi')) sql += ',\n      bmi';
-    if (existingColumns.includes('fundal_height')) sql += ',\n      fundal_height';
-    if (existingColumns.includes('fetal_heart_rate')) sql += ',\n      fetal_heart_rate';
-
-    sql += `
-      FROM patients 
-      WHERE user_id = ?
-      LIMIT 1
-    `;
-
+    const sql = `SELECT ${selectCols} FROM patients WHERE user_id = ? LIMIT 1`;
     const [results] = await db.execute(sql, [userId]);
 
     if (results.length === 0) {
@@ -803,7 +695,7 @@ exports.getUserPatient = async (req, res) => {
     }
 
     const patient = results[0];
-    console.log(`✅ Found patient data for user ${userId}: ${patient.child_fullname}`);
+    console.log(`✅ Found patient data for user ${userId}: ${patient.childName}`);
 
     res.status(200).json({
       success: true,
@@ -815,7 +707,7 @@ exports.getUserPatient = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch patient data",
-      error: error.message
+      error: error.message,
     });
   }
 };

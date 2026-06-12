@@ -227,13 +227,12 @@ class FCMService {
       print('📬 Message notification: ${message.notification?.title}');
     }
     
-    // Show local notification as system banner for all message types
-    _showLocalNotification(message);
-    
-    // Emit WebSocket event if connected for real-time in-app notification updates
-    if (WebSocketService.instance.isConnected) {
-      // Send notification data through WebSocket as well
-      // This ensures real-time updates even when FCM is used
+    // Only show a local notification ourselves for data-only messages.
+    // When a notification payload is present and the app is in foreground,
+    // the overlay_support banner in the tab already displays it — showing
+    // a system banner on top would create duplicates.
+    if (message.notification == null) {
+      _showLocalNotification(message);
     }
   }
   
@@ -748,11 +747,16 @@ class FCMService {
       final url = Uri.parse('${ApiConfig.baseUrl}/appointments/user/$userId');
       
       try {
+        // Fetch user JWT token for authenticated request
+        final prefs = await SharedPreferences.getInstance();
+        final userToken = prefs.getString('healthtrack_user_bearer_token') ?? '';
+        
         final response = await http.get(
           url,
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
+            if (userToken.isNotEmpty) 'Authorization': 'Bearer $userToken',
           },
         ).timeout(Duration(seconds: 15));
 

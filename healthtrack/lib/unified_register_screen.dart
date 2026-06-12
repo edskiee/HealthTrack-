@@ -103,14 +103,24 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
       // Combine and filter only enabled services
       // Accept both is_enabled and is_active (handles DB column naming differences)
       print('🔧 Filtering enabled services...');
-      final enabledServices = [...immunizationServices, ...maternalServices]
+      final allServices = [...immunizationServices, ...maternalServices]
           .where((service) =>
               service['is_enabled'] == 1 ||
               service['is_enabled'] == true ||
               service['is_active'] == 1 ||
               service['is_active'] == true)
           .toList();
-      print('✅ Found ${enabledServices.length} enabled services');
+
+      // Deduplicate by service_type — DropdownButton requires unique values.
+      // Keep only the first occurrence of each service_type.
+      final seenTypes = <String>{};
+      final enabledServices = allServices.where((service) {
+        final type = service['service_type']?.toString() ?? '';
+        if (type.isEmpty || seenTypes.contains(type)) return false;
+        seenTypes.add(type);
+        return true;
+      }).toList();
+      print('✅ Found ${enabledServices.length} enabled services (deduplicated by service_type)');
       
       setState(() {
         _availableServices = enabledServices;
@@ -371,25 +381,9 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
       }
 
       if (isSuccess) {
-        // Send welcome notification to newly registered patient
-        try {
-          final userData = result['data']?['user'];
-          final patientData = result['data']?['patient'];
-
-          if (userData != null && patientData != null) {
-            final userId = userData['id']?.toString() ?? '';
-            final patientId = patientData['id']?.toString() ?? '';
-            final patientName = patientData['child_fullname']?.toString() ??
-                patientData['mother_fullname']?.toString() ??
-                'Patient';
-            final serviceType =
-                userData['service_type']?.toString() ?? 'immunization';
-
-            // Welcome notification functionality has been moved to automated system
-          }
-        } catch (notificationSetupError) {
-          print('⚠️ Error setting up welcome notification: $notificationSetupError');
-        }
+        // The backend automatically sends a welcome notification + FCM push
+        // via sendWelcomeNotification() in authController after registration.
+        // No additional client-side notification call is needed.
 
         if (mounted) {
           MessageUtils.showSuccessMessage(
@@ -658,7 +652,9 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       ],
                                     )
                                   : DropdownButtonFormField<String>(
-                                      value: _selectedServiceType,
+                                      value: _availableServices.any((s) => s['service_type'] == _selectedServiceType)
+                                          ? _selectedServiceType
+                                          : (_availableServices.isNotEmpty ? _availableServices.first['service_type']?.toString() : null),
                                       decoration: InputDecoration(
                                         filled: true,
                                         fillColor: Colors.white,

@@ -280,7 +280,7 @@ class ReminderNotificationService {
     tz.initializeTimeZones();
     try {
       final tzInfo = await FlutterTimezone.getLocalTimezone();
-      tz.setLocalLocation(tz.getLocation(tzInfo.identifier));
+      tz.setLocalLocation(tz.getLocation(tzInfo.toString()));
     } catch (e) {
       // Fallback: keep default local location.
       print('⚠️ Failed to resolve local timezone; using default. Error: $e');

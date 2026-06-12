@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:healthtrack/admin/admin_login_screen.dart';
 import 'package:healthtrack/services/api_config.dart';
@@ -31,12 +32,21 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
   // Socket.IO client for real-time updates
   io.Socket? _socket;
   
-  // Patient data will be loaded from database
+  // Paginated patient data
   List<Map<String, String>> patients = [];
   List<Map<String, String>> filteredPatients = [];
   bool isLoading = true;
   String? errorMessage;
   String searchQuery = '';
+
+  // ── Pagination state ─────────────────────────────────────────────────────
+  int _currentPage  = 1;
+  int _totalPages   = 1;
+  int _totalRecords = 0;
+  static const int _pageSize = 20;
+
+  // ── Debounce timer for search ────────────────────────────────────────────
+  Timer? _searchDebounce;
 
   // Filter variables
   String _filterServiceType = 'All';
@@ -63,6 +73,7 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     
@@ -135,28 +146,24 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
   }
 
   void _onSearchChanged() {
-    setState(() {
-      searchQuery = _searchController.text.toLowerCase();
-      _filterPatients();
+    // 400 ms debounce — only fires a server request after the user stops typing
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      setState(() {
+        searchQuery = _searchController.text;
+        _currentPage = 1; // Reset to first page on new search
+      });
+      _loadPatients();
     });
   }
   
   void _filterPatients() {
-    if (searchQuery.isEmpty) {
-      filteredPatients = List.from(patients);
-    } else {
-      filteredPatients = patients.where((patient) {
-        final childName = patient['childName']?.toString().toLowerCase() ?? '';
-        final motherName = patient['motherName']?.toString().toLowerCase() ?? '';
-        final fatherName = patient['fatherName']?.toString().toLowerCase() ?? '';
-        return childName.contains(searchQuery) || 
-               motherName.contains(searchQuery) || 
-               fatherName.contains(searchQuery);
-      }).toList();
-    }
+    // Filtering is now server-side; kept as no-op.
+    filteredPatients = List.from(patients);
   }
 
-  // Load patients from database
+  // Load patients from database — paginated and server-filtered
   Future<void> _loadPatients() async {
     if (!mounted) return;
     
@@ -165,16 +172,33 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
         isLoading = true;
         errorMessage = null;
       });
-      
-      // Add timestamp to prevent caching and ensure fresh data
-      final loadedPatients = await PatientsService.getPatients();
+
+      final startDate = _filterStartDate != null
+          ? '${_filterStartDate!.year}-${_filterStartDate!.month.toString().padLeft(2, '0')}-${_filterStartDate!.day.toString().padLeft(2, '0')}'
+          : null;
+      final endDate = _filterEndDate != null
+          ? '${_filterEndDate!.year}-${_filterEndDate!.month.toString().padLeft(2, '0')}-${_filterEndDate!.day.toString().padLeft(2, '0')}'
+          : null;
+
+      final result = await PatientsService.getPatientsPage(
+        page:        _currentPage,
+        limit:       _pageSize,
+        search:      searchQuery.trim().isEmpty ? null : searchQuery.trim(),
+        serviceType: _filterServiceType == 'All' ? null : _filterServiceType,
+        gender:      _filterGender == 'All' ? null : _filterGender,
+        status:      _filterStatus == 'All' ? null : _filterStatus,
+        ageRange:    _filterAgeRange == 'All' ? null : _filterAgeRange,
+        startDate:   startDate,
+        endDate:     endDate,
+      );
       
       if (!mounted) return;
       setState(() {
-        patients = loadedPatients;
-        // Apply current search filter
-        _filterPatients();
-        isLoading = false;
+        patients         = (result['data'] as List).cast<Map<String, String>>();
+        filteredPatients = List.from(patients);
+        _totalRecords    = result['total'] as int;
+        _totalPages      = result['totalPages'] as int;
+        isLoading        = false;
       });
     } catch (e) {
       if (!mounted) return;
@@ -1887,6 +1911,117 @@ Future<void> _showPatientTypeSelection() async {
     );
   }
 
+  Widget _buildSkeletonLoader() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 8.0;
+        const cols = 5;
+        final maxW = constraints.maxWidth;
+        final cardWidth = maxW.isFinite ? (maxW - gap * (cols - 1)) / cols : 200.0;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: List.generate(10, (i) => SizedBox(
+            width: cardWidth,
+            child: _buildSkeletonCard(),
+          )),
+        );
+      },
+    );
+  }
+
+  Widget _buildSkeletonCard() {
+    return Container(
+      height: 140,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFBFDBFE), width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            _shimmerBox(32, 32, circular: true),
+            const SizedBox(width: 10),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              _shimmerBox(12, double.infinity),
+              const SizedBox(height: 6),
+              _shimmerBox(10, 80),
+            ])),
+          ]),
+          const SizedBox(height: 10),
+          _shimmerBox(1, double.infinity),
+          const SizedBox(height: 10),
+          _shimmerBox(10, 60),
+          const SizedBox(height: 6),
+          _shimmerBox(10, 80),
+          const SizedBox(height: 10),
+          _shimmerBox(1, double.infinity),
+          const SizedBox(height: 10),
+          _shimmerBox(10, 100),
+        ],
+      ),
+    );
+  }
+
+  Widget _shimmerBox(double height, double width, {bool circular = false}) {
+    return Container(
+      height: height,
+      width: width == double.infinity ? double.infinity : width,
+      decoration: BoxDecoration(
+        color: const Color(0xFFDBEAFE),
+        borderRadius: circular
+            ? BorderRadius.circular(999)
+            : BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildPaginationControls() {
+    if (_totalPages <= 1) return const SizedBox.shrink();
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _currentPage > 1
+              ? () {
+                  setState(() => _currentPage--);
+                  _loadPatients();
+                }
+              : null,
+          icon: const Icon(Icons.chevron_left, size: 18),
+          label: const Text('Prev'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.blueAccent,
+            side: const BorderSide(color: Colors.blueAccent),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Text(
+          'Page $_currentPage of $_totalPages',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(width: 16),
+        OutlinedButton.icon(
+          onPressed: _currentPage < _totalPages
+              ? () {
+                  setState(() => _currentPage++);
+                  _loadPatients();
+                }
+              : null,
+          icon: const Icon(Icons.chevron_right, size: 18),
+          label: const Text('Next'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.blueAccent,
+            side: const BorderSide(color: Colors.blueAccent),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildPatientListWrap() {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -2025,10 +2160,8 @@ Widget build(BuildContext context) {
                     child: Column(
                       children: [
                         if (isLoading)
-                          const Padding(
-                            padding: EdgeInsets.all(20),
-                            child: CircularProgressIndicator(),
-                          )
+                          // ── Skeleton loader ──────────────────────────────
+                          _buildSkeletonLoader()
                         else if (errorMessage != null)
                           Padding(
                             padding: const EdgeInsets.all(20),
@@ -2072,7 +2205,7 @@ Widget build(BuildContext context) {
                           )
                         else if (filteredPatients.isEmpty)
                           const Padding(
-                            padding: const EdgeInsets.all(20),
+                            padding: EdgeInsets.all(20),
                             child: Column(
                               children: [
                                 Icon(Icons.people_outline, size: 48, color: Colors.grey),
@@ -2092,18 +2225,26 @@ Widget build(BuildContext context) {
                         else
                           Column(
                             children: [
-                              if (searchQuery.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 16),
-                                  child: Text(
-                                    'Found ${filteredPatients.length} patient(s) matching "$searchQuery"',
-                                    style: TextStyle(
-                                      color: Colors.grey[600],
-                                      fontStyle: FontStyle.italic,
+                              // ── Pagination info bar ──────────────────────
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      'Showing ${filteredPatients.length} of $_totalRecords patient(s)  •  Page $_currentPage of $_totalPages',
+                                      style: TextStyle(
+                                        color: Colors.grey[600],
+                                        fontSize: 13,
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                 ),
+                              ),
                               _buildPatientListWrap(),
+                              const SizedBox(height: 16),
+                              // ── Prev / Next controls ─────────────────────
+                              _buildPaginationControls(),
                             ],
                           ),
                       ],
@@ -2763,23 +2904,12 @@ Future<String> _exportToExcel(List<List<dynamic>> rows, String fileName) async {
   }
 }
 
-// Apply Filters
+// Apply Filters — server-side; reset to page 1 and reload
 void _applyFilters() {
   setState(() {
-    filteredPatients = patients.where((patient) {
-      final serviceTypeMatch = _filterServiceType == 'All' || patient['serviceType'] == _filterServiceType;
-      final genderMatch = _filterGender == 'All' || patient['sex'] == _filterGender;
-      final statusMatch = _filterStatus == 'All' || (patient['status'] != null && patient['status'] == _filterStatus);
-      final ageMatch = _filterAgeRange == 'All' || _checkAgeRange(patient['dob']);
-      final dateRegisteredMatch = _checkDateRegisteredRange(patient['createdAt']);
-
-      return serviceTypeMatch &&
-             genderMatch &&
-             statusMatch &&
-             ageMatch &&
-             dateRegisteredMatch;
-    }).toList();
+    _currentPage = 1;
   });
+  _loadPatients();
 }
 
 // Check Age Range

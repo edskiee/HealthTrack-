@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
 import '../admin/services/admin_session_storage.dart';
+import 'user_session_storage.dart';
 
 class AppointmentSlotService {
   static String get baseUrl => ApiConfig.baseUrl;
@@ -11,6 +12,16 @@ class AppointmentSlotService {
   /// Returns headers with Bearer token for admin-protected endpoints.
   static Future<Map<String, String>> _adminHeaders() async {
     return AdminSessionStorage.authHeaders();
+  }
+
+  /// Returns headers with Bearer token for user-protected endpoints.
+  static Future<Map<String, String>> _userHeaders() async {
+    final token = await UserSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
   }
 
   /// Plain headers for public (unauthenticated) endpoints.
@@ -414,7 +425,7 @@ class AppointmentSlotService {
       try {
         final response = await http.post(
           Uri.parse("$url/appointment-slots/book"),
-          headers: _publicHeaders,
+          headers: await _userHeaders(),
           body: json.encode({'slotId': slotId}),
         ).timeout(const Duration(seconds: 10));
 

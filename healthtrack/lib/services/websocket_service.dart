@@ -24,6 +24,9 @@ class WebSocketService {
   // Allow multiple listeners for slot updates
   final List<Function()> _slotsUpdatedListeners = [];
 
+  /// Multiple listeners for appointment notification (avoids one screen clobbering another).
+  final List<void Function(Map<String, dynamic>)> _appointmentNotificationListeners = [];
+
   /// Multiple listeners for appointment record updates (avoids one screen clobbering another).
   final List<void Function(Map<String, dynamic>)> _appointmentUpdatedListeners = [];
   
@@ -52,6 +55,16 @@ class WebSocketService {
 
   void removeAppointmentUpdatedListener(void Function(Map<String, dynamic>) listener) {
     _appointmentUpdatedListeners.remove(listener);
+  }
+
+  void addAppointmentNotificationListener(void Function(Map<String, dynamic>) listener) {
+    if (!_appointmentNotificationListeners.contains(listener)) {
+      _appointmentNotificationListeners.add(listener);
+    }
+  }
+
+  void removeAppointmentNotificationListener(void Function(Map<String, dynamic>) listener) {
+    _appointmentNotificationListeners.remove(listener);
   }
   
   // Get the correct WebSocket URL based on API service
@@ -159,8 +172,19 @@ class WebSocketService {
     // Listen for appointment notifications
     _socket?.on('appointmentNotification', (data) {
       print('Appointment notification received: $data');
-      if (onAppointmentNotification != null && data is Map<String, dynamic>) {
-        onAppointmentNotification!(data);
+      Map<String, dynamic>? payload;
+      if (data is Map) {
+        try { payload = Map<String, dynamic>.from(data); } catch (_) {}
+      }
+      if (payload != null) {
+        // Legacy single-slot callback (kept for backward compat)
+        if (onAppointmentNotification != null) {
+          onAppointmentNotification!(payload);
+        }
+        // Multi-listener list
+        for (final listener in List<void Function(Map<String, dynamic>)>.from(_appointmentNotificationListeners)) {
+          try { listener(payload); } catch (e) { print('appointmentNotification listener error: $e'); }
+        }
       }
       _showLocalNotification(data);
     });
@@ -462,6 +486,7 @@ class WebSocketService {
     _reconnectTimer?.cancel();
     _healthCheckTimer?.cancel();
     _slotsUpdatedListeners.clear();
+    _appointmentNotificationListeners.clear();
     _appointmentUpdatedListeners.clear();
     onAppointmentNotification = null;
     onAppointmentUpdated = null;

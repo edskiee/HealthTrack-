@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_GnMVfsTZZUtD74dGBaaFYAUfrqZF",
+  "orgId": "team_JP3qIfwRhjuEoQ7Yl7hAqvzK",
+  "projectName": "healthtrack",
+  "settings": {
+    "createdAt": 1780564568396,
+    "framework": null,
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "22.x"
+  }
+}

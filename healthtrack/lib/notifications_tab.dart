@@ -93,11 +93,13 @@ class _NotificationsTabState extends State<NotificationsTab>
     if (userSession.isLoggedIn) {
       final userId = int.tryParse(userSession.userId) ?? 0;
       if (userId > 0) {
-        // Listen for unread count changes
+        // Listen for unread count changes — update badge only, don't reload
         _unreadCountSubscription = NotificationService.streamUnreadCount(userId).listen((count) {
-          // Reload notifications to reflect actual read/unread status
           if (mounted) {
-            _loadNotifications();
+            setState(() {
+              // Badge updates automatically via unreadCount getter over the
+              // already-loaded notifications list; no full reload needed.
+            });
           }
         });
       }
@@ -109,12 +111,8 @@ class _NotificationsTabState extends State<NotificationsTab>
       // Initialize WebSocket service
       await _webSocketService.initialize();
       
-      // Set up callback for appointment notifications
-      _webSocketService.onAppointmentNotification = (notificationData) {
-        print('🔔 Received real-time notification: $notificationData');
-        _handleRealTimeNotification(notificationData);
-      };
-
+      // Use the multi-listener API so we don't clobber other screens' callbacks
+      _webSocketService.addAppointmentNotificationListener(_handleRealTimeNotification);
       _webSocketService.addAppointmentUpdatedListener(_onAppointmentSocketRefresh);
 
       // Join user room if logged in
@@ -197,7 +195,7 @@ class _NotificationsTabState extends State<NotificationsTab>
       // Sort by created_at timestamp in descending order (newest first)
       final sortedNotifications = List<Map<String, dynamic>>.from(appointmentNotifications)
         ..sort((a, b) => 
-          (b["created_at"] as String).compareTo(a["created_at"] as String));
+          (b["created_at"]?.toString() ?? '').compareTo(a["created_at"]?.toString() ?? ''));
       
       final formattedNotifications = sortedNotifications.map((notification) {
         final nType = notification["notification_type"]?.toString();
@@ -588,8 +586,10 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   @override
   void dispose() {
+    _tabController.dispose();
     _notificationsSubscription?.cancel();
     _unreadCountSubscription?.cancel();
+    _webSocketService.removeAppointmentNotificationListener(_handleRealTimeNotification);
     _webSocketService.removeAppointmentUpdatedListener(_onAppointmentSocketRefresh);
 
     // Leave user room when disposing

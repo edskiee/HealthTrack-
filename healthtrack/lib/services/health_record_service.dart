@@ -1,18 +1,15 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
-import '../admin/services/admin_session_storage.dart';
+import 'user_session_storage.dart';
 
 class HealthRecordService {
   static String get baseUrl => ApiConfig.baseUrl;
   static List<String> get fallbackBaseUrls => ApiConfig.fallbackBaseUrls;
 
-  /// Async headers that include the admin Bearer token.
-  static Future<Map<String, String>> _authHeaders() async {
-    final token = await AdminSessionStorage.getToken();
-    // DEBUG — remove once 401s are resolved
-    print('[HealthRecordService] _authHeaders() token='
-        '${token == null ? "NULL" : token.isEmpty ? "EMPTY" : "${token.substring(0, token.length.clamp(0, 10))}..."}');
+  /// Headers for user-facing endpoints (uses the logged-in user's JWT).
+  static Future<Map<String, String>> _userAuthHeaders() async {
+    final token = await UserSessionStorage.getToken();
     return {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
@@ -27,7 +24,7 @@ class HealthRecordService {
       try {
         final response = await http.get(
           Uri.parse('$url/health-records/patient/$patientId'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -54,7 +51,7 @@ class HealthRecordService {
       try {
         final response = await http.get(
           Uri.parse('$url/health-records/patient/$patientId?type=${Uri.encodeComponent(recordType)}'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -80,7 +77,7 @@ class HealthRecordService {
       try {
         final response = await http.post(
           Uri.parse('$url/health-records'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
           body: json.encode(recordData),
         ).timeout(const Duration(seconds: 10));
 
@@ -113,7 +110,7 @@ class HealthRecordService {
       try {
         final response = await http.put(
           Uri.parse('$url/health-records/$id'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
           body: json.encode(recordData),
         ).timeout(const Duration(seconds: 10));
 
@@ -145,7 +142,7 @@ class HealthRecordService {
       try {
         final response = await http.delete(
           Uri.parse('$url/health-records/$id'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -177,7 +174,7 @@ class HealthRecordService {
       try {
         final response = await http.get(
           Uri.parse('$url/health-records/patient/$patientId?start_date=$startDate&end_date=$endDate'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -204,7 +201,7 @@ class HealthRecordService {
       try {
         final response = await http.get(
           Uri.parse('$url/health-records/patient/$patientId?q=${Uri.encodeComponent(query)}'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
@@ -230,7 +227,7 @@ class HealthRecordService {
       try {
         final response = await http.get(
           Uri.parse('$url/health-records/patient/$patientId?recent=true'),
-          headers: await _authHeaders(),
+          headers: await _userAuthHeaders(),
         ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {

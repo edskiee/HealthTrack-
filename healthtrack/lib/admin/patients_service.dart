@@ -23,72 +23,106 @@ class PatientsService {
     };
   }
 
-  /// Get all patients (returns data in Flutter format)
-  static Future<List<Map<String, String>>> getPatients() async {
+  /// Get a paginated page of patients with optional server-side filters.
+  ///
+  /// Returns a map:  { data: List<Map>, total: int, page: int, totalPages: int }
+  static Future<Map<String, dynamic>> getPatientsPage({
+    int page = 1,
+    int limit = 20,
+    String? search,
+    String? serviceType,
+    String? gender,
+    String? status,
+    String? startDate,
+    String? endDate,
+    String? ageRange,
+  }) async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/patients"),
-        headers: await _authHeaders(),
-      );
+      final queryParams = <String, String>{
+        'page':  page.toString(),
+        'limit': limit.toString(),
+      };
+      if (search != null && search.isNotEmpty) queryParams['q'] = search;
+      if (serviceType != null && serviceType != 'All') queryParams['serviceType'] = serviceType;
+      if (gender != null && gender != 'All') queryParams['gender'] = gender;
+      if (status != null && status != 'All') queryParams['status'] = status;
+      if (startDate != null && startDate.isNotEmpty) queryParams['startDate'] = startDate;
+      if (endDate != null && endDate.isNotEmpty) queryParams['endDate'] = endDate;
+      if (ageRange != null && ageRange != 'All') queryParams['ageRange'] = ageRange;
+
+      final uri = Uri.parse("$baseUrl/patients").replace(queryParameters: queryParams);
+      final response = await http.get(uri, headers: await _authHeaders());
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
-        }
-        
-        if (isSuccess) {
-          List patients = data['data'] ?? [];
-          // Convert to the format expected by your Flutter UI
-          return patients.map((patient) {
-            return {
-              "id": patient['id']?.toString() ?? '',
-              "childName": patient['childName']?.toString() ?? '',
-              "motherName": patient['motherName']?.toString() ?? '',
-              "fatherName": patient['fatherName']?.toString() ?? '',
-              "dob": patient['dob']?.toString() ?? '',
-              "placeOfBirth": patient['placeOfBirth']?.toString() ?? '',
-              "birthWeight": patient['birthWeight']?.toString() ?? '',
-              "birthHeight": patient['birthHeight']?.toString() ?? '',
-              "sex": patient['sex']?.toString() ?? '',
-              "address": patient['address']?.toString() ?? '',
-              "recordType": patient['recordType']?.toString() ?? 'Diagnosis',
-              "serviceType": patient['serviceType']?.toString() ?? 'immunization',
-              "recordDescription": patient['recordDescription']?.toString() ?? '',
-              // Maternal care fields
-              "familySerialNumber": patient['family_serial_number']?.toString() ?? '',
-              "contactNumber": patient['contact_number']?.toString() ?? '',
-              "spouseName": patient['spouse_name']?.toString() ?? '',
-              "livingChildrenCount": patient['living_children_count']?.toString() ?? '0',
-              "monthlyIncome": patient['monthly_income']?.toString() ?? '0',
-              "religion": patient['religion']?.toString() ?? '',
-              "city": patient['city']?.toString() ?? '',
-              "province": patient['province']?.toString() ?? '',
-              "age": patient['age']?.toString() ?? '0',
-              "education": patient['education']?.toString() ?? '',
-              "occupation": patient['occupation']?.toString() ?? '',
-              "birthAttendant": patient['birth_attendant']?.toString() ?? '',
-              "facilityType": patient['facility_type']?.toString() ?? '',
-              // Immunization fields
-              "healthCenter": patient['health_center']?.toString() ?? '',
-              "barangay": patient['barangay']?.toString() ?? '',
-              "familyNumber": patient['family_number']?.toString() ?? '',
-              // Date fields
-              "createdAt": patient['created_at']?.toString() ?? '',
-            };
-          }).toList().cast<Map<String, String>>();
-        } else {
-          throw Exception(data['message'] ?? 'Failed to fetch patients');
-        }
+        final isSuccess = _parseBool(data['success']);
+        if (!isSuccess) throw Exception(data['message'] ?? 'Failed to fetch patients');
+
+        final List patients = data['data'] ?? [];
+        return {
+          'data':       patients.map(_mapPatient).toList().cast<Map<String, String>>(),
+          'total':      (data['total'] as num?)?.toInt() ?? 0,
+          'page':       (data['page']  as num?)?.toInt() ?? page,
+          'totalPages': (data['totalPages'] as num?)?.toInt() ?? 1,
+        };
       } else {
         throw Exception("HTTP ${response.statusCode}: Failed to fetch patients");
       }
+    } catch (e) {
+      throw Exception("Failed to fetch patients: $e");
+    }
+  }
+
+  static bool _parseBool(dynamic v) {
+    if (v is bool) return v;
+    if (v is int) return v == 1;
+    if (v is String) return v.toLowerCase() == 'true';
+    return false;
+  }
+
+  static Map<String, String> _mapPatient(dynamic patient) {
+    return {
+      "id":                   patient['id']?.toString() ?? '',
+      "childName":            patient['childName']?.toString() ?? '',
+      "motherName":           patient['motherName']?.toString() ?? '',
+      "fatherName":           patient['fatherName']?.toString() ?? '',
+      "dob":                  patient['dob']?.toString() ?? '',
+      "placeOfBirth":         patient['placeOfBirth']?.toString() ?? '',
+      "birthWeight":          patient['birthWeight']?.toString() ?? '',
+      "birthHeight":          patient['birthHeight']?.toString() ?? '',
+      "sex":                  patient['sex']?.toString() ?? '',
+      "address":              patient['address']?.toString() ?? '',
+      "recordType":           patient['recordType']?.toString() ?? 'Diagnosis',
+      "serviceType":          patient['serviceType']?.toString() ?? 'immunization',
+      "recordDescription":    patient['recordDescription']?.toString() ?? '',
+      "familySerialNumber":   patient['family_serial_number']?.toString() ?? '',
+      "contactNumber":        patient['contact_number']?.toString() ?? '',
+      "spouseName":           patient['spouse_name']?.toString() ?? '',
+      "livingChildrenCount":  patient['living_children_count']?.toString() ?? '0',
+      "monthlyIncome":        patient['monthly_income']?.toString() ?? '0',
+      "religion":             patient['religion']?.toString() ?? '',
+      "city":                 patient['city']?.toString() ?? '',
+      "province":             patient['province']?.toString() ?? '',
+      "age":                  patient['age']?.toString() ?? '0',
+      "education":            patient['education']?.toString() ?? '',
+      "occupation":           patient['occupation']?.toString() ?? '',
+      "birthAttendant":       patient['birth_attendant']?.toString() ?? '',
+      "facilityType":         patient['facility_type']?.toString() ?? '',
+      "healthCenter":         patient['health_center']?.toString() ?? '',
+      "barangay":             patient['barangay']?.toString() ?? '',
+      "familyNumber":         patient['family_number']?.toString() ?? '',
+      "status":               patient['status']?.toString() ?? '',
+      "createdAt":            patient['created_at']?.toString() ?? '',
+    };
+  }
+
+  /// Legacy: get ALL patients (used by export and other non-paginated consumers).
+  /// Consider switching callers to getPatientsPage() for large datasets.
+  static Future<List<Map<String, String>>> getPatients() async {
+    try {
+      // Fetch up to 1000 records for export scenarios
+      final result = await getPatientsPage(page: 1, limit: 1000);
+      return (result['data'] as List).cast<Map<String, String>>();
     } catch (e) {
       throw Exception("Failed to fetch patients: $e");
     }
@@ -377,72 +411,11 @@ class PatientsService {
     }
   }
 
-  /// Search patients by name
+  /// Search patients — delegates to getPatientsPage with a search query.
   static Future<List<Map<String, String>>> searchPatients(String query) async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/patients/search?q=$query"),
-        headers: await _authHeaders(),
-      );
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
-        }
-        
-        if (isSuccess) {
-          List patients = data['data'] ?? [];
-          // Convert to the format expected by your Flutter UI
-          return patients.map((patient) {
-            return {
-              "id": patient['id']?.toString() ?? '',
-              "childName": patient['childName']?.toString() ?? '',
-              "motherName": patient['motherName']?.toString() ?? '',
-              "fatherName": patient['fatherName']?.toString() ?? '',
-              "dob": patient['dob']?.toString() ?? '',
-              "placeOfBirth": patient['placeOfBirth']?.toString() ?? '',
-              "birthWeight": patient['birthWeight']?.toString() ?? '',
-              "birthHeight": patient['birthHeight']?.toString() ?? '',
-              "sex": patient['sex']?.toString() ?? '',
-              "address": patient['address']?.toString() ?? '',
-              "recordType": patient['recordType']?.toString() ?? 'Diagnosis',
-              "serviceType": patient['serviceType']?.toString() ?? 'immunization',
-              "recordDescription": patient['recordDescription']?.toString() ?? '',
-              // Maternal care fields
-              "familySerialNumber": patient['family_serial_number']?.toString() ?? '',
-              "contactNumber": patient['contact_number']?.toString() ?? '',
-              "spouseName": patient['spouse_name']?.toString() ?? '',
-              "livingChildrenCount": patient['living_children_count']?.toString() ?? '0',
-              "monthlyIncome": patient['monthly_income']?.toString() ?? '0',
-              "religion": patient['religion']?.toString() ?? '',
-              "city": patient['city']?.toString() ?? '',
-              "province": patient['province']?.toString() ?? '',
-              "age": patient['age']?.toString() ?? '0',
-              "education": patient['education']?.toString() ?? '',
-              "occupation": patient['occupation']?.toString() ?? '',
-              "birthAttendant": patient['birth_attendant']?.toString() ?? '',
-              "facilityType": patient['facility_type']?.toString() ?? '',
-              // Immunization fields
-              "healthCenter": patient['health_center']?.toString() ?? '',
-              "barangay": patient['barangay']?.toString() ?? '',
-              "familyNumber": patient['family_number']?.toString() ?? '',
-              // Date fields
-              "createdAt": patient['created_at']?.toString() ?? '',
-            };
-          }).toList().cast<Map<String, String>>();
-        } else {
-          throw Exception(data['message'] ?? 'Failed to search patients');
-        }
-      } else {
-        throw Exception("HTTP ${response.statusCode}: Failed to search patients");
-      }
+      final result = await getPatientsPage(search: query, limit: 20);
+      return (result['data'] as List).cast<Map<String, String>>();
     } catch (e) {
       throw Exception("Failed to search patients: $e");
     }

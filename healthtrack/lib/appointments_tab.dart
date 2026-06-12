@@ -778,6 +778,9 @@ class _AppointmentTabState extends State<AppointmentTab> {
           title: "Appointment Confirmed",
         );
         
+        // The backend automatically creates the notification record and sends
+        // FCM push when it processes POST /appointments — no client-side call needed.
+        
         // Refresh slots and appointments immediately
         await Future.wait([
           _loadAvailableSlots(),

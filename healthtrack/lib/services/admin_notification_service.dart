@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart'; // Import the new API config
 import 'fcm_service.dart';
+import '../admin/services/admin_session_storage.dart';
 
 class AdminNotificationService {
   // 🎯 USE CONSISTENT URL CONFIGURATION:
@@ -11,7 +11,18 @@ class AdminNotificationService {
     return ApiConfig.baseUrl;
   }
 
-  // Headers for API requests
+  // Headers with admin auth token
+  static Future<Map<String, String>> _authHeaders() async {
+    final token = await AdminSessionStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  // Fallback plain headers (kept for cases where auth is not required)
+  // ignore: unused_element
   static Map<String, String> get _headers => {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -19,68 +30,66 @@ class AdminNotificationService {
 
   // Try URL with fallback mechanism
   static Future<http.Response> _requestWithFallback(String method, String path, {Map<String, String>? headers, dynamic body}) async {
-    // Try primary URL first
+    // Use auth headers by default if no custom headers provided
+    final effectiveHeaders = headers ?? await _authHeaders();
     try {
       final uri = Uri.parse("$baseUrl$path");
       print("Trying primary URL: $uri with method: $method");
-      
+
       late http.Response response;
       switch (method.toUpperCase()) {
         case 'GET':
-          response = await http.get(uri, headers: headers ?? _headers);
+          response = await http.get(uri, headers: effectiveHeaders);
           break;
         case 'POST':
-          response = await http.post(uri, headers: headers ?? _headers, body: body);
+          response = await http.post(uri, headers: effectiveHeaders, body: body);
           break;
         case 'PUT':
-          response = await http.put(uri, headers: headers ?? _headers, body: body);
+          response = await http.put(uri, headers: effectiveHeaders, body: body);
           break;
         case 'DELETE':
-          response = await http.delete(uri, headers: headers ?? _headers);
+          response = await http.delete(uri, headers: effectiveHeaders);
           break;
         default:
           throw Exception('Unsupported HTTP method: $method');
       }
-      
-      // Check if response is HTML (error page) instead of JSON
+
       if (response.headers['content-type']?.contains('text/html') ?? false) {
         throw Exception('Server returned HTML instead of JSON');
       }
-      
+
       return response;
     } catch (e) {
       print("Primary URL failed: $e");
-      // Try fallback URLs
       for (final fallbackUrl in ApiConfig.fallbackBaseUrls) {
         try {
           if (fallbackUrl.isEmpty) continue;
           final uri = Uri.parse("$fallbackUrl$path");
           print("Trying fallback URL: $uri with method: $method");
-          
+
           late http.Response response;
           switch (method.toUpperCase()) {
             case 'GET':
-              response = await http.get(uri, headers: headers ?? _headers);
+              response = await http.get(uri, headers: effectiveHeaders);
               break;
             case 'POST':
-              response = await http.post(uri, headers: headers ?? _headers, body: body);
+              response = await http.post(uri, headers: effectiveHeaders, body: body);
               break;
             case 'PUT':
-              response = await http.put(uri, headers: headers ?? _headers, body: body);
+              response = await http.put(uri, headers: effectiveHeaders, body: body);
               break;
             case 'DELETE':
-              response = await http.delete(uri, headers: headers ?? _headers);
+              response = await http.delete(uri, headers: effectiveHeaders);
               break;
             default:
               throw Exception('Unsupported HTTP method: $method');
           }
-          
-          // Check if response is HTML (error page) instead of JSON
+
           if (response.headers['content-type']?.contains('text/html') ?? false) {
             print("Fallback URL returned HTML");
             continue;
           }
-          
+
           print("Successfully connected to fallback URL: $fallbackUrl");
           return response;
         } catch (fallbackError) {
@@ -88,9 +97,7 @@ class AdminNotificationService {
           continue;
         }
       }
-      
-      // If all URLs fail, rethrow the original error
-      throw e;
+      rethrow;
     }
   }
 
@@ -236,6 +243,7 @@ class AdminNotificationService {
     required String appointmentId,
     required String status,
     required String message,
+    String? userToken, // optional: pass user JWT when called from user context
   }) async {
     try {
       // Get FCM token
@@ -257,9 +265,23 @@ class AdminNotificationService {
         if (fcmToken != null && fcmToken.isNotEmpty) 'fcmToken': fcmToken,
       });
 
-      print('Sending appointment status notification with request body: ${requestBody}');
+      print('Sending appointment status notification with request body: $requestBody');
 
-      final response = await _requestWithFallback('POST', "/admin/notifications/send-status", body: requestBody);
+      // If a user token is provided, use it; otherwise fall back to admin token
+      final Map<String, String>? overrideHeaders = userToken != null && userToken.isNotEmpty
+          ? {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $userToken',
+            }
+          : null;
+
+      final response = await _requestWithFallback(
+        'POST',
+        "/admin/notifications/send-status",
+        headers: overrideHeaders,
+        body: requestBody,
+      );
 
       print('Received response for status notification: ${response.statusCode} - ${response.body}');
 

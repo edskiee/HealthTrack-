@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -23,6 +24,16 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
   List<Map<String, dynamic>> filteredRecords = [];
   bool isLoading = true;
   String? errorMessage;
+
+  // ── Pagination ─────────────────────────────────────────────────────────
+  int _currentPage  = 1;
+  int _totalPages   = 1;
+  int _totalRecords = 0;
+  static const int _pageSize = 20;
+
+  // ── Debounce ───────────────────────────────────────────────────────────
+  Timer? _searchDebounce;
+  final TextEditingController _searchController = TextEditingController();
   
   // Filter variables
   String _filterServiceType = 'All';
@@ -35,6 +46,7 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
   void initState() {
     super.initState();
     _loadHealthRecords();
+    _searchController.addListener(_onSearchChanged);
     
     // Register for real-time dashboard refresh with higher priority
     DashboardService.addRefreshCallback(_loadHealthRecords, priority: true);
@@ -42,24 +54,58 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.removeListener(_onSearchChanged);
+    _searchController.dispose();
     // Remove refresh callback when widget is disposed
     DashboardService.removeRefreshCallback(_loadHealthRecords);
     super.dispose();
   }
 
-  // Load health records from database
+  void _onSearchChanged() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      setState(() {
+        searchQuery  = _searchController.text;
+        _currentPage = 1;
+      });
+      _loadHealthRecords();
+    });
+  }
+
+  // Load health records from database — paginated + server-filtered
   Future<void> _loadHealthRecords() async {
     try {
       setState(() {
         isLoading = true;
         errorMessage = null;
       });
-      
-      final loadedRecords = await HealthRecordsService.getHealthRecords();
+
+      final startDate = _filterStartDate != null
+          ? '${_filterStartDate!.year}-${_filterStartDate!.month.toString().padLeft(2, '0')}-${_filterStartDate!.day.toString().padLeft(2, '0')}'
+          : null;
+      final endDate = _filterEndDate != null
+          ? '${_filterEndDate!.year}-${_filterEndDate!.month.toString().padLeft(2, '0')}-${_filterEndDate!.day.toString().padLeft(2, '0')}'
+          : null;
+
+      final result = await HealthRecordsService.getHealthRecordsPage(
+        page:        _currentPage,
+        limit:       _pageSize,
+        search:      searchQuery.trim().isEmpty ? null : searchQuery.trim(),
+        serviceType: _filterServiceType == 'All' ? null : _filterServiceType,
+        recordType:  _filterRecordType  == 'All' ? null : _filterRecordType,
+        gender:      _filterGender == 'All' ? null : _filterGender,
+        startDate:   startDate,
+        endDate:     endDate,
+      );
+
       setState(() {
-        healthRecords = loadedRecords;
-        filteredRecords = List.from(loadedRecords);
-        isLoading = false;
+        healthRecords    = (result['data'] as List).cast<Map<String, dynamic>>();
+        filteredRecords  = List.from(healthRecords);
+        _totalRecords    = result['total'] as int;
+        _totalPages      = result['totalPages'] as int;
+        isLoading        = false;
       });
     } catch (e) {
       setState(() {
@@ -72,91 +118,9 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
     }
   }
 
-  // Filter records based on search query and filters
-  void _filterRecords() {
-    if (searchQuery.isEmpty && 
-        _filterServiceType == 'All' && 
-        _filterRecordType == 'All' && 
-        _filterGender == 'All' && 
-        _filterStartDate == null && 
-        _filterEndDate == null) {
-      setState(() {
-        filteredRecords = List.from(healthRecords);
-      });
-    } else {
-      setState(() {
-        filteredRecords = healthRecords.where((record) {
-          // Search filter
-          bool searchMatch = true;
-          if (searchQuery.isNotEmpty) {
-            final patientName = record['patientName']?.toString().toLowerCase() ?? '';
-            final motherName = record['motherName']?.toString().toLowerCase() ?? '';
-            final title = record['title']?.toString().toLowerCase() ?? '';
-            final recordType = record['recordType']?.toString().toLowerCase() ?? '';
-            
-            searchMatch = patientName.contains(searchQuery.toLowerCase()) ||
-                         motherName.contains(searchQuery.toLowerCase()) ||
-                         title.contains(searchQuery.toLowerCase()) ||
-                         recordType.contains(searchQuery.toLowerCase());
-          }
-          
-          // Service type filter (based on recordType)
-          bool serviceTypeMatch = _filterServiceType == 'All' || 
-                                 (record['recordType']?.toString() ?? '').toLowerCase() == _filterServiceType.toLowerCase();
-          
-          // Record type filter
-          bool recordTypeMatch = _filterRecordType == 'All' || 
-                                (record['recordType']?.toString() ?? '').toLowerCase() == _filterRecordType.toLowerCase();
-          
-          // Gender filter
-          bool genderMatch = _filterGender == 'All' || 
-                            (record['sex']?.toString() ?? '').toLowerCase() == _filterGender.toLowerCase();
-          
-          // Date range filter
-          bool dateMatch = _checkDateRange(record['createdAt']);
-          
-          return searchMatch && serviceTypeMatch && recordTypeMatch && genderMatch && dateMatch;
-        }).toList();
-      });
-    }
-  }
-  
-  // Check if record date falls within selected range
-  bool _checkDateRange(String? createdAt) {
-    // If no date filters are set, match all records
-    if (_filterStartDate == null && _filterEndDate == null) return true;
-    
-    // If createdAt is null or empty, don't match
-    if (createdAt == null || createdAt.isEmpty) return true;
-    
-    // Parse the createdAt date
-    final createdDate = DateTime.tryParse(createdAt);
-    if (createdDate == null) return true;
-    
-    // Check if the createdDate falls within the selected range
-    bool matchesStartDate = true;
-    bool matchesEndDate = true;
-    
-    if (_filterStartDate != null) {
-      // Compare dates (ignoring time) by creating DateTime objects with time set to 00:00:00
-      final startDate = DateTime(_filterStartDate!.year, _filterStartDate!.month, _filterStartDate!.day);
-      final recordDate = DateTime(createdDate.year, createdDate.month, createdDate.day);
-      matchesStartDate = recordDate.isAtSameMomentAs(startDate) || recordDate.isAfter(startDate);
-    }
-    
-    if (_filterEndDate != null) {
-      // Compare dates (ignoring time) by creating DateTime objects with time set to 23:59:59
-      final endDate = DateTime(_filterEndDate!.year, _filterEndDate!.month, _filterEndDate!.day, 23, 59, 59);
-      final recordDate = DateTime(createdDate.year, createdDate.month, createdDate.day);
-      matchesEndDate = recordDate.isAtSameMomentAs(DateTime(_filterEndDate!.year, _filterEndDate!.month, _filterEndDate!.day)) || recordDate.isBefore(endDate);
-    }
-    
-    return matchesStartDate && matchesEndDate;
-  }
-  
-  // Apply filters
   void _applyFilters() {
-    _filterRecords();
+    setState(() => _currentPage = 1);
+    _loadHealthRecords();
   }
 
   // 📄 PRINT RECORD WITH TIMESTAMP
@@ -723,7 +687,7 @@ void _deleteRecord(int index) {
 
   Widget _buildSection() {
     if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return _buildSkeletonLoader();
     }
     
     if (errorMessage != null) {
@@ -770,6 +734,50 @@ void _deleteRecord(int index) {
       );
     }
     
+    return Column(
+      children: [
+        // Pagination info bar
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Showing ${filteredRecords.length} of $_totalRecords record(s)  •  Page $_currentPage of $_totalPages',
+                style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+              ),
+            ],
+          ),
+        ),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const gap = 8.0;
+            const cols = 5;
+            final maxW = constraints.maxWidth;
+            final cardWidth = maxW.isFinite
+                ? ((maxW - gap * (cols - 1)) / cols).clamp(120.0, double.infinity)
+                : 200.0;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: filteredRecords.asMap().entries.map((entry) {
+                final index = entry.key;
+                final record = entry.value;
+                return SizedBox(
+                  width: cardWidth,
+                  child: _buildCompactRecordCard(record, index),
+                );
+              }).toList(),
+            );
+          },
+        ),
+        const SizedBox(height: 16),
+        _buildPaginationControls(),
+      ],
+    );
+  }
+
+  Widget _buildSkeletonLoader() {
     return LayoutBuilder(
       builder: (context, constraints) {
         const gap = 8.0;
@@ -781,16 +789,97 @@ void _deleteRecord(int index) {
         return Wrap(
           spacing: gap,
           runSpacing: gap,
-          children: filteredRecords.asMap().entries.map((entry) {
-            final index = entry.key;
-            final record = entry.value;
-            return SizedBox(
-              width: cardWidth,
-              child: _buildCompactRecordCard(record, index),
-            );
-          }).toList(),
+          children: List.generate(10, (_) => SizedBox(
+            width: cardWidth,
+            child: Container(
+              height: 140,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFBFDBFE), width: 0.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    _shimmerBox(32, 32, circular: true),
+                    const SizedBox(width: 10),
+                    Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _shimmerBox(12, double.infinity),
+                        const SizedBox(height: 6),
+                        _shimmerBox(10, 80),
+                      ],
+                    )),
+                  ]),
+                  const SizedBox(height: 10),
+                  _shimmerBox(1, double.infinity),
+                  const SizedBox(height: 10),
+                  _shimmerBox(10, 60),
+                  const SizedBox(height: 6),
+                  _shimmerBox(10, 80),
+                ],
+              ),
+            ),
+          )),
         );
       },
+    );
+  }
+
+  Widget _shimmerBox(double height, double width, {bool circular = false}) {
+    return Container(
+      height: height,
+      width: width == double.infinity ? double.infinity : width,
+      decoration: BoxDecoration(
+        color: const Color(0xFFDBEAFE),
+        borderRadius: circular ? BorderRadius.circular(999) : BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildPaginationControls() {
+    if (_totalPages <= 1) return const SizedBox.shrink();
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _currentPage > 1
+              ? () {
+                  setState(() => _currentPage--);
+                  _loadHealthRecords();
+                }
+              : null,
+          icon: const Icon(Icons.chevron_left, size: 18),
+          label: const Text('Prev'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF3B82F6),
+            side: const BorderSide(color: Color(0xFF3B82F6)),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Text(
+          'Page $_currentPage of $_totalPages',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(width: 16),
+        OutlinedButton.icon(
+          onPressed: _currentPage < _totalPages
+              ? () {
+                  setState(() => _currentPage++);
+                  _loadHealthRecords();
+                }
+              : null,
+          icon: const Icon(Icons.chevron_right, size: 18),
+          label: const Text('Next'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF3B82F6),
+            side: const BorderSide(color: Color(0xFF3B82F6)),
+          ),
+        ),
+      ],
     );
   }
 
@@ -809,9 +898,18 @@ void _deleteRecord(int index) {
         ],
       ),
       child: TextField(
+        controller: _searchController,
         decoration: InputDecoration(
           hintText: "Search patient or record...",
           prefixIcon: const Icon(Icons.search, color: Color(0xFF6B7280)),
+          suffixIcon: searchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear, color: Color(0xFF6B7280)),
+                  onPressed: () {
+                    _searchController.clear();
+                  },
+                )
+              : null,
           filled: true,
           fillColor: Colors.transparent,
           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -819,10 +917,6 @@ void _deleteRecord(int index) {
           enabledBorder: InputBorder.none,
           focusedBorder: InputBorder.none,
         ),
-        onChanged: (val) {
-          setState(() => searchQuery = val);
-          _filterRecords();
-        },
       ),
     );
   }

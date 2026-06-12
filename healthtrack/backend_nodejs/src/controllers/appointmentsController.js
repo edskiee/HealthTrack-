@@ -236,6 +236,12 @@ exports.deleteAppointment = async (req, res) => {
 
     try {
       await connection.execute(createNotificationSql, [id, appointment.user_id, notificationMessage]);
+      // Also write to `notifications` table
+      await connection.execute(
+        `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+         VALUES (?, ?, 'status_update', 'Appointment Cancelled', ?, 0)`,
+        [appointment.user_id, id, notificationMessage]
+      );
     } catch (notificationErr) {
       console.warn("⚠️ Warning: Failed to create notification for appointment deletion:", notificationErr);
       // Continue with commit even if notification fails
@@ -641,6 +647,18 @@ exports.addAppointment = async (req, res) => {
       } catch (notifErr) {
         console.warn("⚠️ Warning: Failed to create notification for approved appointment ID:", appointmentId, notifErr);
         // Continue even if notification fails
+      }
+
+      // Also write to the `notifications` table (read by the app's Notifications tab)
+      try {
+        await db.execute(
+          `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+           VALUES (?, ?, 'status_update', 'Appointment Confirmed', ?, 0)`,
+          [normalizedUserId, appointmentId, notificationMessage]
+        );
+        console.log("✅ notifications row created for approved appointment ID:", appointmentId);
+      } catch (notifErr) {
+        console.warn("⚠️ Warning: Failed to create notifications row for appointment ID:", appointmentId, notifErr);
       }
       
       // Emit real-time update with notification data
@@ -1055,6 +1073,18 @@ exports.updateAppointmentStatus = async (req, res) => {
         console.log(`[${requestId}] ✅ appointment_notifications row created`);
       } catch (notifErr) {
         console.error(`[${requestId}] ❌ Failed to create appointment_notifications:`, notifErr);
+      }
+
+      // Also write to `notifications` table (read by the app's Notifications tab)
+      try {
+        await connection.execute(
+          `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+           VALUES (?, ?, 'status_update', 'Appointment Status Update', ?, 0)`,
+          [updatedAppointment.user_id, id, notificationMessage]
+        );
+        console.log(`[${requestId}] ✅ notifications row created`);
+      } catch (notifErr) {
+        console.error(`[${requestId}] ❌ Failed to insert notifications row:`, notifErr);
       }
     }
 

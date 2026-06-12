@@ -628,6 +628,12 @@ async function sendWelcomeNotification(userId, serviceType, userName) {
 
     if (result.success) {
       await db.execute(
+        `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+         VALUES (?, NULL, 'system', 'Welcome to HealthTrack!', ?, 0)`,
+        [userId, welcomeMessage]
+      );
+      // Legacy table kept for backward compat
+      await db.execute(
         `INSERT INTO appointment_notifications (appointment_id, user_id, notification_type, message, is_read, created_at)
          VALUES (NULL, ?, 'new_appointment', ?, 0, CURRENT_TIMESTAMP)`,
         [userId, welcomeMessage]

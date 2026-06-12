@@ -8,19 +8,20 @@ const {
   getPatientHealthRecords,
   getHealthRecordById,
 } = require("../controllers/healthRecordsController");
-const { authenticateAdmin } = require("../middleware/auth");
+const { authenticateAdmin, authenticateUser } = require("../middleware/auth");
 
 const router = express.Router();
 
-// All health record routes require admin authentication
-router.use(authenticateAdmin);
+// ── Patient-facing route (uses user JWT) ──────────────────────────────────────
+// Regular logged-in users fetch their own health records with their JWT token.
+router.get("/patient/:patientId", authenticateUser, getPatientHealthRecords);
 
-router.get("/",              getHealthRecords);
-router.get("/all-patients",  getAllPatientsWithRecords);
-router.get("/patient/:patientId", getPatientHealthRecords);
-router.get("/:id",           getHealthRecordById);
-router.post("/",             addHealthRecord);
-router.put("/:id",           updateHealthRecord);
-router.delete("/:id",        deleteHealthRecord);
+// ── Admin-only routes (uses admin session token) ──────────────────────────────
+router.get("/",              authenticateAdmin, getHealthRecords);
+router.get("/all-patients",  authenticateAdmin, getAllPatientsWithRecords);
+router.get("/:id",           authenticateAdmin, getHealthRecordById);
+router.post("/",             authenticateAdmin, addHealthRecord);
+router.put("/:id",           authenticateAdmin, updateHealthRecord);
+router.delete("/:id",        authenticateAdmin, deleteHealthRecord);
 
 module.exports = router;

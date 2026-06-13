@@ -169,18 +169,18 @@ exports.getPatients = async (req, res) => {
     const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
     // ── COUNT total matching rows ─────────────────────────────────────────────
-    const [countRows] = await db.execute(
+    // Use query() instead of execute() for the COUNT — avoids BigInt prepared-stmt issues
+    const [countRows] = await db.query(
       `SELECT COUNT(*) AS total FROM patients ${whereSQL}`,
       params
     );
-    // COUNT(*) returns a BigInt in mysql2 — coerce to a plain JS number
     const total      = Number(countRows[0].total);
     const totalPages = Math.ceil(total / limit);
 
     // ── Fetch the page ────────────────────────────────────────────────────────
     const dataSQL = `SELECT ${selectCols} FROM patients ${whereSQL} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-    // Pass limit/offset as explicit integers — mysql2 prepared stmts reject BigInt/NaN
-    const [results] = await db.execute(dataSQL, [...params, limit | 0, offset | 0]);
+    // Use query() to avoid prepared-statement BigInt/type issues
+    const [results] = await db.query(dataSQL, [...params, limit | 0, offset | 0]);
 
     res.status(200).json({
       success:    true,

@@ -4,8 +4,8 @@ const db = require("../config/db");
 exports.getHealthRecords = async (req, res) => {
   try {
     // ── Pagination ──────────────────────────────────────────────────────────
-    const page   = Math.max(1, parseInt(req.query.page  || '1',  10));
-    const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
+    const page   = Math.max(1,   Number(req.query.page  || 1)  | 0);
+    const limit  = Math.min(100, Math.max(1, Number(req.query.limit || 20) | 0));
     const offset = (page - 1) * limit;
 
     // ── Server-side filters ─────────────────────────────────────────────────
@@ -50,14 +50,14 @@ exports.getHealthRecords = async (req, res) => {
       : '';
 
     // ── COUNT ───────────────────────────────────────────────────────────────
-    const [countRows] = await db.execute(
+    const [countRows] = await db.query(
       `SELECT COUNT(*) AS total
        FROM health_records hr
        LEFT JOIN patients p ON hr.patient_id = p.id
        ${whereSQL}`,
       params
     );
-    const total      = countRows[0].total;
+    const total      = Number(countRows[0].total);
     const totalPages = Math.ceil(total / limit);
 
     // ── Fetch page ──────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ exports.getHealthRecords = async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
-    const [results] = await db.execute(sql, [...params, limit, offset]);
+    const [results] = await db.query(sql, [...params, limit | 0, offset | 0]);
 
     const processedResults = (results || []).map(record => ({
       id:                       record.id || null,

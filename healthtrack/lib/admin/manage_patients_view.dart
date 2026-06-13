@@ -180,21 +180,37 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
           ? '${_filterEndDate!.year}-${_filterEndDate!.month.toString().padLeft(2, '0')}-${_filterEndDate!.day.toString().padLeft(2, '0')}'
           : null;
 
-      final result = await PatientsService.getPatientsPage(
-        page:        _currentPage,
-        limit:       _pageSize,
-        search:      searchQuery.trim().isEmpty ? null : searchQuery.trim(),
-        serviceType: _filterServiceType == 'All' ? null : _filterServiceType,
-        gender:      _filterGender == 'All' ? null : _filterGender,
-        status:      _filterStatus == 'All' ? null : _filterStatus,
-        ageRange:    _filterAgeRange == 'All' ? null : _filterAgeRange,
-        startDate:   startDate,
-        endDate:     endDate,
-      );
-      
+      // Retry up to 2 times with a brief backoff (handles Render cold-start 500s)
+      Map<String, dynamic>? result;
+      Exception? lastError;
+      for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+          result = await PatientsService.getPatientsPage(
+            page:        _currentPage,
+            limit:       _pageSize,
+            search:      searchQuery.trim().isEmpty ? null : searchQuery.trim(),
+            serviceType: _filterServiceType == 'All' ? null : _filterServiceType,
+            gender:      _filterGender == 'All' ? null : _filterGender,
+            status:      _filterStatus == 'All' ? null : _filterStatus,
+            ageRange:    _filterAgeRange == 'All' ? null : _filterAgeRange,
+            startDate:   startDate,
+            endDate:     endDate,
+          );
+          lastError = null;
+          break; // success — stop retrying
+        } catch (e) {
+          lastError = e is Exception ? e : Exception(e.toString());
+          if (attempt == 0) {
+            // Wait 2 s before retrying (Render cold-start warm-up)
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        }
+      }
+      if (lastError != null) throw lastError!;
+
       if (!mounted) return;
       setState(() {
-        patients         = (result['data'] as List).cast<Map<String, String>>();
+        patients         = (result!['data'] as List).cast<Map<String, String>>();
         filteredPatients = List.from(patients);
         _totalRecords    = result['total'] as int;
         _totalPages      = result['totalPages'] as int;
@@ -206,14 +222,7 @@ class _ManagePatientsViewState extends State<ManagePatientsView> {
         errorMessage = e.toString();
         isLoading = false;
       });
-      
-      if (mounted) {
-        MessageUtils.showErrorMessage(
-          context,
-          'Error loading patients: $e',
-          title: "Load Error",
-        );
-      }
+      // Error is displayed inline in the patient list container — no popup needed.
     }
   }
 

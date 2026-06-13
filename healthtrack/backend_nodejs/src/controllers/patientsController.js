@@ -1,22 +1,34 @@
 const db = require("../config/db");
 
-// ─── Column existence cache (avoids repeated INFORMATION_SCHEMA lookups) ───────
+// ─── Column existence cache ───────────────────────────────────────────────────
+// Optional maternal columns that may or may not exist in older DB schemas.
+const OPTIONAL_MATERNAL_COLS = [
+  'lmp_date','edd_date','gestational_age_weeks',
+  'gravida','para','abortus','stillbirth',
+  'blood_pressure','weight','height','bmi',
+  'fundal_height','fetal_heart_rate',
+];
+
 let _cachedMaternalColumns = null;
+
+/**
+ * Returns the subset of OPTIONAL_MATERNAL_COLS that actually exist in the
+ * `patients` table.  Uses DESCRIBE (no INFORMATION_SCHEMA permission needed).
+ * Result is cached for the lifetime of the process.
+ */
 async function getMaternalColumns(conn) {
-  if (_cachedMaternalColumns) return _cachedMaternalColumns;
-  const [rows] = await (conn || db).execute(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE()
-      AND TABLE_NAME   = 'patients'
-      AND COLUMN_NAME IN (
-        'lmp_date','edd_date','gestational_age_weeks',
-        'gravida','para','abortus','stillbirth',
-        'blood_pressure','weight','height','bmi',
-        'fundal_height','fetal_heart_rate'
-      )
-  `);
-  _cachedMaternalColumns = rows.map(r => r.COLUMN_NAME);
+  if (Array.isArray(_cachedMaternalColumns)) return _cachedMaternalColumns;
+
+  try {
+    const [rows] = await (conn || db).execute("DESCRIBE patients");
+    const allCols = rows.map(r => r.Field);
+    _cachedMaternalColumns = OPTIONAL_MATERNAL_COLS.filter(c => allCols.includes(c));
+  } catch (err) {
+    // DESCRIBE failed (DB unavailable, permission issue, etc.)
+    // Return empty — do NOT cache so the next request retries.
+    console.error("⚠️ getMaternalColumns: DESCRIBE patients failed:", err.message);
+    return [];
+  }
   return _cachedMaternalColumns;
 }
 

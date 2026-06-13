@@ -106,10 +106,11 @@ function buildFullSelectCols(existingMaternalCols) {
 // Get patients with pagination, server-side filtering, and search
 exports.getPatients = async (req, res) => {
   try {
-    // ── Pagination params ─────────────────────────────────────────────────────
-    const page     = Math.max(1, parseInt(req.query.page  || '1',  10));
-    const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
-    const offset   = (page - 1) * limit;
+    // ── Pagination params — use Number() + |0 to guarantee plain JS integers
+    // mysql2 prepared statements reject NaN / BigInt as LIMIT/OFFSET values.
+    const page   = Math.max(1,   Number(req.query.page  || 1)  | 0);
+    const limit  = Math.min(100, Math.max(1, Number(req.query.limit || 20) | 0));
+    const offset = (page - 1) * limit;
 
     // ── Filter / search params ────────────────────────────────────────────────
     const searchQ      = (req.query.q           || '').trim();
@@ -172,12 +173,14 @@ exports.getPatients = async (req, res) => {
       `SELECT COUNT(*) AS total FROM patients ${whereSQL}`,
       params
     );
-    const total      = countRows[0].total;
+    // COUNT(*) returns a BigInt in mysql2 — coerce to a plain JS number
+    const total      = Number(countRows[0].total);
     const totalPages = Math.ceil(total / limit);
 
     // ── Fetch the page ────────────────────────────────────────────────────────
     const dataSQL = `SELECT ${selectCols} FROM patients ${whereSQL} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-    const [results] = await db.execute(dataSQL, [...params, limit, offset]);
+    // Pass limit/offset as explicit integers — mysql2 prepared stmts reject BigInt/NaN
+    const [results] = await db.execute(dataSQL, [...params, limit | 0, offset | 0]);
 
     res.status(200).json({
       success:    true,
@@ -192,9 +195,6 @@ exports.getPatients = async (req, res) => {
       success: false,
       message: "Failed to fetch patients",
       error: error.message,
-      sqlCode: error.code,
-      sqlState: error.sqlState,
-      sqlMessage: error.sqlMessage,
     });
   }
 };

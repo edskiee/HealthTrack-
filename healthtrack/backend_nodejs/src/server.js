@@ -146,44 +146,6 @@ app.use("/system-settings",      systemSettingsRoutes);
 app.use("/referrals",            referralsRoutes);
 app.use("/test",                 testNotificationsRoutes); // disabled in production
 
-// ─── Temporary DB Diagnostics (no auth — remove after debugging) ─────────────
-app.get("/debug/db-check", async (_req, res) => {
-  try {
-    const [cols] = await dbPool.execute("DESCRIBE patients");
-    const colNames = cols.map(r => r.Field);
-    const [count] = await dbPool.execute("SELECT COUNT(*) AS n FROM patients");
-    // Also try the exact query the patientsController runs
-    const [ptest] = await dbPool.execute(
-      "SELECT id, child_fullname AS childName, service_type AS serviceType, status, created_at FROM patients ORDER BY created_at DESC LIMIT 1"
-    );
-    res.json({ ok: true, columns: colNames, rowCount: count[0].n, sampleRow: ptest[0] || null });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, code: err.code });
-  }
-});
-
-app.get("/debug/auth-check", async (req, res) => {
-  const crypto = require("crypto");
-  try {
-    const raw = req.headers.authorization || "";
-    if (!raw.startsWith("Bearer ")) return res.status(400).json({ ok: false, error: "No Bearer token" });
-    const token = raw.slice(7).trim();
-    const tokenHash = crypto.createHash("sha256").update(token, "utf8").digest("hex");
-    const [rows] = await dbPool.execute(
-      "SELECT s.id AS session_id, s.admin_id, a.username, a.role FROM admin_sessions s INNER JOIN admins a ON a.id = s.admin_id WHERE s.token_hash = ? LIMIT 1",
-      [tokenHash]
-    );
-    if (!rows.length) return res.json({ ok: false, error: "No session found for this token" });
-    // Try the last_active_at update
-    await dbPool.execute("UPDATE admin_sessions SET last_active_at = CURRENT_TIMESTAMP WHERE id = ?", [rows[0].session_id]);
-    // Now try the patients query
-    const [patients] = await dbPool.execute("SELECT id, child_fullname AS childName FROM patients ORDER BY created_at DESC LIMIT 1");
-    res.json({ ok: true, admin: rows[0].username, role: rows[0].role, samplePatient: patients[0] || null });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message, code: err.code, stack: err.stack?.split("\n").slice(0,5) });
-  }
-});
-
 // ─── Health Check Endpoints ───────────────────────────────────────────────────
 app.get("/", (_req, res) => {
   res.status(200).json({

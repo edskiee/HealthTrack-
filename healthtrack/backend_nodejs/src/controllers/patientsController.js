@@ -118,7 +118,7 @@ exports.getPatients = async (req, res) => {
     const statusFilter = (req.query.status      || '').trim();
     const startDate    = (req.query.startDate   || '').trim();
     const endDate      = (req.query.endDate     || '').trim();
-    const ageRange     = (req.query.ageRange    || '').trim(); // e.g. "0-1","1-5","5-10","10+"
+    const ageRange     = (req.query.ageRange    || '').trim();
 
     const existingCols = await getMaternalColumns();
     const selectCols   = buildListSelectCols(existingCols);
@@ -192,6 +192,9 @@ exports.getPatients = async (req, res) => {
       success: false,
       message: "Failed to fetch patients",
       error: error.message,
+      sqlCode: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
     });
   }
 };

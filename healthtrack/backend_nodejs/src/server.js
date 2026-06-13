@@ -146,6 +146,18 @@ app.use("/system-settings",      systemSettingsRoutes);
 app.use("/referrals",            referralsRoutes);
 app.use("/test",                 testNotificationsRoutes); // disabled in production
 
+// ─── Temporary DB Diagnostics (no auth — remove after debugging) ─────────────
+app.get("/debug/db-check", async (_req, res) => {
+  try {
+    const [cols] = await dbPool.execute("DESCRIBE patients");
+    const colNames = cols.map(r => r.Field);
+    const [count] = await dbPool.execute("SELECT COUNT(*) AS n FROM patients");
+    res.json({ ok: true, columns: colNames, rowCount: count[0].n });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, code: err.code });
+  }
+});
+
 // ─── Health Check Endpoints ───────────────────────────────────────────────────
 app.get("/", (_req, res) => {
   res.status(200).json({

@@ -370,6 +370,21 @@ async function sendAppointmentReminder(reminderId) {
       message += ` Location: ${reminder.clinic_hospital}.`;
     }
     
+    // Always write to the notifications table so the reminder appears in the app's
+    // Notifications tab regardless of whether the FCM push succeeds.
+    let inboxNotificationId = null;
+    try {
+      const [insResult] = await db.execute(
+        `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+         VALUES (?, ?, 'appointment_reminder', ?, ?, 0)`,
+        [reminder.user_id, reminder.appointment_id, title, message]
+      );
+      inboxNotificationId = insResult.insertId;
+      console.log(`✅ Reminder notifications row created id=${inboxNotificationId}`);
+    } catch (inboxErr) {
+      console.error(`❌ Failed to insert reminder into notifications table:`, inboxErr);
+    }
+
     // Send push notification to all active user devices
     const result = await sendToUserDevices(
       reminder.user_id,
@@ -389,11 +404,12 @@ async function sendAppointmentReminder(reminderId) {
         clinicHospital: reminder.clinic_hospital || "",
         daysBefore: reminder.days_before,
         reminderType: reminder.reminder_type,
+        notificationId: inboxNotificationId ? String(inboxNotificationId) : "",
       },
       `reminder:${reminderId}`
     );
     
-    if (result.success) {
+    if (result.success || result.skipped) {
       // Update reminder status to sent
       await updateReminderStatus(reminderId, 'sent', null);
       
@@ -410,6 +426,10 @@ async function sendAppointmentReminder(reminderId) {
       await saveNotificationHistory(reminder.user_id, title, message, 'appointment_reminder', { reminderId }, 'failed', result.error);
       
       console.log(`❌ Failed to send appointment reminder for reminder ${reminderId}: ${result.error}`);
+      // Still return success if the in-app notification was written
+      if (inboxNotificationId) {
+        return { success: true, message: "In-app notification created; push failed: " + result.error };
+      }
       return { success: false, message: result.error };
     }
     

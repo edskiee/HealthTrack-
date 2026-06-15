@@ -610,23 +610,12 @@ const removeInvalidFcmToken = async (req, res) => {
 
 async function sendWelcomeNotification(userId, serviceType, userName) {
   try {
-    const [userResults] = await db.execute("SELECT fcm_token FROM users WHERE id = ?", [userId]);
-    if (!userResults.length || !userResults[0].fcm_token) return { success: true, message: "No FCM token" };
-
-    const fcmToken    = userResults[0].fcm_token;
-    const isTestMode  = process.env.TEST_MODE === "true";
-    if (!isTestMode && !isValidFcmToken(fcmToken)) return { success: false, message: "Invalid FCM token" };
-
     const serviceTypeName = serviceType === "maternal" ? "Maternal Care" : "Immunization";
     const welcomeMessage  = `Welcome to HealthTrack, ${userName}! Your ${serviceTypeName} account has been successfully created.`;
 
-    const result = await sendPushNotification(
-      fcmToken,
-      { title: "Welcome to HealthTrack!", body: welcomeMessage, notificationType: "general", data: { type: "general", userId: String(userId), serviceType, timestamp: new Date().toISOString() } },
-      userId
-    );
-
-    if (result.success) {
+    // Always write to the notifications table so the welcome message appears in the
+    // Notifications tab even if the user doesn't have an FCM token yet.
+    try {
       await db.execute(
         `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
          VALUES (?, NULL, 'system', 'Welcome to HealthTrack!', ?, 0)`,
@@ -638,9 +627,34 @@ async function sendWelcomeNotification(userId, serviceType, userName) {
          VALUES (NULL, ?, 'new_appointment', ?, 0, CURRENT_TIMESTAMP)`,
         [userId, welcomeMessage]
       );
+      console.log(`✅ Welcome notification stored in DB for user ${userId}`);
+    } catch (dbErr) {
+      console.error("❌ Failed to store welcome notification in DB:", dbErr.message);
     }
 
-    return { success: result.success };
+    // Attempt FCM push — non-blocking, failure is acceptable since token may not exist yet.
+    const [userResults] = await db.execute("SELECT fcm_token FROM users WHERE id = ?", [userId]);
+    if (!userResults.length || !userResults[0].fcm_token) {
+      return { success: true, message: "Welcome notification stored; no FCM token yet" };
+    }
+
+    const fcmToken   = userResults[0].fcm_token;
+    const isTestMode = process.env.TEST_MODE === "true";
+    if (!isTestMode && !isValidFcmToken(fcmToken)) {
+      return { success: true, message: "Welcome notification stored; FCM token invalid" };
+    }
+
+    const result = await sendPushNotification(
+      fcmToken,
+      { title: "Welcome to HealthTrack!", body: welcomeMessage, notificationType: "system", data: { type: "system", userId: String(userId), serviceType, timestamp: new Date().toISOString() } },
+      userId
+    );
+
+    if (!result.success) {
+      console.warn(`⚠️ Welcome FCM push failed for user ${userId}: ${result.error}`);
+    }
+
+    return { success: true };
   } catch (error) {
     console.error("❌ sendWelcomeNotification:", error.message);
     return { success: false, error: error.message };

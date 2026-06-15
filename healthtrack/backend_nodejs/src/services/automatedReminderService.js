@@ -6,6 +6,7 @@ const db = require("../config/db");
 const { sendPushNotification } = require("./firebaseService");
 const { isUserPushEnabled } = require("./pushNotificationPolicy");
 const { getUserReminderStatus, getDaysUntilNextReminder } = require("./reminderStatusService");
+const { getUserFcmTokens } = require("./appointmentPushService");
 
 // Cache for system settings to avoid repeated database queries
 let systemSettingsCache = {};
@@ -99,23 +100,44 @@ async function sendAutomatedNotification(userId, notificationType, title, messag
       return { success: false, message: "Notification type disabled" };
     }
 
+    // Always write to the notifications table so messages appear in the Notifications tab,
+    // regardless of whether FCM push is enabled or the user has a token.
+    let inboxNotificationId = null;
+    try {
+      const inboxType = (() => {
+        if (notificationType === 'appointment_confirmation' || notificationType === 'appointment') return 'status_update';
+        if (notificationType === 'rescheduling') return 'status_update';
+        if (notificationType === 'cancellation') return 'status_update';
+        if (notificationType === 'reminder') return 'appointment_reminder';
+        return notificationType;
+      })();
+      const [insResult] = await db.execute(
+        `INSERT INTO notifications (user_id, appointment_id, notification_type, title, message, is_read)
+         VALUES (?, ?, ?, ?, ?, 0)`,
+        [userId, data.appointment_id || null, inboxType, title, message]
+      );
+      inboxNotificationId = insResult.insertId;
+    } catch (inboxErr) {
+      console.error(`❌ Failed to write automated notification to notifications table for user ${userId}:`, inboxErr.message);
+    }
+
     if (!(await isUserPushEnabled(userId))) {
       console.log(`// DEBUG automated notification skipped: user ${userId} disabled push`);
-      return { success: false, message: "Push notifications disabled by user" };
+      return { success: !!inboxNotificationId, message: "Push notifications disabled by user; in-app written" };
     }
     
-    // Get user's FCM token
-    const [users] = await db.execute(
-      "SELECT fcm_token FROM users WHERE id = ?", 
-      [userId]
-    );
-    
-    if (users.length === 0 || !users[0].fcm_token) {
-      console.log(`❌ No FCM token found for user ${userId}`);
-      return { success: false, message: "No FCM token found for user" };
+    // Get all active FCM tokens for this user (multi-device)
+    let fcmTokens = [];
+    try {
+      fcmTokens = await getUserFcmTokens(userId);
+    } catch (tokenErr) {
+      console.warn(`⚠️ Error fetching FCM tokens for user ${userId}:`, tokenErr.message);
     }
-    
-    const fcmToken = users[0].fcm_token;
+
+    if (fcmTokens.length === 0) {
+      console.log(`❌ No FCM tokens found for user ${userId}`);
+      return { success: !!inboxNotificationId, message: "No FCM token found for user; in-app written" };
+    }
     
     // Prepare notification payload with string-only data values
     const payload = {
@@ -125,21 +147,37 @@ async function sendAutomatedNotification(userId, notificationType, title, messag
       data: {
         type: String(notificationType),
         timestamp: String(new Date().toISOString()),
+        notificationId: inboxNotificationId ? String(inboxNotificationId) : '',
         ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]))
       }
     };
     
-    console.log(`// DEBUG automatedReminder send userId=${userId} type=${notificationType}`);
-    const result = await sendPushNotification(fcmToken, payload, userId);
+    let successCount = 0;
+    for (const fcmToken of fcmTokens) {
+      console.log(`// DEBUG automatedReminder send userId=${userId} type=${notificationType}`);
+      const result = await sendPushNotification(fcmToken, payload, userId);
+      if (result.success) {
+        successCount++;
+      } else {
+        console.warn(`⚠️ FCM push failed for user ${userId} token ${fcmToken.substring(0,20)}...: ${result.error}`);
+        if (result.code === 'messaging/invalid-registration-token' ||
+            result.code === 'messaging/registration-token-not-registered') {
+          await db.execute('UPDATE users SET fcm_token = NULL WHERE fcm_token = ?', [fcmToken]);
+          await db.execute('UPDATE user_device_tokens SET is_active = 0 WHERE fcm_token = ?', [fcmToken]);
+        }
+      }
+    }
     
     // Save notification to history
+    const historyStatus = successCount > 0 ? 'sent' : 'failed';
     await db.execute(
       "INSERT INTO notification_history (user_id, title, message, notification_type, payload, status) VALUES (?, ?, ?, ?, ?, ?)",
-      [userId, title, message, notificationType, JSON.stringify(payload), result.success ? 'sent' : 'failed']
+      [userId, title, message, notificationType, JSON.stringify(payload), historyStatus]
     );
     
-    console.log(`✅ Automated ${notificationType} notification sent to user ${userId}`);
-    return { success: true, message: "Notification sent successfully" };
+    const overallSuccess = successCount > 0 || !!inboxNotificationId;
+    console.log(`✅ Automated ${notificationType} notification processed for user ${userId} (push: ${successCount}/${fcmTokens.length}, inApp: ${!!inboxNotificationId})`);
+    return { success: overallSuccess, message: "Notification processed" };
   } catch (error) {
     console.error(`❌ Error sending automated notification to user ${userId}:`, error);
     
@@ -230,7 +268,7 @@ async function sendAppointmentConfirmationNotification(appointmentId) {
     
     const formattedTime = appointment.appointment_time;
     
-    // Send notification
+    // Send notification (writes to notifications table + FCM push)
     const title = "Appointment Confirmed!";
     const message = `Your ${appointment.service_name || appointment.appointment_type} appointment on ${formattedDate} at ${formattedTime} has been confirmed.`;
     

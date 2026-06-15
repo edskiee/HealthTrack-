@@ -118,8 +118,10 @@ class _NotificationsTabState extends State<NotificationsTab>
       // Join user room if logged in
       final userSession = UserSession.instance;
       if (userSession.isLoggedIn) {
-        final userId = int.parse(userSession.userId);
-        _webSocketService.joinUserRoom(userId);
+        final userId = int.tryParse(userSession.userId) ?? 0;
+        if (userId > 0) {
+          _webSocketService.joinUserRoom(userId);
+        }
       }
     } catch (e) {
       print('❌ Error initializing WebSocket: $e');
@@ -189,7 +191,12 @@ class _NotificationsTabState extends State<NotificationsTab>
         throw Exception("User not logged in");
       }
 
-      final appointmentNotifications = await NotificationService.getUserNotifications(int.parse(userSession.userId));
+      final userId = int.tryParse(userSession.userId) ?? 0;
+      if (userId <= 0) {
+        throw Exception("Invalid user session. Please log in again.");
+      }
+
+      final appointmentNotifications = await NotificationService.getUserNotifications(userId);
       
       // Convert appointment notifications to the format expected by the UI
       // Sort by created_at timestamp in descending order (newest first)
@@ -240,16 +247,29 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   // Convert technical error messages to user-friendly ones
   String _getUserFriendlyErrorMessage(String technicalError) {
-    if (technicalError.contains('Unable to connect to server') ||
+    if (technicalError.contains('Unauthorized') ||
+        technicalError.contains('401') ||
+        technicalError.contains('session expired') ||
+        technicalError.contains('Session expired') ||
+        technicalError.contains('Invalid authentication')) {
+      return 'Your session has expired. Please log out and log in again.';
+    } else if (technicalError.contains('timed out') ||
+        technicalError.contains('TimeoutException') ||
+        technicalError.contains('starting up')) {
+      return 'The server is taking too long to respond. It may be waking up — please retry in a moment.';
+    } else if (technicalError.contains('Unable to connect to server') ||
         technicalError.contains('Connection refused') ||
         technicalError.contains('SocketException') ||
-        technicalError.contains('Network is unreachable')) {
-      return 'Unable to load notifications. Please check your internet connection and ensure the backend server is running.';
-    } else if (technicalError.contains('timeout')) {
-      return 'Request timed out. Please check your connection and try again.';
+        technicalError.contains('Network is unreachable') ||
+        technicalError.contains('Failed host lookup')) {
+      return 'Unable to load notifications. Please check your internet connection.';
     } else if (technicalError.contains('User not logged in')) {
       return 'Please log in to view your notifications.';
-    } else if (technicalError.contains('Failed to fetch notifications')) {
+    } else if (technicalError.contains('Server configuration error') ||
+        technicalError.contains('500')) {
+      return 'The server encountered a configuration issue. Please try again later.';
+    } else if (technicalError.contains('Failed to fetch notifications') ||
+        technicalError.contains('HTTP')) {
       return 'Unable to load notifications at this time. Please try again later.';
     } else {
       return 'An unexpected error occurred. Please try again.';
@@ -264,6 +284,9 @@ class _NotificationsTabState extends State<NotificationsTab>
       case 'appointment_in_progress':
       case 'appointment_completed':
       case 'appointment_missed':
+      case 'appointment_approved':
+      case 'appointment_rescheduled':
+      case 'appointment_confirmation':
         return 'Appointments';
       case 'appointment_update':
       case 'status_update':
@@ -293,6 +316,12 @@ class _NotificationsTabState extends State<NotificationsTab>
         return 'Appointment Completed';
       case 'appointment_missed':
         return 'Appointment Missed';
+      case 'appointment_approved':
+        return 'Appointment Approved';
+      case 'appointment_rescheduled':
+        return 'Appointment Rescheduled';
+      case 'appointment_confirmation':
+        return 'Appointment Confirmed';
       case 'appointment_update':
         return 'Appointment Update';
       case 'status_update':
@@ -325,6 +354,11 @@ class _NotificationsTabState extends State<NotificationsTab>
         return Icons.calendar_today;
       case 'appointment_reminder':
         return Icons.event;
+      case 'appointment_approved':
+      case 'appointment_confirmation':
+        return Icons.event_available;
+      case 'appointment_rescheduled':
+        return Icons.edit_calendar;
       case 'appointment_update':
         return Icons.event_available;
       case 'status_update':
@@ -357,6 +391,11 @@ class _NotificationsTabState extends State<NotificationsTab>
         return Colors.blueAccent;
       case 'appointment_reminder':
         return Colors.lightBlue;
+      case 'appointment_approved':
+      case 'appointment_confirmation':
+        return Colors.green;
+      case 'appointment_rescheduled':
+        return Colors.orange;
       case 'appointment_update':
         return Colors.green;
       case 'status_update':
@@ -442,7 +481,8 @@ class _NotificationsTabState extends State<NotificationsTab>
       final userSession = UserSession.instance;
       if (!userSession.isLoggedIn) return;
       
-      final userId = int.parse(userSession.userId);
+      final userId = int.tryParse(userSession.userId) ?? 0;
+      if (userId <= 0) return;
       await NotificationService.markAllNotificationsAsRead(userId);
       
       // Update local state
@@ -595,8 +635,10 @@ class _NotificationsTabState extends State<NotificationsTab>
     // Leave user room when disposing
     final userSession = UserSession.instance;
     if (userSession.isLoggedIn) {
-      final userId = int.parse(userSession.userId);
-      _webSocketService.leaveUserRoom(userId);
+      final userId = int.tryParse(userSession.userId) ?? 0;
+      if (userId > 0) {
+        _webSocketService.leaveUserRoom(userId);
+      }
     }
     
     super.dispose();
@@ -678,7 +720,7 @@ class _NotificationsTabState extends State<NotificationsTab>
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton.icon(
-                      onPressed: _loadNotifications,
+                      onPressed: _isLoading ? null : _loadNotifications,
                       icon: const Icon(Icons.refresh),
                       label: const Text('Retry'),
                       style: ElevatedButton.styleFrom(

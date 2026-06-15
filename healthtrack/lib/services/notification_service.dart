@@ -1,5 +1,5 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
 import 'user_session_storage.dart';
@@ -38,16 +38,25 @@ class NotificationService {
       try {
         final res = await http
             .get(Uri.parse('$base/notifications/user/$userId'), headers: headers)
-            .timeout(const Duration(seconds: 10));
+            .timeout(const Duration(seconds: 20));
         if (res.statusCode == 200) {
           final data = json.decode(res.body);
           if (_isSuccess(data)) {
             return List<Map<String, dynamic>>.from(data['data'] ?? []);
           }
           last = Exception(data['message'] ?? 'Failed to fetch notifications');
+        } else if (res.statusCode == 401) {
+          last = Exception('Unauthorized: session expired or not logged in');
+        } else if (res.statusCode == 500) {
+          last = Exception('Server configuration error: HTTP 500');
+        } else if (res.statusCode == 404) {
+          // No notifications found for this user — treat as empty list
+          return [];
         } else {
           last = Exception('HTTP ${res.statusCode}: Failed to fetch notifications');
         }
+      } on TimeoutException {
+        last = Exception('Request timed out. The server may be starting up, please try again.');
       } catch (e) {
         last = Exception('Failed to fetch notifications: $e');
       }

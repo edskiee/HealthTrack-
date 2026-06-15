@@ -1,28 +1,16 @@
 const db = require("../config/db");
 const { sendPushNotification, isValidFcmToken } = require("../services/firebaseService");
+const { getUserFcmTokens } = require("../services/appointmentPushService");
 
 // Send appointment status update notification - used by automated system
 const sendAppointmentStatusNotification = async (userId, appointmentId, status, message) => {
   try {
     // Get user details
-    const [userResult] = await db.execute('SELECT id, full_name, email, fcm_token FROM users WHERE id = ?', [userId]);
+    const [userResult] = await db.execute('SELECT id, full_name, email FROM users WHERE id = ?', [userId]);
 
     if (userResult.length === 0) {
       console.error(`❌ User not found: ${userId}`);
       return;
-    }
-
-    const user = userResult[0];
-    let userFcmToken = user.fcm_token;
-
-    // Validate the FCM token if we have one
-    if (userFcmToken && userFcmToken.trim() !== '' && !isValidFcmToken(userFcmToken)) {
-      console.warn(`⚠️ Invalid FCM token format for user ${userId}, clearing from database`);
-      // Clear invalid token from database
-      await db.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-      userFcmToken = null;
-    } else if (userFcmToken && userFcmToken.trim() !== '') {
-      console.log(`✅ Valid FCM token found for user ${userId}`);
     }
 
     // Create notification in database
@@ -43,8 +31,21 @@ const sendAppointmentStatusNotification = async (userId, appointmentId, status, 
 
     const [insertResult] = await db.execute(insertQuery, insertValues);
 
-    // Send FCM push notification if token is available and valid
-    if (userFcmToken) {
+    // Fetch all active FCM tokens for this user (multi-device support)
+    let fcmTokens = [];
+    try {
+      fcmTokens = await getUserFcmTokens(userId);
+    } catch (tokenErr) {
+      console.warn(`⚠️ Error fetching FCM tokens for user ${userId}:`, tokenErr.message);
+    }
+
+    if (fcmTokens.length === 0) {
+      console.log(`⚠️ No valid FCM tokens found for user ${userId}, skipping push notification`);
+      return;
+    }
+
+    // Send FCM push notification to each active device token
+    for (const userFcmToken of fcmTokens) {
       try {
         const payload = {
           title: title,
@@ -69,7 +70,7 @@ const sendAppointmentStatusNotification = async (userId, appointmentId, status, 
               fcmResult.code === 'messaging/registration-token-not-registered' ||
               fcmResult.code === 'invalid-argument') {
             console.log(`🗑️ Clearing invalid FCM token for user ${userId}`);
-            await db.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
+            await db.execute('UPDATE users SET fcm_token = NULL WHERE fcm_token = ?', [userFcmToken]);
             await db.execute(
               'UPDATE user_device_tokens SET is_active = 0 WHERE fcm_token = ?',
               [userFcmToken]
@@ -77,10 +78,8 @@ const sendAppointmentStatusNotification = async (userId, appointmentId, status, 
           }
         }
       } catch (fcmError) {
-        console.error(`❌ Error sending FCM push notification for appointment ${appointmentId}:`, fcmError);
+        console.error(`❌ Error sending FCM push notification for appointment ${appointmentId} token ${userFcmToken.substring(0,20)}...:`, fcmError);
       }
-    } else {
-      console.log(`⚠️ No valid FCM token found for user ${userId}, skipping push notification`);
     }
 
     console.log(`✅ Appointment status notification sent to user ${userId} for appointment ${appointmentId}`);
@@ -112,25 +111,20 @@ const sendAppointmentStatusNotificationEndpoint = async (req, res) => {
       });
     }
 
-    const user = userResult[0];
+    // Get user's FCM tokens (multi-device) if not provided in request
+    let fcmTokens = [];
+    const providedToken = (typeof fcmToken === 'string' && fcmToken.trim()) ? fcmToken.trim() : null;
 
-    // Get user's FCM token if not provided in request
-    let userFcmToken = fcmToken;
-    if (!userFcmToken || userFcmToken.trim() === '') {
-      userFcmToken = user.fcm_token;
-      console.log(`🔄 Retrieved FCM token from database for user ${userId}: ${userFcmToken ? userFcmToken.substring(0, 20) + '...' : 'None'}`);
+    if (providedToken && isValidFcmToken(providedToken)) {
+      fcmTokens = [providedToken];
+      console.log(`📥 Using FCM token provided in request for user ${userId}: ${providedToken.substring(0, 20)}...`);
     } else {
-      console.log(`📥 Using FCM token provided in request for user ${userId}: ${userFcmToken ? userFcmToken.substring(0, 20) + '...' : 'None'}`);
-    }
-
-    // Validate the FCM token if we have one
-    if (userFcmToken && userFcmToken.trim() !== '' && !isValidFcmToken(userFcmToken)) {
-      console.warn(`⚠️ Invalid FCM token format for user ${userId}, clearing from database`);
-      // Clear invalid token from database
-      await db.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-      userFcmToken = null;
-    } else if (userFcmToken && userFcmToken.trim() !== '') {
-      console.log(`✅ Valid FCM token found for user ${userId}`);
+      try {
+        fcmTokens = await getUserFcmTokens(userId);
+        console.log(`🔄 Retrieved ${fcmTokens.length} FCM token(s) from DB for user ${userId}`);
+      } catch (tokenErr) {
+        console.warn(`⚠️ Error fetching FCM tokens for user ${userId}:`, tokenErr.message);
+      }
     }
 
     // Create notification in database
@@ -151,46 +145,50 @@ const sendAppointmentStatusNotificationEndpoint = async (req, res) => {
 
     const [insertResult] = await db.execute(insertQuery, insertValues);
 
-    // Initialize fcmResult to null
+    // Initialize fcmResult to track the last result
     let fcmResult = null;
+    let fcmSuccessCount = 0;
     
-    // Send FCM push notification if token is available and valid
-    if (userFcmToken) {
-      try {
-        const payload = {
-          title: notificationTitle,
-          body: message,
-          notificationType: finalNotificationType,
-          data: {
-            notificationId: insertResult.insertId.toString(),
-            userId: userId.toString(),
-            appointmentId: appointmentId.toString(),
-            type: finalNotificationType,
-            timestamp: new Date().toISOString()
-          }
-        };
+    // Send FCM push notification to all active device tokens
+    if (fcmTokens.length > 0) {
+      for (const userFcmToken of fcmTokens) {
+        try {
+          const payload = {
+            title: notificationTitle,
+            body: message,
+            notificationType: finalNotificationType,
+            data: {
+              notificationId: insertResult.insertId.toString(),
+              userId: userId.toString(),
+              appointmentId: appointmentId.toString(),
+              type: finalNotificationType,
+              timestamp: new Date().toISOString()
+            }
+          };
 
-        fcmResult = await sendPushNotification(userFcmToken, payload, userId);
-        if (fcmResult.success) {
-          console.log(`// DEBUG FCM endpoint status OK user=${userId} appointment=${appointmentId}`);
-        } else {
-          console.warn(`// DEBUG FCM endpoint status FAIL user=${userId}:`, fcmResult.error, fcmResult.code);
-          if (fcmResult.code === 'messaging/invalid-registration-token' || 
-              fcmResult.code === 'messaging/registration-token-not-registered' ||
-              fcmResult.code === 'invalid-argument') {
-            console.log(`🗑️ Clearing invalid FCM token for user ${userId}`);
-            await db.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-            await db.execute(
-              'UPDATE user_device_tokens SET is_active = 0 WHERE fcm_token = ?',
-              [userFcmToken]
-            );
+          fcmResult = await sendPushNotification(userFcmToken, payload, userId);
+          if (fcmResult.success) {
+            fcmSuccessCount++;
+            console.log(`// DEBUG FCM endpoint status OK user=${userId} appointment=${appointmentId}`);
+          } else {
+            console.warn(`// DEBUG FCM endpoint status FAIL user=${userId}:`, fcmResult.error, fcmResult.code);
+            if (fcmResult.code === 'messaging/invalid-registration-token' || 
+                fcmResult.code === 'messaging/registration-token-not-registered' ||
+                fcmResult.code === 'invalid-argument') {
+              console.log(`🗑️ Clearing invalid FCM token for user ${userId}`);
+              await db.execute('UPDATE users SET fcm_token = NULL WHERE fcm_token = ?', [userFcmToken]);
+              await db.execute(
+                'UPDATE user_device_tokens SET is_active = 0 WHERE fcm_token = ?',
+                [userFcmToken]
+              );
+            }
           }
+        } catch (fcmError) {
+          console.error(`❌ Error sending FCM push notification to user ${userId} token ${userFcmToken.substring(0,20)}...:`, fcmError);
         }
-      } catch (fcmError) {
-        console.error(`❌ Error sending FCM push notification to user ${userId}:`, fcmError);
       }
     } else {
-      console.log(`⚠️ No valid FCM token found for user ${userId}, skipping push notification`);
+      console.log(`⚠️ No valid FCM tokens found for user ${userId}, skipping push notification`);
     }
 
     console.log(`✅ Appointment status notification sent to user ${userId} for appointment ${appointmentId}`);
@@ -201,7 +199,7 @@ const sendAppointmentStatusNotificationEndpoint = async (req, res) => {
       data: {
         notificationId: insertResult.insertId,
         userId: userId,
-        userName: user.full_name,
+        userName: userResult[0].full_name,
         message: message,
         type: finalNotificationType,
         fcmResponse: fcmResult

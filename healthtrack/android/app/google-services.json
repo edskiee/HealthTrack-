@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "90076919220",
+    "project_id": "healthtracknotifications",
+    "storage_bucket": "healthtracknotifications.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:90076919220:android:5a97c26be2467b79eeeee1",
+        "android_client_info": {
+          "package_name": "com.example.healthtrack"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCiVcpa01CqqnCTi8-sDyFMyVT9ELQbTco"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:90076919220:android:ae428f417982fa07eeeee1",
+        "android_client_info": {
+          "package_name": "healthtrack.notifications"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCiVcpa01CqqnCTi8-sDyFMyVT9ELQbTco"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

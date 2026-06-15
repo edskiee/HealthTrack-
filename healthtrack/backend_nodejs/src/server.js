@@ -290,6 +290,33 @@ async function initializeScheduledNotifications() {
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 async function bootstrap() {
+  // ── Firebase credential check ────────────────────────────────────────────────
+  const fbProjectId   = process.env.FIREBASE_PROJECT_ID;
+  const fbPrivateKey  = process.env.FIREBASE_PRIVATE_KEY;
+  const fbClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const fbPlaceholders = [
+    'YOUR_NEW_PRIVATE_KEY_HERE',
+    'CHANGE_ME',
+    'your-railway-mysql-host',
+  ];
+  const fbKeyIsPlaceholder = !fbPrivateKey || fbPlaceholders.some(p => fbPrivateKey.includes(p));
+  if (!fbProjectId || fbKeyIsPlaceholder || !fbClientEmail) {
+    console.warn('');
+    console.warn('╔════════════════════════════════════════════════════════════════╗');
+    console.warn('║  ⚠️  FIREBASE CREDENTIALS NOT CONFIGURED                       ║');
+    console.warn('║                                                                ║');
+    console.warn('║  Push notifications (FCM) will be DISABLED until you set:     ║');
+    console.warn('║    FIREBASE_PROJECT_ID                                         ║');
+    console.warn('║    FIREBASE_PRIVATE_KEY  (from Firebase Console Service Acct) ║');
+    console.warn('║    FIREBASE_CLIENT_EMAIL                                       ║');
+    console.warn('║                                                                ║');
+    console.warn('║  In-app notifications will still work normally.               ║');
+    console.warn('╚════════════════════════════════════════════════════════════════╝');
+    console.warn('');
+  } else {
+    console.log('✅ Firebase credentials detected — push notifications enabled');
+  }
+
   try {
     await initAdminTables();
   } catch (err) {

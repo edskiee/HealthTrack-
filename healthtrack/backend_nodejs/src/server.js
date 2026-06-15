@@ -208,34 +208,6 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Temporary DB diagnostics endpoint — shows env vars (no secrets) and tests connection
-app.get("/debug-db", async (_req, res) => {
-  const host = process.env.DB_HOST || "(not set)";
-  const port = process.env.DB_PORT || "(not set)";
-  const user = process.env.DB_USER || "(not set)";
-  const name = process.env.DB_NAME || "(not set)";
-  const hasPass = !!(process.env.DB_PASS);
-
-  let dbOk = false;
-  let dbError = null;
-  try {
-    await dbPool.execute("SELECT 1");
-    dbOk = true;
-  } catch (e) {
-    dbError = e.message;
-  }
-
-  res.json({
-    db_host: host,
-    db_port: port,
-    db_user: user,
-    db_name: name,
-    db_has_password: hasPass,
-    db_connected: dbOk,
-    db_error: dbError,
-  });
-});
-
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({ success: false, message: "Route not found." });

@@ -529,26 +529,62 @@ exports.addAppointment = async (req, res) => {
     // Define valid status values that match the database ENUM exactly
     const validStatuses = ['pending', 'scheduled', 'approved', 'completed', 'cancelled', 'rescheduled', 'no_show'];
     
+    // ── ONE USER, ONE ACTIVE APPOINTMENT RULE ────────────────────────────────
+    // Block the booking if the user already has an approved or rescheduled appointment.
+    const [activeAppts] = await db.execute(
+      `SELECT id, appointment_date, appointment_time, appointment_type
+       FROM appointments
+       WHERE user_id = ? AND status IN ('approved', 'rescheduled')
+       ORDER BY appointment_date ASC, appointment_time ASC
+       LIMIT 1`,
+      [normalizedUserId]
+    );
+    if (activeAppts.length > 0) {
+      const existing = activeAppts[0];
+      // Format date/time for the error message
+      const apptDate = existing.appointment_date
+        ? new Date(existing.appointment_date).toLocaleDateString('en-US', {
+            month: 'long', day: 'numeric', year: 'numeric'
+          })
+        : existing.appointment_date;
+      const apptTime = existing.appointment_time
+        ? existing.appointment_time.substring(0, 5)
+        : '';
+      return res.status(409).json({
+        success: false,
+        code: 'ACTIVE_APPOINTMENT_EXISTS',
+        message: `Unable to book an appointment at this time because you already have an approved appointment scheduled on ${apptDate} at ${apptTime}. Please wait until your current appointment has been completed before creating a new booking request.`,
+        existingAppointment: {
+          id: existing.id,
+          date: existing.appointment_date,
+          time: existing.appointment_time,
+          type: existing.appointment_type,
+        },
+      });
+    }
+    // ── END RESTRICTION ──────────────────────────────────────────────────────
+
     // Automatically approve all appointments by default
     let initialStatus = 'approved';
     
     // If slotId is provided, validate the slot
     if (slotId) {
-      // Validate the slot
+      // Validate the slot using the correct column names
       const slotValidationSql = `
         SELECT s.*, sc.service_name
         FROM appointment_slots s
         LEFT JOIN services_config sc ON s.service_id = sc.id
-        WHERE s.id = ? AND s.is_available = 1 AND s.booked_patients < s.max_patients
-        AND s.appointment_date = ?
+        WHERE s.id = ? AND s.is_available = 1 AND s.booked_count < s.capacity
+        AND s.slot_date = ?
       `;
       
       const [slotResults] = await db.execute(slotValidationSql, [slotId, normalizedAppointmentDate]);
       
       if (slotResults.length === 0) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
-          message: "Invalid or unavailable appointment slot",
+          code: 'SLOT_UNAVAILABLE',
+          message: "This appointment slot is already booked. Please choose another available slot.",
         });
       }
     }

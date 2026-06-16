@@ -339,11 +339,139 @@ class _AppointmentTabState extends State<AppointmentTab> {
     final calculatedAvailable = slot['calculated_available'] as bool? ?? false;
     if (!calculatedAvailable) {
       MessageUtils.showErrorMessage(context, "This slot is no longer available");
-      // Refresh slots to get current state
       _loadAvailableSlots();
       return;
     }
-    _showBookingConfirmationDialog(slot);
+    // Check if user already has an active approved appointment before showing dialog
+    _checkActiveAppointmentThenBook(slot);
+  }
+
+  /// Checks for an existing approved/rescheduled appointment.
+  /// Shows a blocking popup if one exists; otherwise shows the booking dialog.
+  Future<void> _checkActiveAppointmentThenBook(Map<String, dynamic> slot) async {
+    try {
+      final userSession = UserSession.instance;
+      if (!userSession.isLoggedIn) {
+        _showBookingConfirmationDialog(slot);
+        return;
+      }
+
+      // Re-use already-loaded appointments list to avoid an extra network call
+      final activeAppt = _appointments.firstWhere(
+        (appt) {
+          final status = (appt["status"] ?? "").toString().toLowerCase();
+          return status == "approved" || status == "rescheduled";
+        },
+        orElse: () => {},
+      );
+
+      if (activeAppt.isNotEmpty) {
+        // Format the date and time for the popup message
+        final rawDate = activeAppt["appointment_date"]?.toString() ?? "";
+        final rawTime = activeAppt["appointment_time"]?.toString() ?? "";
+        String displayDate = rawDate;
+        String displayTime = rawTime.length >= 5 ? rawTime.substring(0, 5) : rawTime;
+        try {
+          if (rawDate.isNotEmpty) {
+            final parsed = DateTime.parse(rawDate);
+            displayDate = DateFormat('MMMM d, yyyy').format(parsed);
+          }
+          // Convert 24h time to 12h
+          if (rawTime.length >= 5) {
+            final parts = rawTime.split(':');
+            int hour = int.parse(parts[0]);
+            final minute = parts[1];
+            final period = hour >= 12 ? 'PM' : 'AM';
+            if (hour > 12) hour -= 12;
+            if (hour == 0) hour = 12;
+            displayTime = '$hour:$minute $period';
+          }
+        } catch (_) {}
+
+        if (!mounted) return;
+        _showActiveAppointmentBlockedDialog(displayDate, displayTime);
+        return;
+      }
+
+      // No active appointment — proceed to booking
+      _showBookingConfirmationDialog(slot);
+    } catch (_) {
+      // On any error, allow booking (backend will double-check anyway)
+      _showBookingConfirmationDialog(slot);
+    }
+  }
+
+  /// Popup shown when the user already has an approved appointment.
+  void _showActiveAppointmentBlockedDialog(String date, String time) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        icon: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.orange.shade50,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(Icons.event_busy, color: Colors.orange.shade700, size: 32),
+        ),
+        title: const Text(
+          'Booking Not Allowed',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.orange.shade700, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'You already have an approved appointment on $date at $time.',
+                      style: TextStyle(
+                        color: Colors.orange.shade800,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Please wait until your current appointment has been completed before creating a new booking request.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.black87, height: 1.4),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.check, size: 16),
+            label: const Text('Got it'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange.shade600,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showBookingConfirmationDialog(Map<String, dynamic> slot) {
@@ -793,9 +921,6 @@ class _AppointmentTabState extends State<AppointmentTab> {
           title: "Appointment Confirmed",
         );
         
-        // The backend automatically creates the notification record and sends
-        // FCM push when it processes POST /appointments — no client-side call needed.
-        
         // Refresh slots and appointments immediately
         await Future.wait([
           _loadAvailableSlots(),
@@ -814,13 +939,38 @@ class _AppointmentTabState extends State<AppointmentTab> {
           curve: Curves.easeInOut,
         );
       } else {
-        // If appointment creation fails, we should rollback the slot booking
-        MessageUtils.showErrorMessage(
-          context, 
-          "Slot booked but failed to create appointment record. Please contact support."
-        );
-        // Refresh slots to show current state
-        _loadAvailableSlots();
+        // Check if backend blocked due to existing approved appointment
+        if (result['code'] == 'ACTIVE_APPOINTMENT_EXISTS') {
+          final existing = result['existingAppointment'] as Map<String, dynamic>? ?? {};
+          final rawDate = existing['date']?.toString() ?? '';
+          final rawTime = existing['time']?.toString() ?? '';
+          String displayDate = rawDate;
+          String displayTime = rawTime.length >= 5 ? rawTime.substring(0, 5) : rawTime;
+          try {
+            if (rawDate.isNotEmpty) {
+              final parsed = DateTime.parse(rawDate);
+              displayDate = DateFormat('MMMM d, yyyy').format(parsed);
+            }
+            if (rawTime.length >= 5) {
+              final parts = rawTime.split(':');
+              int hour = int.parse(parts[0]);
+              final minute = parts[1];
+              final period = hour >= 12 ? 'PM' : 'AM';
+              if (hour > 12) hour -= 12;
+              if (hour == 0) hour = 12;
+              displayTime = '$hour:$minute $period';
+            }
+          } catch (_) {}
+          _loadAvailableSlots();
+          await _loadAppointments();
+          if (mounted) _showActiveAppointmentBlockedDialog(displayDate, displayTime);
+        } else {
+          MessageUtils.showErrorMessage(
+            context,
+            result['message'] ?? "Slot booked but failed to create appointment record. Please contact support.",
+          );
+          _loadAvailableSlots();
+        }
       }
     } catch (e) {
       if (!mounted) return;

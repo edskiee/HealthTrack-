@@ -249,6 +249,8 @@ class AppointmentService {
               'message': errorMessage,
               'error': errorType,
               'error_code': data['error_code'],
+              'code': data['code'], // pass through backend code (e.g. ACTIVE_APPOINTMENT_EXISTS)
+              'existingAppointment': data['existingAppointment'], // for active appointment block
             };
           }
         } on SocketException {

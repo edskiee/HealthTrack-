@@ -331,7 +331,7 @@ async function sendAppointmentReminder(reminderId) {
         a.doctor_name,
         a.clinic_hospital,
         u.full_name as user_name,
-        COALESCE(u.timezone, 'Asia/Manila') as timezone,
+        'Asia/Manila' as timezone,
         p.child_fullname as patient_name
       FROM appointment_reminders ar
       JOIN appointments a ON ar.appointment_id = a.id

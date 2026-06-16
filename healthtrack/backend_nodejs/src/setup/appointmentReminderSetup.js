@@ -71,9 +71,9 @@ async function createAppointmentRemindersTable() {
       },
       {
         setting_key: 'reminder_days_before',
-        setting_value: '[2, 1]',
+        setting_value: '[2, 1, 0]',
         setting_type: 'json',
-        description: 'Days before appointment to send reminders'
+        description: 'Days before appointment to send reminders (0 = same day)'
       },
       {
         setting_key: 'reminders_per_day',
@@ -83,7 +83,7 @@ async function createAppointmentRemindersTable() {
       },
       {
         setting_key: 'reminder_times',
-        setting_value: '["09:00", "18:00"]',
+        setting_value: '["08:00", "17:00"]',
         setting_type: 'json',
         description: 'Times of day to send reminders'
       }

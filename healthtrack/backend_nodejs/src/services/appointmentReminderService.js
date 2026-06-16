@@ -76,10 +76,10 @@ async function getSystemSettings() {
 function getDefaultSettings() {
   return {
     appointment_reminders_enabled: true,
-    reminder_days_before: [3], // 3 days before
-    reminders_per_day: 3, // 3 reminders per day
+    reminder_days_before: [2, 1, 0], // 2 days, 1 day, and same day
+    reminders_per_day: 2,
     notifications_enabled: true,
-    reminder_times: ['06:00', '12:00', '18:00'] // 6 AM, 12 PM, 6 PM
+    reminder_times: ['08:00', '17:00'] // 8 AM and 5 PM
   };
 }
 
@@ -194,8 +194,12 @@ async function createAppointmentReminderSchedule(appointmentId, appointmentDate,
     for (const daysBefore of reminderDaysBefore) {
       const reminderDate = appointmentDateTime.clone().subtract(daysBefore, "days");
       
-      // Only create reminders if the reminder date is in the future
-      if (reminderDate.isAfter(now)) {
+      // For same-day reminders (daysBefore=0), allow if reminder time is still in the future
+      // For other days, only create if the reminder date is today or future
+      const reminderDateStart = reminderDate.clone().startOf('day');
+      const todayStart = now.clone().startOf('day');
+      
+      if (reminderDateStart.isSameOrAfter(todayStart)) {
         for (let i = 0; i < remindersPerDay && i < reminderTimes.length; i++) {
           const reminderTime = reminderTimes[i];
           const scheduledDateTime = moment.tz(

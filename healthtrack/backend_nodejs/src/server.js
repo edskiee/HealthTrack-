@@ -49,6 +49,35 @@ const { createAppointmentRemindersTable } = require("./setup/appointmentReminder
 const { startNotificationScheduler }  = require("./services/notificationScheduler");
 const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
 
+/**
+ * Update reminder system_settings to include same-day reminders (days_before=0).
+ * Runs once at startup — safe to run multiple times.
+ */
+async function migrateReminderSettings() {
+  try {
+    const updates = [
+      { key: 'reminder_days_before', value: '[2, 1, 0]' },
+      { key: 'reminder_times',       value: '["08:00", "17:00"]' },
+      { key: 'reminders_per_day',    value: '2' },
+    ];
+    for (const { key, value } of updates) {
+      const [rows] = await dbPool.execute(
+        'SELECT setting_value FROM system_settings WHERE setting_key = ?', [key]
+      );
+      if (rows.length > 0 && rows[0].setting_value !== value) {
+        await dbPool.execute(
+          'UPDATE system_settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = ?',
+          [value, key]
+        );
+        console.log(`✅ system_settings updated: ${key} = ${value}`);
+      }
+    }
+  } catch (err) {
+    // system_settings table may not exist yet — not fatal
+    console.warn('⚠️ migrateReminderSettings (non-fatal):', err.message);
+  }
+}
+
 // ─── App Setup ────────────────────────────────────────────────────────────────
 const app    = express();
 const server = http.createServer(app);
@@ -327,6 +356,7 @@ async function bootstrap() {
   // Run DB migrations before anything else
   await migrateNotificationsTable();
   await migrateAppointmentSlotsCapacity();
+  await migrateReminderSettings();
 
   initializeScheduledNotifications();
 

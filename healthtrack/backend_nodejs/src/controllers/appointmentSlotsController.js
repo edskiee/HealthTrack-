@@ -27,6 +27,8 @@ function normaliseSlot(row) {
     booked_patients:       row.booked_count ?? row.booked_patients ?? 0,
     booked_count:          row.booked_count ?? row.booked_patients ?? 0,
     is_available:          row.is_available,
+    is_user_available:     row.is_user_available ?? (row.is_available === 1 && (row.booked_count ?? row.booked_patients ?? 0) < (row.capacity ?? row.max_patients ?? 1) ? 1 : 0),
+    available_spots:       row.available_spots   ?? Math.max(0, (row.capacity ?? row.max_patients ?? 1) - (row.booked_count ?? row.booked_patients ?? 0)),
     created_by:            row.created_by  ?? null,
     created_at:            row.created_at,
     updated_at:            row.updated_at,

@@ -281,13 +281,19 @@ class _AppointmentTabState extends State<AppointmentTab> {
               newGroupedSlots[dateStr] = [];
               newAvailableDates.add(date);
             }
-            // Add slot with calculated availability for consistency
+            // Add slot with server-calculated availability
+            // The server returns `is_user_available` which correctly accounts for
+            // booked_count >= capacity and is_available flag.
             final enhancedSlot = Map<String, dynamic>.from(slot);
-            final bookedPatients = slot['booked_patients'] as int? ?? 0;
-            final maxPatients = slot['max_patients'] as int? ?? 1;
+            final serverAvailable = slot['is_user_available'] == 1 ||
+                slot['is_user_available'] == true;
+            // Fallback: recalculate if server field missing
+            final bookedPatients = (slot['booked_patients'] ?? slot['booked_count'] ?? 0) as int? ?? 0;
+            final maxPatients = (slot['max_patients'] ?? slot['capacity'] ?? 1) as int? ?? 1;
             final isAvailable = slot['is_available'] == 1 || slot['is_available'] == true;
-            // Ensure consistent availability calculation
-            enhancedSlot['calculated_available'] = isAvailable && bookedPatients < maxPatients;
+            enhancedSlot['calculated_available'] = slot.containsKey('is_user_available')
+                ? serverAvailable
+                : (isAvailable && bookedPatients < maxPatients);
             newGroupedSlots[dateStr]!.add(enhancedSlot);
           }
         }

@@ -351,9 +351,9 @@ class FCMService {
                          message.data['notification']?['body'] ??
                          'You have a new notification';
       body = _resolveAppointmentNotificationBody(message.data, body);
-      final int notificationId = message.messageId?.hashCode ?? 
+      final int notificationId = ((message.messageId?.hashCode ?? 
                                message.data['notificationId']?.hashCode ?? 
-                               DateTime.now().millisecondsSinceEpoch;
+                               DateTime.now().millisecondsSinceEpoch) & 0x7FFFFFFF);
       
       // Android notification details with enhanced configuration for system banners
       final AndroidNotificationDetails androidNotificationDetails =
@@ -804,7 +804,7 @@ class FCMService {
     try {
       if (_localNotificationsPlugin == null) return;
       
-      final int notificationId = DateTime.now().millisecondsSinceEpoch;
+      final int notificationId = DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF;
       
       // Android notification details
       final AndroidNotificationDetails androidNotificationDetails =

@@ -69,6 +69,13 @@ class FCMService {
       );
       
       print('🔔 Notification permission status: ${settings.authorizationStatus}');
+
+      // Show FCM notifications as banners even when the app is in the foreground (iOS)
+      await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
       
       // Initialize local notifications with proper configuration for all platforms
       await _initializeLocalNotifications();
@@ -227,13 +234,10 @@ class FCMService {
       print('📬 Message notification: ${message.notification?.title}');
     }
     
-    // Only show a local notification ourselves for data-only messages.
-    // When a notification payload is present and the app is in foreground,
-    // the overlay_support banner in the tab already displays it — showing
-    // a system banner on top would create duplicates.
-    if (message.notification == null) {
-      _showLocalNotification(message);
-    }
+    // Always show a local notification banner in the foreground.
+    // The OS only auto-displays notification payloads in background/terminated state.
+    // In foreground, we must call _showLocalNotification ourselves for the banner to appear.
+    _showLocalNotification(message);
   }
   
   // Enhanced message handler with better error handling and logging

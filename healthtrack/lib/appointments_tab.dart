@@ -210,16 +210,25 @@ class _AppointmentTabState extends State<AppointmentTab> {
         throw Exception("User not logged in");
       }
 
-      // Load only approved appointments for the history
+      // Load all appointment history statuses
       final allAppointments = await AppointmentService.getUserAppointments(userSession.userId);
-      final approvedAppointments = allAppointments.where((appt) {
+      final historyAppointments = allAppointments.where((appt) {
         final status = (appt["status"] ?? "").toString().toLowerCase();
-        return status == "approved";
+        return status == "approved" ||
+               status == "rescheduled" ||
+               status == "completed" ||
+               status == "no_show" ||
+               status == "cancelled";
       }).toList();
+
+      // Sort by created_at descending (newest first)
+      historyAppointments.sort((a, b) =>
+          (b["created_at"]?.toString() ?? "")
+              .compareTo(a["created_at"]?.toString() ?? ""));
 
       if (mounted) {
         setState(() {
-          _appointments = approvedAppointments;
+          _appointments = historyAppointments;
           _isLoadingAppointments = false;
         });
       }
@@ -1598,19 +1607,73 @@ class _AppointmentTabState extends State<AppointmentTab> {
   }
 
   Widget _buildAppointmentHistoryTab() {
+    // Status display config: label, color, icon
+    Color _statusColor(String status) {
+      switch (status.toLowerCase()) {
+        case 'approved':    return const Color(0xFF2563EB);
+        case 'rescheduled': return Colors.orange;
+        case 'completed':   return Colors.green;
+        case 'no_show':     return Colors.red;
+        case 'cancelled':   return Colors.grey;
+        default:            return Colors.blueGrey;
+      }
+    }
+
+    String _statusLabel(String status) {
+      switch (status.toLowerCase()) {
+        case 'approved':    return 'Approved';
+        case 'rescheduled': return 'Rescheduled';
+        case 'completed':   return 'Completed';
+        case 'no_show':     return 'Missed';
+        case 'cancelled':   return 'Cancelled';
+        default:            return status;
+      }
+    }
+
+    IconData _statusIcon(String status) {
+      switch (status.toLowerCase()) {
+        case 'approved':    return Icons.check_circle_outline;
+        case 'rescheduled': return Icons.edit_calendar;
+        case 'completed':   return Icons.check_circle;
+        case 'no_show':     return Icons.cancel;
+        case 'cancelled':   return Icons.remove_circle_outline;
+        default:            return Icons.info_outline;
+      }
+    }
+
+    // Group appointments by status
+    final Map<String, List<Map<String, dynamic>>> grouped = {
+      'approved':    [],
+      'rescheduled': [],
+      'completed':   [],
+      'no_show':     [],
+      'cancelled':   [],
+    };
+    for (final appt in _appointments) {
+      final status = (appt["status"] ?? "").toString().toLowerCase();
+      if (grouped.containsKey(status)) {
+        grouped[status]!.add(appt);
+      }
+    }
+
+    // Build sections only for statuses that have entries
+    final sections = grouped.entries
+        .where((e) => e.value.isNotEmpty)
+        .toList();
+
     return Column(
       children: [
         const Padding(
-          padding: EdgeInsets.all(16),
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              "Approved Appointments",
+              "Appointment History",
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
           ),
         ),
-        
+
         if (_isLoadingAppointments)
           const Expanded(
             child: Center(child: CircularProgressIndicator()),
@@ -1631,14 +1694,10 @@ class _AppointmentTabState extends State<AppointmentTab> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.calendar_today,
-                    size: 64,
-                    color: Colors.grey[400],
-                  ),
+                  Icon(Icons.calendar_today, size: 64, color: Colors.grey[400]),
                   const SizedBox(height: 16),
                   const Text(
-                    "No approved appointments yet",
+                    "No appointment history yet",
                     style: TextStyle(fontSize: 16, color: Colors.grey),
                   ),
                   const SizedBox(height: 8),
@@ -1654,108 +1713,145 @@ class _AppointmentTabState extends State<AppointmentTab> {
           Expanded(
             child: RefreshIndicator(
               onRefresh: _loadAppointments,
-              child: ListView.builder(
+              child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _appointments.length,
-                itemBuilder: (context, index) {
-                  final appt = _appointments[index];
-                
-                // Format date and time for display
-                final appointmentDateTime = _formatAppointmentDateTime(
-                  appt["appointment_date"] ?? "",
-                  appt["appointment_time"] ?? "",
-                );
-                
-                return Card(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  elevation: 3,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const CircleAvatar(
-                          radius: 24,
-                          backgroundColor: Colors.blueAccent,
-                          child: Icon(Icons.local_hospital, color: Colors.white, size: 20),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                appt["clinic_hospital"] ?? "Balangasan Health Center",
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              Text(
-                                appt["appointment_type"] ?? "General Check-up",
-                                style: const TextStyle(color: Colors.grey, fontSize: 12),
-                              ),
-                              const SizedBox(height: 6),
-                              Row(
-                                children: [
-                                  const Icon(Icons.calendar_today,
-                                      size: 12, color: Colors.grey),
-                                  const SizedBox(width: 4),
-                                  Flexible(
-                                    child: Text(
-                                      appointmentDateTime,
-                                      style: const TextStyle(fontSize: 12),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (appt["notes"] != null && appt["notes"].toString().isNotEmpty)
-                                Row(
-                                  children: [
-                                    const Icon(Icons.note, size: 12, color: Colors.grey),
-                                    const SizedBox(width: 4),
-                                    Flexible(
-                                      child: Text(
-                                        appt["notes"],
-                                        style: const TextStyle(fontSize: 12),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                            ],
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                children: [
+                  for (final section in sections) ...[
+                    // Section header
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12, bottom: 6),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _statusIcon(section.key),
+                            size: 16,
+                            color: _statusColor(section.key),
                           ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Text(
-                            "Approved",
+                          const SizedBox(width: 6),
+                          Text(
+                            "${_statusLabel(section.key)} (${section.value.length})",
                             style: TextStyle(
-                              color: Colors.blue,
                               fontWeight: FontWeight.bold,
-                              fontSize: 10,
+                              fontSize: 14,
+                              color: _statusColor(section.key),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
-                ),
+                    // Appointment cards in this section
+                    for (final appt in section.value)
+                      _buildAppointmentCard(
+                        appt,
+                        _statusLabel(section.key),
+                        _statusColor(section.key),
+                        _statusIcon(section.key),
+                      ),
+                  ],
+                ],
               ),
+            ),
           ),
       ],
+    );
+  }
+
+  Widget _buildAppointmentCard(
+    Map<String, dynamic> appt,
+    String statusLabel,
+    Color statusColor,
+    IconData statusIcon,
+  ) {
+    final appointmentDateTime = _formatAppointmentDateTime(
+      appt["appointment_date"] ?? "",
+      appt["appointment_time"] ?? "",
+    );
+
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 3,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CircleAvatar(
+              radius: 24,
+              backgroundColor: statusColor.withOpacity(0.15),
+              child: Icon(statusIcon, color: statusColor, size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    appt["clinic_hospital"] ?? "Balangasan Health Center",
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  Text(
+                    appt["appointment_type"] ?? "General Check-up",
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.calendar_today,
+                          size: 12, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          appointmentDateTime,
+                          style: const TextStyle(fontSize: 12),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (appt["notes"] != null &&
+                      appt["notes"].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.note, size: 12, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              appt["notes"],
+                              style: const TextStyle(fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: statusColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                statusLabel,
+                style: TextStyle(
+                  color: statusColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 10,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

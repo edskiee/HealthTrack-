@@ -47,6 +47,7 @@ const { checkAndSendDueReminders }   = require("./services/appointmentReminderSe
 const { createUserDeviceTokensTable } = require("./services/appointmentPushService");
 const { createAppointmentRemindersTable } = require("./setup/appointmentReminderSetup");
 const { startNotificationScheduler }  = require("./services/notificationScheduler");
+const { migrateNotificationsTable }   = require("./setup/migrateNotificationsTable");
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
 const app    = express();
@@ -322,6 +323,9 @@ async function bootstrap() {
   } catch (err) {
     console.error("⚠️ Admin table init error (continuing):", err.message);
   }
+
+  // Run DB migrations before anything else
+  await migrateNotificationsTable();
 
   initializeScheduledNotifications();
 

@@ -63,6 +63,20 @@ async function migrateNotificationsTable() {
       ));
     }
 
+    // Also fix appointment_notifications table if it exists
+    try {
+      const [apptCols] = await db.execute(`SHOW COLUMNS FROM appointment_notifications`);
+      const apptTypeCol = apptCols.find(c => c.Field === "notification_type");
+      if (apptTypeCol && !apptTypeCol.Type.includes("100") && !apptTypeCol.Type.includes("text")) {
+        await db.execute(
+          `ALTER TABLE appointment_notifications MODIFY COLUMN notification_type VARCHAR(100) NOT NULL DEFAULT 'system'`
+        );
+        console.log("✅ appointment_notifications.notification_type column widened");
+      }
+    } catch (e) {
+      // table may not exist — ignore
+    }
+
     if (migrations.length === 0) {
       console.log("✅ notifications table schema is up to date");
       return;

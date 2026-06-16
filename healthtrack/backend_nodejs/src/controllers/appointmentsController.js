@@ -15,7 +15,11 @@ const APPOINTMENT_INPUT_FORMATS = [
 ];
 
 function toManilaAppointmentDateTime(appointmentDate, appointmentTime) {
-  const rawDateTime = `${appointmentDate || ""} ${appointmentTime || ""}`.trim();
+  // Strip ISO suffix from date if admin panel sends "2026-06-18T00:00:00.000"
+  const cleanDate = (appointmentDate || "").toString().split("T")[0];
+  // Strip any date prefix from time if it was accidentally included
+  const cleanTime = (appointmentTime || "").toString().replace(/^\d{4}-\d{2}-\d{2}[T ]/, "").substring(0, 8);
+  const rawDateTime = `${cleanDate} ${cleanTime}`.trim();
   const utcMoment = moment.utc(rawDateTime, APPOINTMENT_INPUT_FORMATS, true);
   const parsedMoment = utcMoment.isValid() ? utcMoment : moment.utc(rawDateTime);
   const manilaMoment = parsedMoment.isValid() ? parsedMoment.tz(MANILA_TZ) : null;
@@ -24,7 +28,7 @@ function toManilaAppointmentDateTime(appointmentDate, appointmentTime) {
     utcIso: parsedMoment && parsedMoment.isValid() ? parsedMoment.toISOString() : null,
     display: manilaMoment && manilaMoment.isValid()
       ? manilaMoment.format("MMMM DD, YYYY hh:mm A")
-      : `${appointmentDate} ${appointmentTime}`.trim(),
+      : `${cleanDate} ${cleanTime}`.trim(),
   };
 }
 

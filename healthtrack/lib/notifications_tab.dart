@@ -48,18 +48,16 @@ class _NotificationsTabState extends State<NotificationsTab>
       await _initializeWebSocket();
       
       // Load initial notifications after services are ready
-      _loadNotifications();
-      
-      // Listen for real-time notification updates
+      await _loadNotifications();
+
+      // Mark all as read immediately after first load, before starting the stream
+      await _markAllAsRead();
+
+      // Now start the polling stream — read state is already persisted on server
       _listenForRealTimeNotifications();
       
       // Listen for unread count changes to keep UI in sync
       _listenForUnreadCountChanges();
-      
-      // Mark all notifications as read when tab is opened
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _markAllAsRead();
-      });
     } catch (e) {
       print('Error initializing services: $e');
       setState(() {
@@ -75,13 +73,43 @@ class _NotificationsTabState extends State<NotificationsTab>
     if (userSession.isLoggedIn) {
       final userId = int.tryParse(userSession.userId) ?? 0;
       if (userId > 0) {
-        // Listen for real-time notification updates
         _notificationsSubscription = NotificationService.streamUserNotifications(userId).listen((newNotifications) {
-          if (mounted) {
-            setState(() {
-              notifications = newNotifications;
-            });
-          }
+          if (!mounted) return;
+          setState(() {
+            // Merge server data with local read state.
+            // If we already have a notification marked as read locally, keep it read
+            // even if the server hasn't caught up yet.
+            final localReadIds = <String>{};
+            for (final n in notifications) {
+              if (n['isRead'] == true) {
+                localReadIds.add(n['id']?.toString() ?? '');
+              }
+            }
+            notifications = newNotifications.map((n) {
+              final idStr = n['id']?.toString() ?? '';
+              final serverRead = n['is_read'] == 1 || n['is_read'] == true;
+              final localRead = localReadIds.contains(idStr);
+              final nType = n["notification_type"]?.toString();
+              final apiTitle = n["title"]?.toString().trim();
+              final resolvedTitle = (apiTitle != null && apiTitle.isNotEmpty)
+                  ? apiTitle
+                  : _getNotificationTitle(nType);
+              return {
+                "type": _getNotificationType(nType),
+                "title": resolvedTitle,
+                "message": n["message"],
+                "time": TimeUtils.formatRelativeTimeString(n["created_at"]),
+                "created_at": n["created_at"],
+                "icon": _getNotificationIcon(nType),
+                "color": _getNotificationColor(nType),
+                "isRead": serverRead || localRead,
+                "id": n["id"],
+              };
+            }).toList()
+              ..sort((a, b) =>
+                  (b["created_at"]?.toString() ?? '')
+                      .compareTo(a["created_at"]?.toString() ?? ''));
+          });
         });
       }
     }
@@ -198,8 +226,15 @@ class _NotificationsTabState extends State<NotificationsTab>
 
       final appointmentNotifications = await NotificationService.getUserNotifications(userId);
       
-      // Convert appointment notifications to the format expected by the UI
-      // Sort by created_at timestamp in descending order (newest first)
+      // Build a set of IDs already marked read locally before this refresh
+      final localReadIds = <String>{};
+      for (final n in notifications) {
+        if (n['isRead'] == true) {
+          localReadIds.add(n['id']?.toString() ?? '');
+        }
+      }
+
+      // Sort by created_at descending (newest first)
       final sortedNotifications = List<Map<String, dynamic>>.from(appointmentNotifications)
         ..sort((a, b) => 
           (b["created_at"]?.toString() ?? '').compareTo(a["created_at"]?.toString() ?? ''));
@@ -210,15 +245,18 @@ class _NotificationsTabState extends State<NotificationsTab>
         final resolvedTitle = (apiTitle != null && apiTitle.isNotEmpty)
             ? apiTitle
             : _getNotificationTitle(nType);
+        final idStr = notification["id"]?.toString() ?? '';
+        final serverRead = notification["is_read"] == 1 || notification["is_read"] == true;
+        final localRead = localReadIds.contains(idStr);
         return {
           "type": _getNotificationType(notification["notification_type"]),
           "title": resolvedTitle,
           "message": notification["message"],
           "time": TimeUtils.formatRelativeTimeString(notification["created_at"]),
-          "created_at": notification["created_at"], // Keep original for sorting
+          "created_at": notification["created_at"],
           "icon": _getNotificationIcon(notification["notification_type"]),
           "color": _getNotificationColor(notification["notification_type"]),
-          "isRead": notification["is_read"] == 1 || notification["is_read"] == true,
+          "isRead": serverRead || localRead,
           "id": notification["id"],
         };
       }).toList();

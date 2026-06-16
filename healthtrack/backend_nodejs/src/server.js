@@ -47,7 +47,7 @@ const { checkAndSendDueReminders }   = require("./services/appointmentReminderSe
 const { createUserDeviceTokensTable } = require("./services/appointmentPushService");
 const { createAppointmentRemindersTable } = require("./setup/appointmentReminderSetup");
 const { startNotificationScheduler }  = require("./services/notificationScheduler");
-const { migrateNotificationsTable }   = require("./setup/migrateNotificationsTable");
+const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
 const app    = express();
@@ -326,6 +326,7 @@ async function bootstrap() {
 
   // Run DB migrations before anything else
   await migrateNotificationsTable();
+  await migrateAppointmentSlotsCapacity();
 
   initializeScheduledNotifications();
 

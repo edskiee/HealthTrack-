@@ -281,8 +281,8 @@ exports.createSlot = async (req, res) => {
           if (dupRows[0].cnt === 0) {
             await connection.execute(
               `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 0, 1, NOW(), NOW())`,
-              [serviceId, appointment_date, slotTime, capacity]
+               VALUES (?, ?, ?, 1, 0, 1, NOW(), NOW())`,
+              [serviceId, appointment_date, slotTime]
             );
             generatedCount++;
           }
@@ -348,8 +348,8 @@ exports.createSlot = async (req, res) => {
 
         const [result] = await connection.execute(
           `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 0, 1, NOW(), NOW())`,
-          [serviceId, appointment_date, slotTime, capacity]
+           VALUES (?, ?, ?, 1, 0, 1, NOW(), NOW())`,
+          [serviceId, appointment_date, slotTime]
         );
 
         const newSlotId = result.insertId;
@@ -493,7 +493,7 @@ exports.bookSlot = async (req, res) => {
 
       if (!isAvailable) {
         await connection.rollback();
-        return res.status(409).json({ success: false, message: 'This slot is no longer available' });
+        return res.status(409).json({ success: false, message: 'This appointment slot is already booked. Please choose another available slot.' });
       }
 
       // Atomic increment
@@ -503,7 +503,7 @@ exports.bookSlot = async (req, res) => {
       );
       if (upd.affectedRows === 0) {
         await connection.rollback();
-        return res.status(409).json({ success: false, message: 'Slot was just fully booked by another user' });
+        return res.status(409).json({ success: false, message: 'This appointment slot is already booked. Please choose another available slot.' });
       }
 
       // Mark unavailable if now full

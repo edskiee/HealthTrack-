@@ -89,4 +89,39 @@ async function migrateNotificationsTable() {
   }
 }
 
-module.exports = { migrateNotificationsTable };
+/**
+ * Migration: enforce capacity = 1 on all appointment_slots rows.
+ * This implements the "one patient per slot" booking model.
+ * Also resets is_available based on booked_count so stale flags are corrected.
+ */
+async function migrateAppointmentSlotsCapacity() {
+  try {
+    // Check if appointment_slots table exists
+    const [tables] = await db.execute(
+      `SELECT TABLE_NAME FROM information_schema.TABLES 
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointment_slots'`
+    );
+    if (tables.length === 0) {
+      console.log("ℹ️ appointment_slots table not found, skipping capacity migration");
+      return;
+    }
+
+    // Set capacity = 1 for all slots (one patient per slot model)
+    // Also correct is_available flag: slot is available only if booked_count < 1
+    const [result] = await db.execute(`
+      UPDATE appointment_slots
+      SET capacity = 1,
+          is_available = CASE WHEN booked_count >= 1 THEN 0 ELSE 1 END
+      WHERE capacity != 1 OR is_available != CASE WHEN booked_count >= 1 THEN 0 ELSE 1 END
+    `);
+    if (result.affectedRows > 0) {
+      console.log(`✅ appointment_slots: set capacity=1, corrected is_available for ${result.affectedRows} slot(s)`);
+    } else {
+      console.log("✅ appointment_slots: capacity already correct (1 patient per slot)");
+    }
+  } catch (err) {
+    console.error("❌ migrateAppointmentSlotsCapacity error:", err.message);
+  }
+}
+
+module.exports = { migrateNotificationsTable, migrateAppointmentSlotsCapacity };

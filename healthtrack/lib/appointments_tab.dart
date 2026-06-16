@@ -1483,135 +1483,143 @@ class _AppointmentTabState extends State<AppointmentTab> {
     final endTime = slot['end_time'] as String?;
     final slotDuration = slot['slot_duration_minutes'] as int? ?? 30;
     
-    // Use the calculated availability for consistency
+    // Use server-provided availability
     final isUserAvailable = slot['calculated_available'] as bool? ?? false;
-    
     final isSmallScreen = screenWidth < 360;
-    
+
     return GestureDetector(
       onTap: isUserAvailable ? () => _onSlotSelected(slot) : null,
-      child: Container(
-        decoration: BoxDecoration(
-          color: isUserAvailable ? Colors.white : Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isUserAvailable ? Colors.green.shade300 : Colors.red.shade200,
-            width: 1.5,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: isUserAvailable
-                  ? Colors.black.withOpacity(0.08)
-                  : Colors.black.withOpacity(0.04),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
+      child: Opacity(
+        opacity: isUserAvailable ? 1.0 : 0.72,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isUserAvailable ? Colors.white : const Color(0xFFFFF3F3),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isUserAvailable ? Colors.green.shade300 : Colors.red.shade300,
+              width: 1.5,
             ),
-          ],
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // Clock icon at top
-              Expanded(
-                flex: 2,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: isUserAvailable
-                        ? Colors.green.shade50
-                        : Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(
-                    Icons.schedule,
-                    size: isSmallScreen ? 20 : 24,
-                    color: isUserAvailable
-                        ? Colors.green.shade700
-                        : Colors.red.shade400,
-                  ),
-                ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(isUserAvailable ? 0.08 : 0.04),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
               ),
-              
-              const SizedBox(height: 6),
-              
-              // Time range in middle
-              Expanded(
-                flex: 3,
-                child: Container(
-                  width: double.infinity,
-                  alignment: Alignment.center,
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Text(
-                    _formatTimeRange(startTime, endTime, slotDuration),
-                    style: TextStyle(
-                      fontSize: isSmallScreen ? 11 : 12,
-                      fontWeight: FontWeight.bold,
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Icon at top
+                Expanded(
+                  flex: 2,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
                       color: isUserAvailable
-                          ? Colors.black87
-                          : Colors.grey.shade500,
-                      height: 1.3,
+                          ? Colors.green.shade50
+                          : Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-              
-              const SizedBox(height: 6),
-              
-              // Status label at bottom with enhanced visual feedback
-              Expanded(
-                flex: 2,
-                child: Container(
-                  width: double.infinity,
-                  alignment: Alignment.center,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: isUserAvailable
-                        ? Colors.green.withOpacity(0.15)
-                        : Colors.red.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
+                    child: Icon(
+                      isUserAvailable ? Icons.schedule : Icons.lock,
+                      size: isSmallScreen ? 20 : 24,
                       color: isUserAvailable
-                          ? Colors.green.withOpacity(0.4)
-                          : Colors.red.withOpacity(0.4),
-                      width: 1,
+                          ? Colors.green.shade700
+                          : Colors.red.shade400,
                     ),
                   ),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          isUserAvailable ? 'Available' : 'Booked',
-                          style: TextStyle(
-                            fontSize: isSmallScreen ? 9 : 10,
+                ),
+
+                const SizedBox(height: 6),
+
+                // Time range
+                Expanded(
+                  flex: 3,
+                  child: Container(
+                    width: double.infinity,
+                    alignment: Alignment.center,
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Text(
+                      _formatTimeRange(startTime, endTime, slotDuration),
+                      style: TextStyle(
+                        fontSize: isSmallScreen ? 11 : 12,
+                        fontWeight: FontWeight.bold,
+                        color: isUserAvailable
+                            ? Colors.black87
+                            : Colors.grey.shade500,
+                        height: 1.3,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 6),
+
+                // Status badge at bottom
+                Expanded(
+                  flex: 2,
+                  child: Container(
+                    width: double.infinity,
+                    alignment: Alignment.center,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isUserAvailable
+                          ? Colors.green.withOpacity(0.15)
+                          : Colors.red.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isUserAvailable
+                            ? Colors.green.withOpacity(0.4)
+                            : Colors.red.withOpacity(0.4),
+                        width: 1,
+                      ),
+                    ),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isUserAvailable
+                                ? Icons.check_circle_outline
+                                : Icons.lock_outline,
+                            size: isSmallScreen ? 9 : 10,
                             color: isUserAvailable
                                 ? Colors.green.shade700
                                 : Colors.red.shade700,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.3,
                           ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
+                          const SizedBox(width: 3),
+                          Text(
+                            isUserAvailable ? 'Available' : 'Booked',
+                            style: TextStyle(
+                              fontSize: isSmallScreen ? 9 : 10,
+                              color: isUserAvailable
+                                  ? Colors.green.shade700
+                                  : Colors.red.shade700,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
-
   Widget _buildAppointmentHistoryTab() {
     // Status display config: label, color, icon
     Color _statusColor(String status) {

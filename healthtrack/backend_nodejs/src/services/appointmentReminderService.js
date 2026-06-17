@@ -14,9 +14,9 @@ let systemSettingsCache = {};
 let lastSettingsUpdate = 0;
 const SETTINGS_CACHE_DURATION = 300000; // 5 minutes
 
-// Cache for processed reminders to prevent duplicates
+// Cache for processed reminders to prevent rapid retries
 let processedReminderCache = new Set();
-const REMINDER_CACHE_DURATION = 60000; // 1 minute
+const REMINDER_CACHE_DURATION = 120000; // 2 minutes (longer than cron interval to avoid alternating failures)
 
 // Timezone handling
 const DEFAULT_TIMEZONE = 'Asia/Manila';
@@ -311,16 +311,14 @@ async function sendAppointmentReminder(reminderId) {
   try {
     console.log(`🔔 Sending reminder notification for reminder ID: ${reminderId}`);
     
-    // Check if recently processed to prevent duplicates
+    // Check if recently processed to prevent rapid-fire retries
     if (isReminderRecentlyProcessed(reminderId)) {
       console.log(`⚠️ Reminder ${reminderId} was recently processed, skipping to prevent duplicate`);
       return { success: false, message: "Reminder recently processed (duplicate prevention)" };
     }
     
-    // Mark as processed immediately to prevent race conditions
-    markReminderAsProcessed(reminderId);
-    
     // Get reminder details with appointment and user information
+    // Using LEFT JOINs so orphaned reminders (deleted appointment/user) are still found
     // Using COALESCE to safely handle missing timezone column
     const [reminders] = await db.execute(`
       SELECT 
@@ -334,8 +332,8 @@ async function sendAppointmentReminder(reminderId) {
         'Asia/Manila' as timezone,
         p.child_fullname as patient_name
       FROM appointment_reminders ar
-      JOIN appointments a ON ar.appointment_id = a.id
-      JOIN users u ON ar.user_id = u.id
+      LEFT JOIN appointments a ON ar.appointment_id = a.id
+      LEFT JOIN users u ON ar.user_id = u.id
       LEFT JOIN patients p ON a.patient_id = p.id
       WHERE ar.id = ? AND ar.status = 'scheduled'
     `, [reminderId]);
@@ -346,6 +344,17 @@ async function sendAppointmentReminder(reminderId) {
     }
     
     const reminder = reminders[0];
+
+    // Check if appointment or user is missing (orphaned reminder)
+    if (!reminder.appointment_date || !reminder.user_name) {
+      const reason = !reminder.appointment_date 
+        ? `appointment ${reminder.appointment_id} not found` 
+        : `user ${reminder.user_id} not found`;
+      console.log(`⚠️ Reminder ${reminderId} is orphaned (${reason}), marking as failed`);
+      await updateReminderStatus(reminderId, 'failed', `Orphaned: ${reason}`);
+      markReminderAsProcessed(reminderId);
+      return { success: false, message: `Orphaned reminder: ${reason}` };
+    }
 
     console.log(`// DEBUG reminder trigger fired reminderId=${reminderId} userId=${reminder.user_id}`);
 
@@ -417,6 +426,9 @@ async function sendAppointmentReminder(reminderId) {
       // Update reminder status to sent
       await updateReminderStatus(reminderId, 'sent', null);
       
+      // Only cache as processed AFTER successful send to prevent premature blocking
+      markReminderAsProcessed(reminderId);
+      
       // Save notification to history
       await saveNotificationHistory(reminder.user_id, title, message, 'appointment_reminder', { reminderId }, 'sent');
       
@@ -425,6 +437,9 @@ async function sendAppointmentReminder(reminderId) {
     } else {
       // Update reminder status to failed
       await updateReminderStatus(reminderId, 'failed', result.error || 'Unknown error');
+      
+      // Cache as processed so we don't retry immediately (will retry after cache expires)
+      markReminderAsProcessed(reminderId);
       
       // Save failed notification to history
       await saveNotificationHistory(reminder.user_id, title, message, 'appointment_reminder', { reminderId }, 'failed', result.error);
@@ -439,6 +454,9 @@ async function sendAppointmentReminder(reminderId) {
     
   } catch (error) {
     console.error(`❌ Error sending appointment reminder ${reminderId}:`, error);
+    
+    // Cache as processed to prevent infinite retry loop on persistent errors
+    markReminderAsProcessed(reminderId);
     
     // Update reminder status to failed
     try {
@@ -521,6 +539,23 @@ async function checkAndSendDueReminders() {
     if (!settings.appointment_reminders_enabled) {
       console.log("🔔 Appointment reminders disabled, skipping check");
       return { success: true, message: "Reminders disabled" };
+    }
+    
+    // First, expire reminders that have been stuck in 'scheduled' for too long
+    // (more than 24 hours past their scheduled time). This prevents infinite retries.
+    try {
+      const [expiredResult] = await db.execute(`
+        UPDATE appointment_reminders 
+        SET status = 'failed', error_message = 'Expired: exceeded max retry window (24h)', updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'scheduled'
+        AND scheduled_datetime <= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      `);
+      if (expiredResult.affectedRows > 0) {
+        console.log(`🕐 Expired ${expiredResult.affectedRows} stuck reminders (>24h past due)`);
+      }
+    } catch (expireErr) {
+      // Non-critical; continue even if expiry update fails
+      console.warn('⚠️ Could not expire old reminders:', expireErr.message || expireErr);
     }
     
     // Get reminders that are due to be sent

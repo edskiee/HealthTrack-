@@ -756,22 +756,6 @@ exports.addAppointment = async (req, res) => {
         },
         `approval:${appointmentId}:${normalizedAppointmentDate}:${normalizedAppointmentTime}`
       );
-      
-      // Create reminder schedule for approved appointment
-      try {
-        // Prevent duplicates if this appointment was previously scheduled/rescheduled.
-        await cancelAppointmentReminders(appointmentId, 'Appointment approved - rescheduling reminders');
-        const reminderResult = await createAppointmentReminderSchedule(
-          appointmentId,
-          normalizedAppointmentDate,
-          normalizedAppointmentTime,
-          normalizedUserId
-        );
-        console.log("📅 Reminder schedule result for appointment ID:", appointmentId, reminderResult);
-      } catch (reminderErr) {
-        console.warn("⚠️ Warning: Failed to create reminder schedule for appointment ID:", appointmentId, reminderErr);
-        // Continue even if reminder scheduling fails
-      }
     }
 
     res.status(201).json({

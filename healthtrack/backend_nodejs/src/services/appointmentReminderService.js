@@ -190,6 +190,9 @@ async function createAppointmentReminderSchedule(appointmentId, appointmentDate,
     
     const reminderSchedules = [];
     
+    console.log(`📅 Reminder config for appointment ${appointmentId}: daysBefore=${JSON.stringify(reminderDaysBefore)}, times=${JSON.stringify(reminderTimes)}, perDay=${remindersPerDay}`);
+    console.log(`📅 Appointment datetime: ${appointmentDateTime.format("YYYY-MM-DD HH:mm")} Manila, Now: ${now.format("YYYY-MM-DD HH:mm")} Manila`);
+    
     // Create reminders for each day before appointment
     for (const daysBefore of reminderDaysBefore) {
       const reminderDate = appointmentDateTime.clone().subtract(daysBefore, "days");
@@ -198,6 +201,8 @@ async function createAppointmentReminderSchedule(appointmentId, appointmentDate,
       // For other days, only create if the reminder date is today or future
       const reminderDateStart = reminderDate.clone().startOf('day');
       const todayStart = now.clone().startOf('day');
+      
+      console.log(`📅 Checking daysBefore=${daysBefore}, reminderDate=${reminderDate.format("YYYY-MM-DD")}, isSameOrAfterToday=${reminderDateStart.isSameOrAfter(todayStart)}`);
       
       if (reminderDateStart.isSameOrAfter(todayStart)) {
         for (let i = 0; i < remindersPerDay && i < reminderTimes.length; i++) {
@@ -208,8 +213,11 @@ async function createAppointmentReminderSchedule(appointmentId, appointmentDate,
             DEFAULT_TIMEZONE
           );
           
+          const isFuture = scheduledDateTime.isValid() && scheduledDateTime.isAfter(now);
+          console.log(`📅   Time ${reminderTime} → ${scheduledDateTime.format("YYYY-MM-DD HH:mm")} isAfterNow=${isFuture}`);
+          
           // Only schedule if the reminder time is in the future
-          if (scheduledDateTime.isValid() && scheduledDateTime.isAfter(now)) {
+          if (isFuture) {
             const reminderData = {
               appointment_id: appointmentId,
               user_id: userId,
@@ -226,6 +234,26 @@ async function createAppointmentReminderSchedule(appointmentId, appointmentDate,
           }
         }
       }
+    }
+    
+    // FALLBACK: If no future scheduled reminders were created but the appointment is still
+    // in the future, create an immediate reminder that fires in 1 minute.
+    // This handles cases where all configured reminder times have already passed
+    // (e.g., booking made at 9 PM for a tomorrow 8 AM appointment).
+    if (reminderSchedules.length === 0 && appointmentDateTime.isAfter(now)) {
+      const immediateTime = now.clone().add(1, 'minute');
+      console.log(`📅 No future reminder slots available for appointment ${appointmentId}. Creating immediate reminder at ${immediateTime.format("YYYY-MM-DD HH:mm:ss")}`);
+      reminderSchedules.push({
+        appointment_id: appointmentId,
+        user_id: userId,
+        reminder_date: now.format("YYYY-MM-DD"),
+        reminder_time: immediateTime.format("HH:mm:ss"),
+        scheduled_datetime: immediateTime.format("YYYY-MM-DD HH:mm:ss"),
+        days_before: 0,
+        reminder_type: 'immediate_fallback',
+        status: 'scheduled',
+        created_at: now.format("YYYY-MM-DD HH:mm:ss")
+      });
     }
     
     // Insert reminder schedules into database using parameterized queries

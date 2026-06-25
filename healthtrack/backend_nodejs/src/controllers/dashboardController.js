@@ -633,10 +633,11 @@ exports.getTrimesterDistribution = async (req, res) => {
 // Returns all immunization patients with their latest health record info
 exports.getImmunizationPatients = async (req, res) => {
   try {
-    const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit  || 100)));
-    const offset = Math.max(0, parseInt(req.query.offset || 0));
+    // mysql2 prepared statements reject NaN/BigInt as LIMIT/OFFSET — use Number()|0 + query()
+    const limit  = Math.min(200, Math.max(1, Number(req.query.limit  || 100) | 0));
+    const offset = Math.max(0, Number(req.query.offset || 0) | 0);
 
-    const [rows] = await db.execute(
+    const [rows] = await db.query(
       `SELECT
          p.id,
          p.child_fullname,
@@ -665,7 +666,7 @@ exports.getImmunizationPatients = async (req, res) => {
       [limit, offset]
     );
 
-    const [countRows] = await db.execute(
+    const [countRows] = await db.query(
       `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'immunization'`
     );
 
@@ -693,10 +694,11 @@ exports.getImmunizationPatients = async (req, res) => {
 // Returns all maternal/prenatal patients
 exports.getPrenatalPatients = async (req, res) => {
   try {
-    const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit  || 100)));
-    const offset = Math.max(0, parseInt(req.query.offset || 0));
+    // mysql2 prepared statements reject NaN/BigInt as LIMIT/OFFSET — use Number()|0 + query()
+    const limit  = Math.min(200, Math.max(1, Number(req.query.limit  || 100) | 0));
+    const offset = Math.max(0, Number(req.query.offset || 0) | 0);
 
-    const [rows] = await db.execute(
+    const [rows] = await db.query(
       `SELECT
          p.id,
          p.child_fullname,
@@ -723,7 +725,7 @@ exports.getPrenatalPatients = async (req, res) => {
       [limit, offset]
     );
 
-    const [countRows] = await db.execute(
+    const [countRows] = await db.query(
       `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'maternal'`
     );
 

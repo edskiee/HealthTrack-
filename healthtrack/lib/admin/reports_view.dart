@@ -109,29 +109,28 @@ class _ReportsViewState extends State<ReportsView>
       });
 
       // Load all report data in parallel — indices are fixed:
-      // [0] totalPatients
+      // [0] summaryStatCounts (single dashboard/stats call — matches Dashboard view)
       // [1] immunizationMonthlyCounts
       // [2] prenatalMonthlyCounts
       // [3] immunizationVaccineDistribution
       // [4] prenatalTrimesterDistribution
       // [5] immunizationTableData
       // [6] prenatalTableData
-      // [7] immunizationCount  (real total for stat card)
-      // [8] prenatalCount      (real total for stat card)
       final results = await Future.wait([
-        _safeCall(() => ReportsService.getTotalPatients()),
+        _safeCall(() => ReportsService.getSummaryStatCounts()),
         _safeCall(() => ReportsService.getImmunizationMonthlyCounts(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalMonthlyCounts(_startDate, _endDate)),
         _safeCall(() => ReportsService.getImmunizationVaccineDistribution(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalTrimesterDistribution(_startDate, _endDate)),
         _safeCall(() => ReportsService.getImmunizationDetailedData(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalDetailedData(_startDate, _endDate)),
-        _safeCall(() => ReportsService.getImmunizationCount()),
-        _safeCall(() => ReportsService.getPrenatalCount()),
       ]);
 
       setState(() {
-        totalPatients = _safeCast<int>(results[0], 0);
+        final summaryStats = _safeCast<Map<String, int>>(results[0], {});
+        totalPatients        = summaryStats['totalPatients'] ?? 0;
+        immunizationPatients = summaryStats['immunizationPatients'] ?? 0;
+        prenatalPatients     = summaryStats['maternalPatients'] ?? 0;
 
         // Monthly charts — each endpoint now returns the correct service type
         immunizationMonthlyCounts = _safeCast<Map<String, int>>(results[1], {});
@@ -144,10 +143,6 @@ class _ReportsViewState extends State<ReportsView>
         // Detailed records tables
         immunizationTableData = _safeCastList<Map<String, dynamic>>(results[5], []);
         prenatalTableData     = _safeCastList<Map<String, dynamic>>(results[6], []);
-
-        // Stat card counts come from the backend total field — consistent with charts
-        immunizationPatients = _safeCast<int>(results[7], 0);
-        prenatalPatients     = _safeCast<int>(results[8], 0);
 
         // Percentages
         if (totalPatients > 0) {

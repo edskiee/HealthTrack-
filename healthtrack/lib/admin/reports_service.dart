@@ -16,6 +16,22 @@ class ReportsService {
     };
   }
 
+  /// Try GET across fallback URLs (same strategy as DashboardService).
+  static Future<http.Response> _getWithFallback(String path) async {
+    Object? lastError;
+    final urls = [baseUrl, ...ApiConfig.fallbackBaseUrls];
+    for (final url in urls) {
+      try {
+        return await http
+            .get(Uri.parse('$url$path'), headers: await _authHeaders())
+            .timeout(const Duration(seconds: 10));
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('All URLs failed for $path');
+  }
+
   // ─── Helper: parse success field robustly ──────────────────────────────────
   static bool _isSuccess(dynamic data) {
     if (data is! Map<String, dynamic>) return false;
@@ -26,27 +42,61 @@ class ReportsService {
     return false;
   }
 
-  // ─── Total patients (real API) ─────────────────────────────────────────────
-  static Future<int> getTotalPatients() async {
-    try {
-      final resp = await http.get(
-        Uri.parse('$baseUrl/patients'),
-        headers: await _authHeaders(),
-      ).timeout(const Duration(seconds: 10));
+  static int _parseCount(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value) ?? 0;
+    return 0;
+  }
 
+  /// Single dashboard/stats fetch for all three summary stat cards.
+  /// Matches Dashboard numbers — avoids pagination bug on GET /patients.
+  static Future<Map<String, int>> getSummaryStatCounts() async {
+    try {
+      final resp = await _getWithFallback('/dashboard/stats');
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body);
-        if (data is Map<String, dynamic>) {
-          if (data['data'] is List) return (data['data'] as List).length;
-          if (data['count'] is int)  return data['count'] as int;
-          if (data['total'] is int)  return data['total'] as int;
+        if (_isSuccess(data) && data['data'] is Map<String, dynamic>) {
+          final d = data['data'] as Map<String, dynamic>;
+          return {
+            'totalPatients': _parseCount(d['totalPatients']),
+            'immunizationPatients': _parseCount(d['immunizationPatients']),
+            'maternalPatients': _parseCount(d['maternalPatients']),
+          };
         }
       }
-      return 0;
     } catch (e) {
-      debugPrint('getTotalPatients error: $e');
-      return 0;
+      debugPrint('getSummaryStatCounts error: $e');
     }
+
+    // Last resort: read total from paginated patients endpoint
+    try {
+      final fallback = await _getWithFallback('/patients?limit=1&page=1');
+      if (fallback.statusCode == 200) {
+        final data = json.decode(fallback.body);
+        if (data is Map<String, dynamic>) {
+          return {
+            'totalPatients': _parseCount(data['total']),
+            'immunizationPatients': 0,
+            'maternalPatients': 0,
+          };
+        }
+      }
+    } catch (e) {
+      debugPrint('getSummaryStatCounts patients fallback error: $e');
+    }
+
+    return {
+      'totalPatients': 0,
+      'immunizationPatients': 0,
+      'maternalPatients': 0,
+    };
+  }
+
+  // ─── Total patients (real API) ─────────────────────────────────────────────
+  static Future<int> getTotalPatients() async {
+    final stats = await getSummaryStatCounts();
+    return stats['totalPatients'] ?? 0;
   }
 
   // ─── Immunization monthly counts (real API) ────────────────────────────────
@@ -206,49 +256,41 @@ class ReportsService {
   }
 
   // ─── Immunization total count (real API — used for stat card) ─────────────
+  // Primary: new reports endpoint. Fallback: dashboard/stats (always available)
   static Future<int> getImmunizationCount() async {
     try {
-      final resp = await http.get(
-        Uri.parse('$baseUrl/dashboard/reports/immunization-patients?limit=1'),
-        headers: await _authHeaders(),
-      ).timeout(const Duration(seconds: 10));
-
+      final resp = await _getWithFallback(
+        '/dashboard/reports/immunization-patients?limit=1',
+      );
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body);
         if (_isSuccess(data)) {
-          final t = data['total'];
-          if (t is int) return t;
-          if (t is String) return int.tryParse(t) ?? 0;
+          return _parseCount(data['total']);
         }
       }
-      return 0;
-    } catch (e) {
-      debugPrint('getImmunizationCount error: $e');
-      return 0;
-    }
+    } catch (_) {}
+
+    final stats = await getSummaryStatCounts();
+    return stats['immunizationPatients'] ?? 0;
   }
 
   // ─── Prenatal total count (real API — used for stat card) ─────────────────
+  // Primary: new reports endpoint. Fallback: dashboard/stats (always available)
   static Future<int> getPrenatalCount() async {
     try {
-      final resp = await http.get(
-        Uri.parse('$baseUrl/dashboard/reports/prenatal-patients?limit=1'),
-        headers: await _authHeaders(),
-      ).timeout(const Duration(seconds: 10));
-
+      final resp = await _getWithFallback(
+        '/dashboard/reports/prenatal-patients?limit=1',
+      );
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body);
         if (_isSuccess(data)) {
-          final t = data['total'];
-          if (t is int) return t;
-          if (t is String) return int.tryParse(t) ?? 0;
+          return _parseCount(data['total']);
         }
       }
-      return 0;
-    } catch (e) {
-      debugPrint('getPrenatalCount error: $e');
-      return 0;
-    }
+    } catch (_) {}
+
+    final stats = await getSummaryStatCounts();
+    return stats['maternalPatients'] ?? 0;
   }
 
   // ─── Kept for backward compat (dashboard_view.dart uses these) ────────────

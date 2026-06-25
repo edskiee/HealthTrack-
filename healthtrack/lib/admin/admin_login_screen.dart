@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import '../services/api_config.dart';
 import '../services/connection_status_service.dart';
@@ -155,7 +157,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       final tokenValue = data['access_token']?.toString().trim();
       if (tokenValue != null && tokenValue.isNotEmpty) {
         await AdminSessionStorage.setToken(tokenValue);
-        print('Token stored (login): ${tokenValue.substring(0, tokenValue.length.clamp(0, 12))}...');
+        debugPrint('Token stored (login): ${tokenValue.substring(0, tokenValue.length.clamp(0, 12))}...');
         final savedToken = await AdminSessionStorage.getToken();
         final tokenOk = savedToken != null && savedToken.isNotEmpty;
         if (!tokenOk) {
@@ -202,213 +204,258 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     final width = MediaQuery.sizeOf(context).width;
 
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          image: DecorationImage(
-            image: AssetImage("assets/images/adminbackground.png"),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // --- Background photo
+          Image.asset(
+            'assets/images/adminbackground.png',
             fit: BoxFit.cover,
           ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // --- Brand header
-                  Column(
-                    children: [
-                      Image.asset('assets/images/logo.png', height: 150),
-                      const SizedBox(height: 16),
-                      Text(
-                        'HealthTrack',
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineSmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white,
-                            ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Secure Healthcare Management System',
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelLarge
-                        ?.copyWith(color: Colors.white70),
-                  ),
-                  const SizedBox(height: 24),
 
-                  // --- Login Card
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: width < 600 ? 460 : 520,
+          // --- Subtle dark-blue overlay (~35% opacity) — lets the photo breathe
+          Container(
+            color: const Color(0xFF0A1F44).withValues(alpha: 0.35),
+          ),
+
+          // --- Content
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // --- Brand header
+                    Column(
+                      children: [
+                        Image.asset('assets/images/logo.png', height: 150),
+                        const SizedBox(height: 16),
+
+                        // Title — Plus Jakarta Sans, w600, tight tracking
+                        Text(
+                          'HealthTrack',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                      ],
                     ),
-                    child: Card(
-                      elevation: 3,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
+                    const SizedBox(height: 8),
+
+                    // Tagline — eyebrow text style
+                    Text(
+                      'SECURE HEALTHCARE MANAGEMENT SYSTEM',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w400,
+                        color: Colors.white.withValues(alpha: 0.85),
+                        letterSpacing: 1.0,
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text(
-                              'Admin Login',
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    color: const Color(0xFF2196F3),
-                                  ),
-                            ),
-                            const SizedBox(height: 18),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 28),
 
-                            // --- Login Form
-                            Form(
-                              key: _formKey,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  TextFormField(
-                                    controller: _username,
-                                    textInputAction: TextInputAction.next,
-                                    decoration: InputDecoration(
-                                      labelText: 'Username',
-                                      prefixIcon: const Icon(Icons.person),
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                    ),
-                                    validator: (v) => (v == null || v.isEmpty)
-                                        ? 'Enter username'
-                                        : null,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  TextFormField(
-                                    controller: _password,
-                                    obscureText: _obscure,
-                                    onFieldSubmitted: (_) => _submit(),
-                                    decoration: InputDecoration(
-                                      labelText: 'Password',
-                                      prefixIcon: const Icon(Icons.lock),
-                                      suffixIcon: IconButton(
-                                        onPressed: () => setState(() {
-                                          _obscure = !_obscure;
-                                        }),
-                                        icon: Icon(_obscure
-                                            ? Icons.visibility_off
-                                            : Icons.visibility),
-                                      ),
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                    ),
-                                    validator: (v) => (v == null || v.isEmpty)
-                                        ? 'Enter password'
-                                        : null,
-                                  ),
-                                  if (_awaitingTotp) ...[
-                                    const SizedBox(height: 12),
-                                    TextFormField(
-                                      controller: _totp,
-                                      keyboardType: TextInputType.number,
-                                      decoration: InputDecoration(
-                                        labelText: 'Authenticator code',
-                                        prefixIcon:
-                                            const Icon(Icons.security),
-                                        border: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                        ),
-                                      ),
-                                      validator: (v) {
-                                        if (!_awaitingTotp) return null;
-                                        if (v == null ||
-                                            v.trim().length != 6) {
-                                          return 'Enter the six-digit code';
-                                        }
-                                        return null;
-                                      },
-                                    ),
-                                  ],
-                                  const SizedBox(height: 18),
-
-                                  // --- Sign In button
-                                  SizedBox(
-                                    height: 48,
-                                    child: FilledButton(
-                                      onPressed: _isLoading ? null : _submit,
-                                      style: FilledButton.styleFrom(
-                                        backgroundColor:
-                                            const Color(0xFF0047C8),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                        ),
-                                      ),
-                                      child: _isLoading
-                                          ? const SizedBox(
-                                              width: 22,
-                                              height: 22,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2.6,
-                                                valueColor:
-                                                    AlwaysStoppedAnimation<
-                                                        Color>(Colors.white),
-                                              ),
-                                            )
-                                          : const Text(
-                                              'Sign In',
-                                              style: TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w700,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                    ),
-                                  ),
-                                ],
+                    // --- Login Card — floating, premium
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: width < 600 ? 460 : 520,
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              // Semi-transparent white (~97% opacity equivalent feel
+                              // against the blurred backdrop)
+                              color: Colors.white.withValues(alpha: 0.97),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.6),
+                                width: 1.0,
                               ),
+                              boxShadow: [
+                                // Larger soft ambient shadow
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.18),
+                                  blurRadius: 40,
+                                  spreadRadius: 0,
+                                  offset: const Offset(0, 16),
+                                ),
+                                // Tighter close shadow for lift
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.10),
+                                  blurRadius: 12,
+                                  spreadRadius: -2,
+                                  offset: const Offset(0, 4),
+                                ),
+                                // Top-edge highlight for glassy depth
+                                BoxShadow(
+                                  color: Colors.white.withValues(alpha: 0.08),
+                                  blurRadius: 0,
+                                  spreadRadius: 1,
+                                  offset: const Offset(0, -1),
+                                ),
+                              ],
                             ),
-                          ],
+                            padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Text(
+                                  'Admin Login',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w600,
+                                    color: const Color(0xFF2196F3),
+                                    letterSpacing: -0.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 18),
+
+                                // --- Login Form
+                                Form(
+                                  key: _formKey,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      TextFormField(
+                                        controller: _username,
+                                        textInputAction: TextInputAction.next,
+                                        decoration: InputDecoration(
+                                          labelText: 'Username',
+                                          prefixIcon: const Icon(Icons.person),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                        ),
+                                        validator: (v) => (v == null || v.isEmpty)
+                                            ? 'Enter username'
+                                            : null,
+                                      ),
+                                      const SizedBox(height: 12),
+                                      TextFormField(
+                                        controller: _password,
+                                        obscureText: _obscure,
+                                        onFieldSubmitted: (_) => _submit(),
+                                        decoration: InputDecoration(
+                                          labelText: 'Password',
+                                          prefixIcon: const Icon(Icons.lock),
+                                          suffixIcon: IconButton(
+                                            onPressed: () => setState(() {
+                                              _obscure = !_obscure;
+                                            }),
+                                            icon: Icon(_obscure
+                                                ? Icons.visibility_off
+                                                : Icons.visibility),
+                                          ),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                        ),
+                                        validator: (v) => (v == null || v.isEmpty)
+                                            ? 'Enter password'
+                                            : null,
+                                      ),
+                                      if (_awaitingTotp) ...[
+                                        const SizedBox(height: 12),
+                                        TextFormField(
+                                          controller: _totp,
+                                          keyboardType: TextInputType.number,
+                                          decoration: InputDecoration(
+                                            labelText: 'Authenticator code',
+                                            prefixIcon: const Icon(Icons.security),
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(12),
+                                            ),
+                                          ),
+                                          validator: (v) {
+                                            if (!_awaitingTotp) return null;
+                                            if (v == null || v.trim().length != 6) {
+                                              return 'Enter the six-digit code';
+                                            }
+                                            return null;
+                                          },
+                                        ),
+                                      ],
+                                      const SizedBox(height: 18),
+
+                                      // --- Sign In button
+                                      SizedBox(
+                                        height: 48,
+                                        child: FilledButton(
+                                          onPressed: _isLoading ? null : _submit,
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor: const Color(0xFF0047C8),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(12),
+                                            ),
+                                          ),
+                                          child: _isLoading
+                                              ? const SizedBox(
+                                                  width: 22,
+                                                  height: 22,
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2.6,
+                                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                                      Colors.white,
+                                                    ),
+                                                  ),
+                                                )
+                                              : Text(
+                                                  'Sign In',
+                                                  style: GoogleFonts.plusJakartaSans(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Colors.white,
+                                                  ),
+                                                ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
 
-                  const SizedBox(height: 20),
+                    const SizedBox(height: 24),
 
-                  // --- Footer
-                  Text(
-                    'Preventive Healthcare Management System © 2025',
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelLarge
-                        ?.copyWith(color: Colors.white70),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Secure • Reliable • Professional',
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelMedium
-                        ?.copyWith(color: Colors.white54),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+                    // --- Footer
+                    Text(
+                      'Preventive Healthcare Management System © 2025',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
+                        color: Colors.white.withValues(alpha: 0.75),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Secure  ·  Reliable  ·  Professional',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        color: Colors.white.withValues(alpha: 0.55),
+                        letterSpacing: 0.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

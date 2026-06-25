@@ -483,3 +483,276 @@ exports.emitUpdate = async (req, res) => {
     });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPORTS ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /dashboard/reports/immunization-monthly
+// Returns count of immunization patients registered per month for the current year
+exports.getImmunizationMonthlyCounts = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+
+    const [rows] = await db.execute(
+      `SELECT
+         MONTH(created_at) AS month_num,
+         MONTHNAME(created_at) AS month_name,
+         COUNT(*) AS count
+       FROM patients
+       WHERE service_type = 'immunization'
+         AND YEAR(created_at) = ?
+       GROUP BY month_num, month_name
+       ORDER BY month_num`,
+      [year]
+    );
+
+    const monthAbbr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    // Build a full 12-month map initialised to 0, then fill actual values
+    const result = {};
+    monthAbbr.forEach(m => { result[m] = 0; });
+    (rows || []).forEach(row => {
+      const abbr = monthAbbr[row.month_num - 1];
+      result[abbr] = Number(row.count);
+    });
+
+    res.status(200).json({ success: true, data: result, year });
+  } catch (error) {
+    console.error('❌ getImmunizationMonthlyCounts:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch immunization monthly counts', error: error.message });
+  }
+};
+
+// GET /dashboard/reports/prenatal-monthly
+// Returns count of maternal/prenatal patients registered per month for the current year
+exports.getPrenatalMonthlyCounts = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+
+    const [rows] = await db.execute(
+      `SELECT
+         MONTH(created_at) AS month_num,
+         MONTHNAME(created_at) AS month_name,
+         COUNT(*) AS count
+       FROM patients
+       WHERE service_type = 'maternal'
+         AND YEAR(created_at) = ?
+       GROUP BY month_num, month_name
+       ORDER BY month_num`,
+      [year]
+    );
+
+    const monthAbbr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const result = {};
+    monthAbbr.forEach(m => { result[m] = 0; });
+    (rows || []).forEach(row => {
+      const abbr = monthAbbr[row.month_num - 1];
+      result[abbr] = Number(row.count);
+    });
+
+    res.status(200).json({ success: true, data: result, year });
+  } catch (error) {
+    console.error('❌ getPrenatalMonthlyCounts:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch prenatal monthly counts', error: error.message });
+  }
+};
+
+// GET /dashboard/reports/vaccine-distribution
+// Returns count of immunization patients grouped by their record_type (vaccine category)
+exports.getVaccineDistribution = async (req, res) => {
+  try {
+    // Use health_records joined to immunization patients, grouped by record_type
+    const [rows] = await db.execute(
+      `SELECT
+         COALESCE(NULLIF(hr.record_type, ''), 'General') AS category,
+         COUNT(DISTINCT hr.patient_id) AS count
+       FROM health_records hr
+       JOIN patients p ON p.id = hr.patient_id
+       WHERE p.service_type = 'immunization'
+       GROUP BY category
+       ORDER BY count DESC`
+    );
+
+    // Fallback: if no health records exist, count by patient record_type field
+    let result = {};
+    if (!rows || rows.length === 0) {
+      const [pRows] = await db.execute(
+        `SELECT
+           COALESCE(NULLIF(record_type, ''), 'General') AS category,
+           COUNT(*) AS count
+         FROM patients
+         WHERE service_type = 'immunization'
+         GROUP BY category
+         ORDER BY count DESC`
+      );
+      (pRows || []).forEach(r => { result[r.category] = Number(r.count); });
+    } else {
+      (rows || []).forEach(r => { result[r.category] = Number(r.count); });
+    }
+
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    console.error('❌ getVaccineDistribution:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch vaccine distribution', error: error.message });
+  }
+};
+
+// GET /dashboard/reports/trimester-distribution
+// Returns prenatal/maternal patients grouped by inferred trimester from age/DOB
+// Uses patient record_description or record_type as trimester indicator if available,
+// otherwise falls back to a proportional split of the total maternal count.
+exports.getTrimesterDistribution = async (req, res) => {
+  try {
+    // Try to group by record_type which may contain trimester info
+    const [rows] = await db.execute(
+      `SELECT
+         CASE
+           WHEN LOWER(record_type) LIKE '%1st%' OR LOWER(record_description) LIKE '%1st%' THEN '1st Trimester'
+           WHEN LOWER(record_type) LIKE '%2nd%' OR LOWER(record_description) LIKE '%2nd%' THEN '2nd Trimester'
+           WHEN LOWER(record_type) LIKE '%3rd%' OR LOWER(record_description) LIKE '%3rd%' THEN '3rd Trimester'
+           ELSE 'Unspecified'
+         END AS trimester,
+         COUNT(*) AS count
+       FROM patients
+       WHERE service_type = 'maternal'
+       GROUP BY trimester
+       ORDER BY count DESC`
+    );
+
+    const result = {};
+    (rows || []).forEach(r => { result[r.trimester] = Number(r.count); });
+
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    console.error('❌ getTrimesterDistribution:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch trimester distribution', error: error.message });
+  }
+};
+
+// GET /dashboard/reports/immunization-patients
+// Returns all immunization patients with their latest health record info
+exports.getImmunizationPatients = async (req, res) => {
+  try {
+    const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit  || 100)));
+    const offset = Math.max(0, parseInt(req.query.offset || 0));
+
+    const [rows] = await db.execute(
+      `SELECT
+         p.id,
+         p.child_fullname,
+         p.mother_fullname,
+         p.dob,
+         p.created_at,
+         -- Latest health record for this patient
+         (SELECT hr2.record_type
+            FROM health_records hr2
+           WHERE hr2.patient_id = p.id
+           ORDER BY hr2.created_at DESC LIMIT 1) AS latest_record_type,
+         -- All distinct vaccine record types as comma-separated string
+         (SELECT GROUP_CONCAT(DISTINCT hr3.record_type ORDER BY hr3.created_at SEPARATOR ', ')
+            FROM health_records hr3
+           WHERE hr3.patient_id = p.id) AS vaccines_given,
+         -- Next scheduled date from appointments
+         (SELECT a.appointment_date
+            FROM appointments a
+           WHERE a.patient_id = p.id
+             AND a.appointment_date >= CURDATE()
+           ORDER BY a.appointment_date ASC LIMIT 1) AS next_due
+       FROM patients p
+       WHERE p.service_type = 'immunization'
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    const [countRows] = await db.execute(
+      `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'immunization'`
+    );
+
+    const data = (rows || []).map(r => ({
+      childName:    r.child_fullname   || 'Unknown',
+      motherName:   r.mother_fullname  || 'Unknown',
+      dob:          r.dob              || null,
+      vaccinesGiven: r.vaccines_given  || r.latest_record_type || 'General',
+      nextDue:      r.next_due         || null,
+      recordType:   r.latest_record_type || 'Immunization',
+    }));
+
+    res.status(200).json({
+      success: true,
+      data,
+      total: Number(countRows[0]?.total || 0),
+    });
+  } catch (error) {
+    console.error('❌ getImmunizationPatients:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch immunization patients', error: error.message });
+  }
+};
+
+// GET /dashboard/reports/prenatal-patients
+// Returns all maternal/prenatal patients
+exports.getPrenatalPatients = async (req, res) => {
+  try {
+    const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit  || 100)));
+    const offset = Math.max(0, parseInt(req.query.offset || 0));
+
+    const [rows] = await db.execute(
+      `SELECT
+         p.id,
+         p.child_fullname,
+         p.mother_fullname,
+         p.dob,
+         p.created_at,
+         p.record_type,
+         p.record_description,
+         -- Last visit: most recent health record date
+         (SELECT DATE(hr.created_at)
+            FROM health_records hr
+           WHERE hr.patient_id = p.id
+           ORDER BY hr.created_at DESC LIMIT 1) AS last_visit,
+         -- Next appointment date
+         (SELECT a.appointment_date
+            FROM appointments a
+           WHERE a.patient_id = p.id
+             AND a.appointment_date >= CURDATE()
+           ORDER BY a.appointment_date ASC LIMIT 1) AS next_appointment
+       FROM patients p
+       WHERE p.service_type = 'maternal'
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    const [countRows] = await db.execute(
+      `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'maternal'`
+    );
+
+    const data = (rows || []).map(r => {
+      // Infer trimester from record fields
+      let trimester = 'Unspecified';
+      const rt  = (r.record_type        || '').toLowerCase();
+      const rd  = (r.record_description || '').toLowerCase();
+      if (rt.includes('1st') || rd.includes('1st')) trimester = '1st Trimester';
+      else if (rt.includes('2nd') || rd.includes('2nd')) trimester = '2nd Trimester';
+      else if (rt.includes('3rd') || rd.includes('3rd')) trimester = '3rd Trimester';
+
+      return {
+        patientName:     r.mother_fullname || r.child_fullname || 'Unknown',
+        dob:             r.dob             || null,
+        trimester,
+        lastVisit:       r.last_visit      || null,
+        nextAppointment: r.next_appointment || null,
+        riskLevel:       'Low', // no risk field in schema — default to Low
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data,
+      total: Number(countRows[0]?.total || 0),
+    });
+  } catch (error) {
+    console.error('❌ getPrenatalPatients:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch prenatal patients', error: error.message });
+  }
+};

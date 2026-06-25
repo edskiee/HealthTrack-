@@ -1,14 +1,12 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 import '../services/api_config.dart';
 import 'services/admin_session_storage.dart';
 
 class ReportsService {
-  // Use the same centralized URL config as other admin services
   static String get baseUrl => ApiConfig.baseUrl;
 
-  // Async headers that include the admin Bearer token
   static Future<Map<String, String>> _authHeaders() async {
     final token = await AdminSessionStorage.getToken();
     return {
@@ -18,449 +16,388 @@ class ReportsService {
     };
   }
 
-  // Get total patients count with robust error handling
+  // ─── Helper: parse success field robustly ──────────────────────────────────
+  static bool _isSuccess(dynamic data) {
+    if (data is! Map<String, dynamic>) return false;
+    final s = data['success'];
+    if (s is bool) return s;
+    if (s is int) return s == 1;
+    if (s is String) return s.toLowerCase() == 'true';
+    return false;
+  }
+
+  // ─── Total patients (real API) ─────────────────────────────────────────────
   static Future<int> getTotalPatients() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/patients"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/patients'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Handle different response formats
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
         if (data is Map<String, dynamic>) {
-          if (data.containsKey('data') && data['data'] is List) {
-            return (data['data'] as List).length;
-          } else if (data.containsKey('count') && data['count'] is int) {
-            return data['count'] as int;
-          } else if (data.containsKey('total') && data['total'] is int) {
-            return data['total'] as int;
-          }
+          if (data['data'] is List) return (data['data'] as List).length;
+          if (data['count'] is int)  return data['count'] as int;
+          if (data['total'] is int)  return data['total'] as int;
         }
-        // Fallback: return 0 for any unrecognized format
-        return 0;
-      } else {
-        print("Failed to fetch patients data: HTTP ${response.statusCode}");
-        return 0;
       }
+      return 0;
     } catch (e) {
-      print("Error fetching total patients: $e");
-      return 0; // Return 0 instead of throwing to prevent app crash
+      debugPrint('getTotalPatients error: $e');
+      return 0;
     }
   }
 
-  // Get weekly appointments data with validation
+  // ─── Immunization monthly counts (real API) ────────────────────────────────
+  static Future<Map<String, int>> getImmunizationMonthlyCounts(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final year = endDate.year;
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/immunization-monthly?year=$year'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is Map) {
+          return _toStringIntMap(data['data'] as Map);
+        }
+      }
+      debugPrint('getImmunizationMonthlyCounts HTTP ${resp.statusCode}');
+      return _emptyMonthMap();
+    } catch (e) {
+      debugPrint('getImmunizationMonthlyCounts error: $e');
+      return _emptyMonthMap();
+    }
+  }
+
+  // ─── Prenatal monthly counts (real API) ───────────────────────────────────
+  static Future<Map<String, int>> getPrenatalMonthlyCounts(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final year = endDate.year;
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/prenatal-monthly?year=$year'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is Map) {
+          return _toStringIntMap(data['data'] as Map);
+        }
+      }
+      debugPrint('getPrenatalMonthlyCounts HTTP ${resp.statusCode}');
+      return _emptyMonthMap();
+    } catch (e) {
+      debugPrint('getPrenatalMonthlyCounts error: $e');
+      return _emptyMonthMap();
+    }
+  }
+
+  // ─── Vaccine category distribution (real API) ─────────────────────────────
+  static Future<Map<String, int>> getImmunizationVaccineDistribution(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/vaccine-distribution'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is Map) {
+          return _toStringIntMap(data['data'] as Map);
+        }
+      }
+      debugPrint('getImmunizationVaccineDistribution HTTP ${resp.statusCode}');
+      return {};
+    } catch (e) {
+      debugPrint('getImmunizationVaccineDistribution error: $e');
+      return {};
+    }
+  }
+
+  // ─── Prenatal trimester distribution (real API) ───────────────────────────
+  static Future<Map<String, int>> getPrenatalTrimesterDistribution(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/trimester-distribution'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is Map) {
+          return _toStringIntMap(data['data'] as Map);
+        }
+      }
+      debugPrint('getPrenatalTrimesterDistribution HTTP ${resp.statusCode}');
+      return {};
+    } catch (e) {
+      debugPrint('getPrenatalTrimesterDistribution error: $e');
+      return {};
+    }
+  }
+
+  // ─── Immunization detailed patient list (real API) ────────────────────────
+  static Future<List<Map<String, dynamic>>> getImmunizationDetailedData(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/immunization-patients?limit=100'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List)
+              .whereType<Map<String, dynamic>>()
+              .toList();
+        }
+      }
+      debugPrint('getImmunizationDetailedData HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getImmunizationDetailedData error: $e');
+      return [];
+    }
+  }
+
+  // ─── Prenatal detailed patient list (real API) ────────────────────────────
+  static Future<List<Map<String, dynamic>>> getPrenatalDetailedData(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/prenatal-patients?limit=100'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List)
+              .whereType<Map<String, dynamic>>()
+              .toList();
+        }
+      }
+      debugPrint('getPrenatalDetailedData HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getPrenatalDetailedData error: $e');
+      return [];
+    }
+  }
+
+  // ─── Immunization total count (real API — used for stat card) ─────────────
+  static Future<int> getImmunizationCount() async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/immunization-patients?limit=1'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data)) {
+          final t = data['total'];
+          if (t is int) return t;
+          if (t is String) return int.tryParse(t) ?? 0;
+        }
+      }
+      return 0;
+    } catch (e) {
+      debugPrint('getImmunizationCount error: $e');
+      return 0;
+    }
+  }
+
+  // ─── Prenatal total count (real API — used for stat card) ─────────────────
+  static Future<int> getPrenatalCount() async {
+    try {
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/reports/prenatal-patients?limit=1'),
+        headers: await _authHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data)) {
+          final t = data['total'];
+          if (t is int) return t;
+          if (t is String) return int.tryParse(t) ?? 0;
+        }
+      }
+      return 0;
+    } catch (e) {
+      debugPrint('getPrenatalCount error: $e');
+      return 0;
+    }
+  }
+
+  // ─── Kept for backward compat (dashboard_view.dart uses these) ────────────
   static Future<Map<String, int>> getWeeklyAppointments() async {
     try {
-      // Get appointments for the current week
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/weekly-appointments"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/weekly-appointments'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Handle different response formats
-        if (data is Map<String, dynamic>) {
-          if (data.containsKey('data')) {
-            final dataValue = data['data'];
-            if (dataValue is Map<String, dynamic>) {
-              // Convert dynamic map to Map<String, int>
-              final result = <String, int>{};
-              dataValue.forEach((key, value) {
-                result[key.toString()] = value is int ? value : (value is String ? int.tryParse(value) ?? 0 : 0);
-              });
-              return result;
-            } else if (dataValue is List) {
-              // Handle list format by converting to map
-              final result = <String, int>{};
-              for (int i = 0; i < dataValue.length && i < 7; i++) {
-                final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                if (i < days.length) {
-                  final item = dataValue[i];
-                  if (item is Map<String, dynamic> && item.containsKey('count')) {
-                    result[days[i]] = item['count'] is int ? item['count'] : 0;
-                  } else if (item is int) {
-                    result[days[i]] = item;
-                  } else {
-                    result[days[i]] = 0;
-                  }
-                }
-              }
-              return result;
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (data is Map<String, dynamic> && data['data'] != null) {
+          final dv = data['data'];
+          if (dv is Map<String, dynamic>) return _toStringIntMap(dv);
+          if (dv is List) {
+            final days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+            final result = <String, int>{};
+            for (int i = 0; i < dv.length && i < 7; i++) {
+              final item = dv[i];
+              result[days[i]] = item is Map ? (item['count'] as int? ?? 0) : (item is int ? item : 0);
             }
+            return result;
           }
         }
-        return {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0};
-      } else {
-        print("Failed to fetch weekly appointments: HTTP ${response.statusCode}");
-        return {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0};
       }
+      return _emptyWeekMap();
     } catch (e) {
-      print("Error fetching weekly appointments: $e");
-      return {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0};
+      return _emptyWeekMap();
     }
   }
 
-  // Get service type distribution data with robust validation
   static Future<Map<String, int>> getServiceTypeDistribution() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/service-type-distribution"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/service-type-distribution'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
-        }
-        
-        if (isSuccess) {
-          final dataValue = data['data'];
-          if (dataValue is List) {
-            final result = <String, int>{};
-            for (final item in dataValue) {
-              if (item is Map<String, dynamic>) {
-                final serviceType = item['service_type'] as String? ?? item['serviceType'] as String? ?? 'unknown';
-                final count = item['count'] as int? ?? (item['count'] is String ? int.tryParse(item['count']) ?? 0 : 0);
-                result[serviceType] = count;
-              }
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          final result = <String, int>{};
+          for (final item in (data['data'] as List)) {
+            if (item is Map<String, dynamic>) {
+              final key = item['service_type']?.toString() ?? 'unknown';
+              final val = item['count'];
+              result[key] = val is int ? val : (int.tryParse(val?.toString() ?? '') ?? 0);
             }
-            return result;
-          } else if (dataValue is Map<String, dynamic>) {
-            // Handle direct map format
-            final result = <String, int>{};
-            dataValue.forEach((key, value) {
-              result[key.toString()] = value is int ? value : (value is String ? int.tryParse(value) ?? 0 : 0);
-            });
-            return result;
           }
+          return result;
         }
-        return {'immunization': 0, 'maternal': 0, 'unknown': 0};
-      } else {
-        print("Failed to fetch service type distribution: HTTP ${response.statusCode}");
-        return {'immunization': 0, 'maternal': 0, 'unknown': 0};
       }
+      return {'immunization': 0, 'maternal': 0};
     } catch (e) {
-      print("Error fetching service type distribution: $e");
-      return {'immunization': 0, 'maternal': 0, 'unknown': 0};
+      return {'immunization': 0, 'maternal': 0};
     }
   }
 
-  // Get baby conditions data with validation
   static Future<List<Map<String, dynamic>>> getBabyConditions() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/baby-conditions"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/baby-conditions'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
         }
-        
-        if (isSuccess) {
-          final dataValue = data['data'];
-          if (dataValue is List) {
-            return dataValue.map((condition) {
-              if (condition is Map<String, dynamic>) {
-                return {
-                  "name": condition["name"] as String? ?? condition["condition"] as String? ?? "Unknown",
-                  "patients": condition["patients"] as int? ?? (condition["count"] as int? ?? 0),
-                  "percentage": condition["percentage"] as int? ?? 0,
-                };
-              }
-              return {"name": "Unknown", "patients": 0, "percentage": 0};
-            }).toList();
-          }
-        }
-        return [];
-      } else {
-        print("Failed to fetch baby conditions: HTTP ${response.statusCode}");
-        return [];
       }
-    } catch (e) {
-      print("Error fetching baby conditions: $e");
       return [];
-    }
+    } catch (e) { return []; }
   }
 
-  // Get age distribution data with validation
   static Future<List<Map<String, dynamic>>> getAgeDistribution() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/age-distribution"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/age-distribution'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().map((d) => {
+            'range':      d['range']      ?? d['age_range'] ?? 'Unknown',
+            'babies':     d['babies']     ?? d['count']     ?? 0,
+            'percentage': d['percentage'] ?? 0,
+          }).toList();
         }
-        
-        if (isSuccess) {
-          final dataValue = data['data'];
-          if (dataValue is List) {
-            return dataValue.map((dist) {
-              if (dist is Map<String, dynamic>) {
-                return {
-                  "range": dist["range"] as String? ?? dist["age_range"] as String? ?? "Unknown",
-                  "babies": dist["babies"] as int? ?? (dist["count"] as int? ?? 0),
-                  "percentage": dist["percentage"] as int? ?? 0,
-                };
-              }
-              return {"range": "Unknown", "babies": 0, "percentage": 0};
-            }).toList();
-          }
-        }
-        return [];
-      } else {
-        print("Failed to fetch age distribution: HTTP ${response.statusCode}");
-        return [];
       }
-    } catch (e) {
-      print("Error fetching age distribution: $e");
       return [];
-    }
+    } catch (e) { return []; }
   }
 
-  // Get gender distribution data with validation
   static Future<List<Map<String, dynamic>>> getGenderDistribution() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/gender-distribution"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/gender-distribution'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().map((d) => {
+            'gender':     d['gender']     ?? d['name']  ?? 'Unknown',
+            'babies':     d['babies']     ?? d['count'] ?? 0,
+            'percentage': d['percentage'] ?? 0,
+          }).toList();
         }
-        
-        if (isSuccess) {
-          final dataValue = data['data'];
-          if (dataValue is List) {
-            return dataValue.map((dist) {
-              if (dist is Map<String, dynamic>) {
-                return {
-                  "gender": dist["gender"] as String? ?? dist["name"] as String? ?? "Unknown",
-                  "babies": dist["babies"] as int? ?? (dist["count"] as int? ?? 0),
-                  "percentage": dist["percentage"] as int? ?? 0,
-                };
-              }
-              return {"gender": "Unknown", "babies": 0, "percentage": 0};
-            }).toList();
-          }
-        }
-        return [];
-      } else {
-        print("Failed to fetch gender distribution: HTTP ${response.statusCode}");
-        return [];
       }
-    } catch (e) {
-      print("Error fetching gender distribution: $e");
       return [];
-    }
+    } catch (e) { return []; }
   }
 
-  // Get location distribution data with validation
   static Future<List<Map<String, dynamic>>> getLocationDistribution() async {
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/dashboard/location-distribution"),
+      final resp = await http.get(
+        Uri.parse('$baseUrl/dashboard/location-distribution'),
         headers: await _authHeaders(),
       ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Robust type checking for success field
-        bool isSuccess = false;
-        if (data['success'] is bool) {
-          isSuccess = data['success'];
-        } else if (data['success'] is String) {
-          isSuccess = data['success'].toLowerCase() == 'true';
-        } else if (data['success'] is int) {
-          isSuccess = data['success'] == 1;
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().map((d) => {
+            'location':   d['location']   ?? d['name']  ?? 'Unknown',
+            'babies':     d['babies']     ?? d['count'] ?? 0,
+            'percentage': d['percentage'] ?? 0,
+          }).toList();
         }
-        
-        if (isSuccess) {
-          final dataValue = data['data'];
-          if (dataValue is List) {
-            return dataValue.map((dist) {
-              if (dist is Map<String, dynamic>) {
-                return {
-                  "location": dist["location"] as String? ?? dist["name"] as String? ?? "Unknown",
-                  "babies": dist["babies"] as int? ?? (dist["count"] as int? ?? 0),
-                  "percentage": dist["percentage"] as int? ?? 0,
-                };
-              }
-              return {"location": "Unknown", "babies": 0, "percentage": 0};
-            }).toList();
-          }
-        }
-        return [];
-      } else {
-        print("Failed to fetch location distribution: HTTP ${response.statusCode}");
-        return [];
       }
-    } catch (e) {
-      print("Error fetching location distribution: $e");
       return [];
-    }
+    } catch (e) { return []; }
   }
 
-  // Get immunization monthly counts
-  static Future<Map<String, int>> getImmunizationMonthlyCounts(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return {
-        'Jan': 15,
-        'Feb': 12,
-        'Mar': 18,
-        'Apr': 10,
-        'May': 14,
-        'Jun': 16,
-      };
-    } catch (e) {
-      throw Exception("Failed to fetch immunization monthly counts: $e");
-    }
+  // ─── Private helpers ───────────────────────────────────────────────────────
+  static Map<String, int> _toStringIntMap(Map raw) {
+    final result = <String, int>{};
+    raw.forEach((k, v) {
+      result[k.toString()] = v is int ? v : (int.tryParse(v?.toString() ?? '') ?? 0);
+    });
+    return result;
   }
 
-  // Get prenatal monthly counts
-  static Future<Map<String, int>> getPrenatalMonthlyCounts(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return {
-        'Jan': 8,
-        'Feb': 10,
-        'Mar': 12,
-        'Apr': 9,
-        'May': 11,
-        'Jun': 7,
-      };
-    } catch (e) {
-      throw Exception("Failed to fetch prenatal monthly counts: $e");
-    }
-  }
+  static Map<String, int> _emptyMonthMap() => {
+    'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0,
+    'Jul': 0, 'Aug': 0, 'Sep': 0, 'Oct': 0, 'Nov': 0, 'Dec': 0,
+  };
 
-  // Get immunization vaccine distribution
-  static Future<Map<String, int>> getImmunizationVaccineDistribution(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return {
-        'BCG': 25,
-        'Hepatitis B': 30,
-        'Polio': 20,
-        'MMR': 15,
-        'DPT': 18,
-        'Hib': 22,
-      };
-    } catch (e) {
-      throw Exception("Failed to fetch immunization vaccine distribution: $e");
-    }
-  }
-
-  // Get prenatal trimester distribution
-  static Future<Map<String, int>> getPrenatalTrimesterDistribution(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return {
-        '1st': 5,
-        '2nd': 8,
-        '3rd': 12,
-      };
-    } catch (e) {
-      throw Exception("Failed to fetch prenatal trimester distribution: $e");
-    }
-  }
-
-  // Get immunization detailed data
-  static Future<List<Map<String, dynamic>>> getImmunizationDetailedData(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return [
-        {
-          'childName': 'John Smith',
-          'motherName': 'Sarah Smith',
-          'dob': '2023-01-15',
-          'vaccinesGiven': 'BCG, Hepatitis B',
-          'nextDue': '2023-02-15',
-          'recordType': 'Immunization',
-        },
-        {
-          'childName': 'Emma Johnson',
-          'motherName': 'Lisa Johnson',
-          'dob': '2023-02-20',
-          'vaccinesGiven': 'Polio, DPT',
-          'nextDue': '2023-03-20',
-          'recordType': 'Immunization',
-        },
-      ];
-    } catch (e) {
-      throw Exception("Failed to fetch immunization detailed data: $e");
-    }
-  }
-
-  // Get prenatal detailed data
-  static Future<List<Map<String, dynamic>>> getPrenatalDetailedData(DateTime startDate, DateTime endDate) async {
-    try {
-      // This is a placeholder implementation
-      // In a real scenario, this would call an API endpoint
-      return [
-        {
-          'patientName': 'Maria Rodriguez',
-          'dob': '1990-05-10',
-          'trimester': '2nd',
-          'lastVisit': '2023-06-01',
-          'nextAppointment': '2023-06-15',
-          'riskLevel': 'Low',
-        },
-        {
-          'patientName': 'Ana Thompson',
-          'dob': '1988-12-03',
-          'trimester': '3rd',
-          'lastVisit': '2023-06-05',
-          'nextAppointment': '2023-06-12',
-          'riskLevel': 'Medium',
-        },
-      ];
-    } catch (e) {
-      throw Exception("Failed to fetch prenatal detailed data: $e");
-    }
-  }
+  static Map<String, int> _emptyWeekMap() =>
+    {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0};
 }

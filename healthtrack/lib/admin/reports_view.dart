@@ -108,7 +108,16 @@ class _ReportsViewState extends State<ReportsView>
         errorMessage = null;
       });
 
-      // Load all report data in parallel with defensive handling
+      // Load all report data in parallel — indices are fixed:
+      // [0] totalPatients
+      // [1] immunizationMonthlyCounts
+      // [2] prenatalMonthlyCounts
+      // [3] immunizationVaccineDistribution
+      // [4] prenatalTrimesterDistribution
+      // [5] immunizationTableData
+      // [6] prenatalTableData
+      // [7] immunizationCount  (real total for stat card)
+      // [8] prenatalCount      (real total for stat card)
       final results = await Future.wait([
         _safeCall(() => ReportsService.getTotalPatients()),
         _safeCall(() => ReportsService.getImmunizationMonthlyCounts(_startDate, _endDate)),
@@ -117,40 +126,38 @@ class _ReportsViewState extends State<ReportsView>
         _safeCall(() => ReportsService.getPrenatalTrimesterDistribution(_startDate, _endDate)),
         _safeCall(() => ReportsService.getImmunizationDetailedData(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalDetailedData(_startDate, _endDate)),
+        _safeCall(() => ReportsService.getImmunizationCount()),
+        _safeCall(() => ReportsService.getPrenatalCount()),
       ]);
 
       setState(() {
-        // Safely extract and validate data with proper type checking
         totalPatients = _safeCast<int>(results[0], 0);
-        
-        // Handle service type distribution data
-        final serviceTypeData = _safeCast<Map<String, int>>(results[1], {});
-        immunizationMonthlyCounts = _mapServiceData(serviceTypeData, 'immunization');
-        prenatalMonthlyCounts = _mapServiceData(serviceTypeData, 'maternal');
-        
-        // Handle distribution data
-        immunizationVaccineDistribution = _safeCast<Map<String, int>>(results[2], 
-          {'BCG': 0, 'Hepatitis B': 0, 'Polio': 0, 'MMR': 0});
-        prenatalTrimesterDistribution = _safeCast<Map<String, int>>(results[3], 
-          {'1st': 0, '2nd': 0, '3rd': 0});
-        
-        // Handle detailed data tables
-        immunizationTableData = _safeCastList<Map<String, dynamic>>(results[4], []);
-        prenatalTableData = _safeCastList<Map<String, dynamic>>(results[5], []);
-        
-        // Calculate service-specific counts
-        immunizationPatients = immunizationTableData.length;
-        prenatalPatients = prenatalTableData.length;
-        
-        // Calculate percentages
+
+        // Monthly charts — each endpoint now returns the correct service type
+        immunizationMonthlyCounts = _safeCast<Map<String, int>>(results[1], {});
+        prenatalMonthlyCounts     = _safeCast<Map<String, int>>(results[2], {});
+
+        // Distribution charts
+        immunizationVaccineDistribution  = _safeCast<Map<String, int>>(results[3], {});
+        prenatalTrimesterDistribution    = _safeCast<Map<String, int>>(results[4], {});
+
+        // Detailed records tables
+        immunizationTableData = _safeCastList<Map<String, dynamic>>(results[5], []);
+        prenatalTableData     = _safeCastList<Map<String, dynamic>>(results[6], []);
+
+        // Stat card counts come from the backend total field — consistent with charts
+        immunizationPatients = _safeCast<int>(results[7], 0);
+        prenatalPatients     = _safeCast<int>(results[8], 0);
+
+        // Percentages
         if (totalPatients > 0) {
           immunizationPercentage = (immunizationPatients / totalPatients) * 100;
-          prenatalPercentage = (prenatalPatients / totalPatients) * 100;
+          prenatalPercentage     = (prenatalPatients     / totalPatients) * 100;
         } else {
           immunizationPercentage = 0.0;
-          prenatalPercentage = 0.0;
+          prenatalPercentage     = 0.0;
         }
-        
+
         isLoading = false;
       });
     } catch (e) {
@@ -158,7 +165,7 @@ class _ReportsViewState extends State<ReportsView>
         errorMessage = e.toString();
         isLoading = false;
       });
-      
+
       if (mounted) {
         MessageUtils.showErrorMessage(
           context,
@@ -219,33 +226,9 @@ class _ReportsViewState extends State<ReportsView>
     }
   }
 
-  // Map service type data to monthly format
+  // Map service type data to monthly format — kept for compatibility, no longer used by _loadReportData
   Map<String, int> _mapServiceData(Map<String, int>? data, String serviceType) {
-    try {
-      if (data == null || data.isEmpty) {
-        return {'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0};
-      }
-      
-      // If we get actual monthly data, use it
-      if (data.keys.any((key) => 
-          ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-          .contains(key))) {
-        return data;
-      }
-      
-      // Convert single service type count to monthly format
-      final count = data[serviceType] ?? 0;
-      return {
-        'Jan': (count * 0.17).round(),
-        'Feb': (count * 0.17).round(),
-        'Mar': (count * 0.17).round(),
-        'Apr': (count * 0.17).round(),
-        'May': (count * 0.16).round(),
-        'Jun': (count * 0.16).round(),
-      };
-    } catch (e) {
-      return {'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0};
-    }
+    return {'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0};
   }
 
   @override
@@ -270,6 +253,7 @@ class _ReportsViewState extends State<ReportsView>
                   title: "Reports",
                   subtitle: "Manage and track all system reports and analytics",
                   onRefresh: _loadReportData,
+                  showLiveClock: true,
                 ),
 
                 // QUICK SUMMARY CARDS
@@ -354,7 +338,7 @@ class _ReportsViewState extends State<ReportsView>
             // Export Loading Overlay
             if (isExporting)
               Container(
-                color: Colors.black.withOpacity(0.3),
+                color: Colors.black.withValues(alpha: 0.3),
                 child: Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
@@ -362,7 +346,7 @@ class _ReportsViewState extends State<ReportsView>
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20)
+                        BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 20)
                       ],
                     ),
                     child: const Column(
@@ -407,7 +391,7 @@ class _ReportsViewState extends State<ReportsView>
           border: Border.all(color: Colors.grey.shade100),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.02),
+              color: Colors.black.withValues(alpha: 0.02),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -462,7 +446,7 @@ class _ReportsViewState extends State<ReportsView>
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -507,7 +491,7 @@ class _ReportsViewState extends State<ReportsView>
                   iconColor: Colors.blueAccent,
                   child: SizedBox(
                     height: 220,
-                    child: _buildBarChart(immunizationMonthlyCounts),
+                    child: _buildBarChart(immunizationMonthlyCounts, chartColor: const Color(0xFF3B82F6)),
                   ),
                 ),
               ),
@@ -554,7 +538,7 @@ class _ReportsViewState extends State<ReportsView>
                   iconColor: Colors.purple,
                   child: SizedBox(
                     height: 220,
-                    child: _buildBarChart(prenatalMonthlyCounts),
+                    child: _buildBarChart(prenatalMonthlyCounts, chartColor: const Color(0xFF8B5CF6)),
                   ),
                 ),
               ),
@@ -584,9 +568,9 @@ class _ReportsViewState extends State<ReportsView>
     );
   }
 
-  // Build bar chart for monthly counts
-  Widget _buildBarChart(Map<String, int> data) {
-    if (data.isEmpty) {
+  // Build bar chart for monthly counts — chartColor sets a single consistent bar color
+  Widget _buildBarChart(Map<String, int> data, {Color chartColor = Colors.blueAccent}) {
+    if (data.isEmpty || data.values.every((v) => v == 0)) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -599,52 +583,41 @@ class _ReportsViewState extends State<ReportsView>
       );
     }
 
-    final List<Color> colorList = [
-      Colors.blueAccent,
-      Colors.greenAccent,
-      Colors.orangeAccent,
-      Colors.purpleAccent,
-      Colors.tealAccent,
-    ];
-
     return BarChart(
       BarChartData(
         alignment: BarChartAlignment.spaceAround,
-        maxY: data.values.fold(0, (max, value) => value > max ? value : max).toDouble() + 2,
+        maxY: data.values.fold(0, (max, v) => v > max ? v : max).toDouble() + 2,
         barTouchData: BarTouchData(
           touchTooltipData: BarTouchTooltipData(
-            getTooltipColor: (group) => Colors.blueAccent.withOpacity(0.8),
+            getTooltipColor: (group) => chartColor.withValues(alpha: 0.85),
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final key = data.keys.elementAt(group.x);
               return BarTooltipItem(
-                '${rod.toY.round()}',
-                const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
+                '$key\n${rod.toY.round()}',
+                const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
               );
             },
           ),
         ),
         titlesData: FlTitlesData(
           show: true,
-          rightTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          topTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles:   const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
+              reservedSize: 38,
               getTitlesWidget: (value, meta) {
                 final keys = data.keys.toList();
-                if (value.toInt() >= 0 && value.toInt() < keys.length) {
-                  return Text(keys[value.toInt()]);
+                final i = value.toInt();
+                if (i >= 0 && i < keys.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(keys[i], style: const TextStyle(fontSize: 11)),
+                  );
                 }
                 return const Text('');
               },
-              reservedSize: 38,
             ),
           ),
           leftTitles: AxisTitles(
@@ -652,8 +625,9 @@ class _ReportsViewState extends State<ReportsView>
               showTitles: true,
               reservedSize: 38,
               getTitlesWidget: (value, meta) {
-                if (value % 1 == 0) {
-                  return Text(value.toInt().toString());
+                if (value % 1 == 0 && value >= 0) {
+                  return Text(value.toInt().toString(),
+                      style: const TextStyle(fontSize: 11));
                 }
                 return const Text('');
               },
@@ -662,29 +636,28 @@ class _ReportsViewState extends State<ReportsView>
         ),
         borderData: FlBorderData(show: false),
         barGroups: List.generate(data.length, (index) {
-          final dataEntry = data.values.elementAt(index);
           return BarChartGroupData(
             x: index,
             barRods: [
               BarChartRodData(
-                toY: dataEntry.toDouble(),
-                color: colorList[index % colorList.length],
-                width: 16,
-                borderSide: BorderSide(color: Colors.white, width: 1),
+                toY: data.values.elementAt(index).toDouble(),
+                color: chartColor,
+                width: 18,
+                borderSide: const BorderSide(color: Colors.white, width: 1),
                 borderRadius: BorderRadius.circular(4),
               ),
             ],
           );
         }),
       ),
-      swapAnimationDuration: const Duration(milliseconds: 800),
-      swapAnimationCurve: Curves.easeInOut,
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.easeInOut,
     );
   }
 
-  // Build pie chart for distribution
+  // Build pie/donut chart with an external legend below it
   Widget _buildPieChart(Map<String, int> data) {
-    if (data.isEmpty) {
+    if (data.isEmpty || data.values.every((v) => v == 0)) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -697,42 +670,72 @@ class _ReportsViewState extends State<ReportsView>
       );
     }
 
-    final List<Color> colorList = [
-      Colors.blueAccent,
-      Colors.greenAccent,
-      Colors.orangeAccent,
-      Colors.purpleAccent,
-      Colors.tealAccent,
-      Colors.pinkAccent,
-      Colors.amberAccent,
+    // Fixed semantic palette — cycles if more than 7 categories
+    const List<Color> palette = [
+      Color(0xFF3B82F6), // blue
+      Color(0xFF10B981), // green
+      Color(0xFFF59E0B), // amber
+      Color(0xFF8B5CF6), // purple
+      Color(0xFF14B8A6), // teal
+      Color(0xFFEC4899), // pink
+      Color(0xFFF97316), // orange
     ];
 
-    final total = data.values.fold(0, (sum, value) => sum + value);
-    int index = 0;
+    final total = data.values.fold(0, (sum, v) => sum + v);
+    int idx = 0;
     final sections = <PieChartSectionData>[];
+    final legendItems = <_LegendItem>[];
+
     data.forEach((key, value) {
-      final percentage = total > 0 ? (value / total) * 100 : 0;
+      final color = palette[idx % palette.length];
+      final pct   = total > 0 ? (value / total * 100) : 0.0;
       sections.add(PieChartSectionData(
-        color: colorList[index % colorList.length],
-        value: percentage.toDouble(),
-        title: '${percentage.round()}%',
-        radius: 50,
-        titleStyle: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          color: Colors.white,
-        ),
+        color: color,
+        value: pct.toDouble(),
+        title: '${pct.round()}%',
+        radius: 52,
+        titleStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
       ));
-      index++;
+      legendItems.add(_LegendItem(color: color, label: key, count: value));
+      idx++;
     });
 
-    return PieChart(
-      PieChartData(
-        sections: sections,
-        centerSpaceRadius: 40,
-        sectionsSpace: 2,
-        startDegreeOffset: -90,
-      ),
+    return Column(
+      children: [
+        SizedBox(
+          height: 150,
+          child: PieChart(
+            PieChartData(
+              sections: sections,
+              centerSpaceRadius: 36,
+              sectionsSpace: 2,
+              startDegreeOffset: -90,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Legend — wraps into multiple rows on narrow screens
+        Wrap(
+          spacing: 16,
+          runSpacing: 6,
+          alignment: WrapAlignment.center,
+          children: legendItems.map((item) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(color: item.color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                '${item.label} (${item.count})',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+            ],
+          )).toList(),
+        ),
+      ],
     );
   }
 
@@ -858,7 +861,7 @@ class _ReportsViewState extends State<ReportsView>
                 DataCell(
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(color: riskColor.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+                    decoration: BoxDecoration(color: riskColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(20)),
                     child: Text(riskLevel, style: TextStyle(color: riskColor, fontSize: 12, fontWeight: FontWeight.w600)),
                   ),
                 ),
@@ -2248,4 +2251,12 @@ class _ReportsViewState extends State<ReportsView>
       if (mounted) setState(() => isExporting = false);
     }
   }
+}
+
+// Small data class used by the pie chart legend
+class _LegendItem {
+  final Color color;
+  final String label;
+  final int count;
+  const _LegendItem({required this.color, required this.label, required this.count});
 }

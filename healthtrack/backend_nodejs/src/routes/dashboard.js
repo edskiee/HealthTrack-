@@ -11,6 +11,13 @@ const {
   getLocationDistribution,
   getServiceTypeDistribution,
   emitUpdate,
+  // Reports endpoints
+  getImmunizationMonthlyCounts,
+  getPrenatalMonthlyCounts,
+  getVaccineDistribution,
+  getTrimesterDistribution,
+  getImmunizationPatients,
+  getPrenatalPatients,
 } = require("../controllers/dashboardController");
 const { authenticateAdmin } = require("../middleware/auth");
 
@@ -27,5 +34,13 @@ router.get("/gender-distribution",    getGenderDistribution);
 router.get("/location-distribution",  getLocationDistribution);
 router.get("/service-type-distribution", getServiceTypeDistribution);
 router.post("/emit-update",           emitUpdate);
+
+// Reports
+router.get("/reports/immunization-monthly",  getImmunizationMonthlyCounts);
+router.get("/reports/prenatal-monthly",      getPrenatalMonthlyCounts);
+router.get("/reports/vaccine-distribution",  getVaccineDistribution);
+router.get("/reports/trimester-distribution",getTrimesterDistribution);
+router.get("/reports/immunization-patients", getImmunizationPatients);
+router.get("/reports/prenatal-patients",     getPrenatalPatients);
 
 module.exports = router;

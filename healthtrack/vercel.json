@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "buildCommand": "bash -c \"test -f build/web/index.html || (echo 'Run flutter build web first' && exit 1)\"",
   "outputDirectory": "build/web",
   "rewrites": [
     { "source": "/flutter_service_worker.js", "destination": "/flutter_service_worker.js" },

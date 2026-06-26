@@ -660,6 +660,7 @@ void _deleteRecord(int index) {
             title: "Health Records",
             subtitle: "Manage and track all patient health records",
             onRefresh: _loadHealthRecords,
+            showLiveClock: true,
           ),
 
           // ===== CONTENT =====

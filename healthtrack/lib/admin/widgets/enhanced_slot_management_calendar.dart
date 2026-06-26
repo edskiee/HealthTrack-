@@ -1,19 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
-import '../../services/service_config_service.dart';
 import '../../services/websocket_service.dart';
 import '../../services/appointment_slot_service.dart';
+import '../../services/service_config_service.dart';
 import '../../models/service_model.dart';
 import '../../utils/message_utils.dart';
 import 'slot_details_modal.dart';
 
 class EnhancedSlotManagementCalendar extends StatefulWidget {
+  final List<ServiceModel> services;
+  final int? selectedServiceId;
+  final bool isLoadingServices;
+  final ValueChanged<int?>? onServiceSelected;
   final Function()? onSlotsUpdated;
   final Function(DateTime)? onDateSelected;
   final int refreshTrigger;
 
   const EnhancedSlotManagementCalendar({
     super.key,
+    required this.services,
+    this.selectedServiceId,
+    this.isLoadingServices = false,
+    this.onServiceSelected,
     this.onSlotsUpdated,
     this.onDateSelected,
     this.refreshTrigger = 0,
@@ -32,12 +40,16 @@ class EnhancedSlotManagementCalendar extends StatefulWidget {
 class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementCalendar> {
   late DateTime _focusedDay;
   late DateTime _selectedDay;
-  List<ServiceModel> _services = [];
-  int? _selectedServiceId;
   
   // Slot data
   Map<DateTime, List<Map<String, dynamic>>> _slotEvents = {};
   bool _isLoadingSlots = false;
+
+  int? get _activeServiceId =>
+      ServiceConfigService.resolveSelectedServiceId(
+        widget.services,
+        widget.selectedServiceId,
+      );
   
   @override
   void initState() {
@@ -49,7 +61,6 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
     // Add listener for slot updates
     WebSocketService.instance.addSlotsUpdatedListener(_handleSlotsUpdated);
     
-    _loadServices();
     _loadSlotsForMonth(_focusedDay);
   }
   
@@ -63,14 +74,16 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
   @override
   void didUpdateWidget(covariant EnhancedSlotManagementCalendar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.refreshTrigger != widget.refreshTrigger) {
+    final servicesChanged = oldWidget.services.length != widget.services.length ||
+        oldWidget.selectedServiceId != widget.selectedServiceId;
+    if (oldWidget.refreshTrigger != widget.refreshTrigger || servicesChanged) {
       _loadSlotsForMonth(_focusedDay);
     }
   }
   
   // Public method to manually refresh slots
   Future<void> refreshSlots() async {
-    if (_selectedServiceId != null) {
+    if (_activeServiceId != null) {
       await _loadSlotsForMonth(_focusedDay);
     }
   }
@@ -182,9 +195,10 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
   }
 
   Future<void> _loadSlotsForMonth(DateTime month) async {
-    if (_selectedServiceId == null) return;
+    final serviceId = _activeServiceId;
+    if (serviceId == null) return;
     
-    print('🔄 Admin: Loading slots for month: ${month.year}-${month.month}, service: $_selectedServiceId');
+    print('🔄 Admin: Loading slots for month: ${month.year}-${month.month}, service: $serviceId');
     
     try {
       setState(() {
@@ -199,7 +213,7 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
       
       // Load all available slots for the service
       final slots = await AppointmentSlotService.getAllSlots(
-        serviceId: _selectedServiceId,
+        serviceId: serviceId,
       );
       
       print('📥 Admin: Received ${slots.length} slots from backend');
@@ -256,41 +270,6 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
     }
   }
 
-  Future<void> _loadServices() async {
-    try {
-      setState(() {
-        // Reserved for service fetch state
-      });
-
-      final services = await ServiceConfigService.getAllServices();
-      final serviceModels = services.map((s) => ServiceModel.fromJson(s)).toList();
-      
-      // Filter to only include Maternal Care and Immunization services
-      final filteredServices = serviceModels.where((service) => 
-        service.serviceName == 'Maternal Care' || 
-        service.serviceName == 'Immunization'
-      ).toList();
-
-      if (mounted) {
-        setState(() {
-          _services = filteredServices;
-          
-          // Auto-select first service if none selected
-          if (_selectedServiceId == null && _services.isNotEmpty) {
-            _selectedServiceId = _services.first.id;
-          }
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          // Reserved for service fetch state
-        });
-        MessageUtils.showNetworkError(context, e);
-      }
-    }
-  }
-
   void _onDaySelected(DateTime selectedDay, DateTime focusedDay) {
     // Normalize dates for consistent comparison
     final normalizedSelectedDay = DateTime(selectedDay.year, selectedDay.month, selectedDay.day);
@@ -329,7 +308,7 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
           return SlotDetailsModal(
             selectedDate: normalizedSelectedDay,
             slots: slotsForDate,
-            serviceId: _selectedServiceId,
+            serviceId: _activeServiceId,
             onSlotsUpdated: () {
               // Refresh slots for the current month to reflect changes
               _loadSlotsForMonth(_focusedDay);
@@ -389,11 +368,28 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: Colors.grey.shade300),
                     ),
-                    child: DropdownButton<int>(
+                    child: widget.isLoadingServices
+                        ? const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              "Loading services...",
+                              style: TextStyle(color: Colors.grey, fontSize: 13),
+                            ),
+                          )
+                        : widget.services.isEmpty
+                            ? const Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  "No services available — refresh or check backend",
+                                  style: TextStyle(color: Colors.red, fontSize: 12),
+                                ),
+                              )
+                            : DropdownButton<int>(
                       isExpanded: true,
-                      value: _selectedServiceId,
+                      value: _activeServiceId,
                       underline: const SizedBox(),
-                      items: _services.map((service) {
+                      hint: const Text("Select service"),
+                      items: widget.services.map((service) {
                         return DropdownMenuItem(
                           value: service.id,
                           child: Row(
@@ -411,11 +407,10 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
                           ),
                         );
                       }).toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedServiceId = value;
-                        });
-                        // Reload slots for the selected service
+                      onChanged: widget.services.isEmpty
+                          ? null
+                          : (value) {
+                        widget.onServiceSelected?.call(value);
                         _loadSlotsForMonth(_focusedDay);
                       },
                     ),

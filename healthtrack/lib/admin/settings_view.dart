@@ -791,6 +791,7 @@ class _SettingsViewState extends State<SettingsView>
                           _loadSystemMeta();
                           _probeHealthOnly();
                         },
+                        showLiveClock: true,
                       ),
                       if (_error != null)
                         Padding(

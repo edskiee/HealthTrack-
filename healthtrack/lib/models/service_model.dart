@@ -32,8 +32,16 @@ class ServiceModel {
       }
     }
 
+    int? parsedId;
+    final rawId = json['id'];
+    if (rawId is int) {
+      parsedId = rawId;
+    } else if (rawId != null) {
+      parsedId = int.tryParse(rawId.toString());
+    }
+
     return ServiceModel(
-      id: json['id'],
+      id: parsedId,
       serviceName: json['service_name'] ?? json['serviceName'] ?? '',
       serviceDescription: json['service_description'] ?? json['serviceDescription'],
       serviceType: json['service_type'] ?? json['serviceType'] ?? 'immunization',

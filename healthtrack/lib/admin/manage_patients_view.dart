@@ -2065,6 +2065,7 @@ Widget build(BuildContext context) {
             title: "Manage Patients",
             subtitle: "Manage and track all patient records",
             onRefresh: _loadPatients,
+            showLiveClock: true,
           ),
 
           // Content

@@ -138,6 +138,7 @@ class _DashboardViewState extends State<DashboardView> {
               title: "Dashboard Overview",
               subtitle: "Preventive Healthcare Management System",
               onRefresh: _loadDashboardData,
+              showLiveClock: true,
             ),
             Expanded(
               child: isLoading

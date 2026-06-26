@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/service_model.dart';
 import '../../services/appointment_slot_service.dart';
+import '../../services/service_config_service.dart';
 import '../../utils/message_utils.dart';
 
 class SlotConfigurationPanel extends StatefulWidget {
@@ -41,12 +42,30 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
   @override
   void initState() {
     super.initState();
-    _selectedServiceId = widget.selectedServiceId;
+    _selectedServiceId = ServiceConfigService.resolveSelectedServiceId(
+      widget.services,
+      widget.selectedServiceId,
+    );
     _startTime = const TimeOfDay(hour: 9, minute: 0);
     _endTime = const TimeOfDay(hour: 17, minute: 0);
     _durationInput = '30';
     _customDuration = 30;
     _calculateSlots();
+  }
+
+  @override
+  void didUpdateWidget(covariant SlotConfigurationPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.services != widget.services ||
+        oldWidget.selectedServiceId != widget.selectedServiceId) {
+      final resolved = ServiceConfigService.resolveSelectedServiceId(
+        widget.services,
+        widget.selectedServiceId ?? _selectedServiceId,
+      );
+      if (resolved != _selectedServiceId) {
+        setState(() => _selectedServiceId = resolved);
+      }
+    }
   }
 
   // Calculate total slots based on time range and duration
@@ -342,8 +361,19 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
             border: Border.all(color: Colors.grey.shade300),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: DropdownButton<int>(
-            value: _selectedServiceId,
+          child: widget.services.isEmpty
+              ? const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    "No services loaded",
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              : DropdownButton<int>(
+            value: ServiceConfigService.resolveSelectedServiceId(
+              widget.services,
+              _selectedServiceId,
+            ),
             items: widget.services.map((service) {
               return DropdownMenuItem(
                 value: service.id,
@@ -362,7 +392,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                 ),
               );
             }).toList(),
-            onChanged: (value) {
+            onChanged: widget.services.isEmpty
+                ? null
+                : (value) {
               setState(() {
                 _selectedServiceId = value;
               });

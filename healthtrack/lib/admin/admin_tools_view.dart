@@ -18,6 +18,7 @@ class _AdminToolsViewState extends State<AdminToolsView> {
   DateTime? _selectedDate;
   List<ServiceModel> _services = [];
   int? _selectedServiceId;
+  bool _isLoadingServices = true;
   int _calendarRefreshTrigger = 0;
 
   @override
@@ -27,27 +28,28 @@ class _AdminToolsViewState extends State<AdminToolsView> {
   }
 
   Future<void> _loadServices() async {
+    setState(() {
+      _isLoadingServices = true;
+    });
+
     try {
-      final services = await ServiceConfigService.getAllServices();
-      final serviceModels = services.map((s) => ServiceModel.fromJson(s)).toList();
-      
-      // Filter to only include Maternal Care and Immunization services
-      final filteredServices = serviceModels.where((service) => 
-        service.serviceName == 'Maternal Care' || 
-        service.serviceName == 'Immunization'
-      ).toList();
-      
+      final filteredServices = await ServiceConfigService.getAppointmentServices();
+
       if (mounted) {
         setState(() {
           _services = filteredServices;
-          // Auto-select first service if none selected
-          if (_selectedServiceId == null && _services.isNotEmpty) {
-            _selectedServiceId = _services.first.id;
-          }
+          _selectedServiceId = ServiceConfigService.resolveSelectedServiceId(
+            _services,
+            _selectedServiceId,
+          );
+          _isLoadingServices = false;
         });
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _isLoadingServices = false;
+        });
         MessageUtils.showErrorMessage(context, "Failed to load services: $e");
       }
     }
@@ -72,6 +74,7 @@ class _AdminToolsViewState extends State<AdminToolsView> {
               await _loadServices();
               _triggerCalendarRefresh();
             },
+            showLiveClock: true,
           ),
           
           // Main content area
@@ -112,6 +115,14 @@ class _AdminToolsViewState extends State<AdminToolsView> {
                               const SizedBox(height: 16),
                               Expanded(
                                 child: EnhancedSlotManagementCalendar(
+                                  services: _services,
+                                  selectedServiceId: _selectedServiceId,
+                                  isLoadingServices: _isLoadingServices,
+                                  onServiceSelected: (serviceId) {
+                                    setState(() {
+                                      _selectedServiceId = serviceId;
+                                    });
+                                  },
                                   refreshTrigger: _calendarRefreshTrigger,
                                   onSlotsUpdated: () {
                                     // Refresh the UI if needed

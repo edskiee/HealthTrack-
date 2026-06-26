@@ -492,3 +492,4 @@ async function initAdminTables() {
 
 module.exports = initAdminTables;
 module.exports.cleanupOldAuditLogs = cleanupOldAuditLogs;
+module.exports.ensureServicesConfig = ensureServicesConfig;

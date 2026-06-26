@@ -16,17 +16,21 @@ services:
       - key: PORT
         value: 10000        # Render auto-injects PORT; this is the fallback default
 
-      # ── Database (Railway MySQL) ─────────────────────────────────────────────
+      # ── Database (Aiven MySQL) ───────────────────────────────────────────────
+      # Copy Host, User, Password, Database name, Port from Aiven Console →
+      # your service → Overview → Connection information (Aiven port is usually 12236).
       - key: DB_HOST
-        sync: false         # Set in Render Dashboard → Environment
+        sync: false         # e.g. healthtrack-db-xxxxxx.h.aivencloud.com (exact copy)
       - key: DB_USER
-        sync: false
+        sync: false         # usually avnadmin
       - key: DB_PASS
         sync: false
       - key: DB_NAME
-        sync: false
+        sync: false         # usually defaultdb
       - key: DB_PORT
-        value: "3306"
+        sync: false         # Aiven: 12236 — do not use 3306 unless on Railway
+      - key: DB_SSL
+        sync: false         # set to true for Aiven / remote hosts
 
       # ── JWT ──────────────────────────────────────────────────────────────────
       - key: JWT_SECRET

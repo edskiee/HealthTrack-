@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { ensureServicesConfig } = require('../utils/initAdminTables');
 
 // Cleanup duplicate services — keeps lowest id for each name, disables non-standard ones (admin only)
 exports.cleanupDuplicates = async (req, res) => {
@@ -93,7 +94,22 @@ exports.getAllServices = async (req, res) => {
     
     sql += " ORDER BY service_name ASC";
     
-    const [results] = await db.execute(sql, params);
+    let [results] = await db.execute(sql, params);
+
+    // If startup seeding failed (e.g. DB was down), try once on read.
+    if (results.length === 0) {
+      try {
+        const conn = await db.getConnection();
+        try {
+          await ensureServicesConfig(conn);
+        } finally {
+          conn.release();
+        }
+        [results] = await db.execute(sql, params);
+      } catch (seedErr) {
+        console.warn('⚠️ getAllServices auto-seed skipped:', seedErr.message);
+      }
+    }
     
     res.status(200).json({
       success: true,

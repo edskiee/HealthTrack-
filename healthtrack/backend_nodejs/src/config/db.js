@@ -4,6 +4,24 @@ const mysql = require("mysql2/promise");
 
 // ─── Build connection config ──────────────────────────────────────────────────
 
+function logDbConnectionHint(err) {
+  if (!err || err.code !== "ENOTFOUND") return;
+
+  console.error(`   DNS lookup failed for DB_HOST="${process.env.DB_HOST}"`);
+  console.error("   That hostname does not exist. Copy the exact Host from your database provider:");
+  console.error("   • Aiven: Console → MySQL service → Overview → Connection information");
+  console.error("   • Railway: Project → MySQL → Variables → MYSQLHOST / MYSQLPORT");
+  if (process.env.DB_NAME === "defaultdb" && process.env.DB_PORT === "3306") {
+    console.error("   Hint: Aiven MySQL uses DB_PORT=12236 and DB_NAME=defaultdb (not 3306).");
+  }
+}
+
+const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASS", "DB_NAME"];
+const missingDbVars = requiredDbVars.filter((key) => !process.env[key]);
+if (missingDbVars.length > 0) {
+  console.error(`❌ Missing database env vars: ${missingDbVars.join(", ")}`);
+}
+
 const poolConfig = {
   host:             process.env.DB_HOST,
   user:             process.env.DB_USER,
@@ -43,6 +61,7 @@ pool.getConnection()
   .catch(err => {
     console.error("❌ MySQL connection error:", err.message);
     console.error("   Check DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT env vars.");
+    logDbConnectionHint(err);
   });
 
 module.exports = pool;

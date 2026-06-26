@@ -339,6 +339,14 @@ class _AdminToolsViewState extends State<AdminToolsView> {
                       const SizedBox(height: 16),
                       Expanded(
                         child: EnhancedSlotManagementCalendar(
+                          services: _services,
+                          selectedServiceId: _selectedServiceId,
+                          isLoadingServices: _services.isEmpty,
+                          onServiceSelected: (value) {
+                            setState(() {
+                              _selectedServiceId = value;
+                            });
+                          },
                           onSlotsUpdated: () {
                             // Refresh the UI if needed
                           },

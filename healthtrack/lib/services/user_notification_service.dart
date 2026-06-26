@@ -24,7 +24,7 @@ class UserNotificationService {
   static Future<List<Map<String, dynamic>>> getUserNotifications(int userId) async {
     try {
       final response = await http.get(
-        Uri.parse("$baseUrl/api/appointments/notifications/$userId"),
+        Uri.parse("$baseUrl/notifications/user/$userId"),
         headers: await _authHeaders(),
       );
 
@@ -57,7 +57,7 @@ class UserNotificationService {
   static Future<int> getUnreadNotificationsCount(int userId) async {
     try {
       final response = await http.get(
-        Uri.parse("$baseUrl/api/appointments/notifications/$userId/unread-count"),
+        Uri.parse("$baseUrl/notifications/user/$userId/unread-count"),
         headers: await _authHeaders(),
       );
 
@@ -90,7 +90,7 @@ class UserNotificationService {
   static Future<bool> markNotificationAsRead(int notificationId) async {
     try {
       final response = await http.put(
-        Uri.parse("$baseUrl/api/appointments/notifications/$notificationId/read"),
+        Uri.parse("$baseUrl/notifications/$notificationId/read"),
         headers: await _authHeaders(),
       );
 
@@ -118,7 +118,7 @@ class UserNotificationService {
   static Future<bool> markAllNotificationsAsRead(int userId) async {
     try {
       final response = await http.put(
-        Uri.parse("$baseUrl/api/appointments/notifications/user/$userId/mark-all-read"),
+        Uri.parse("$baseUrl/notifications/user/$userId/mark-all-read"),
         headers: await _authHeaders(),
       );
 
@@ -146,7 +146,7 @@ class UserNotificationService {
   static Future<bool> deleteNotification(int notificationId) async {
     try {
       final response = await http.delete(
-        Uri.parse("$baseUrl/api/appointments/notifications/$notificationId"),
+        Uri.parse("$baseUrl/notifications/$notificationId"),
         headers: await _authHeaders(),
       );
 

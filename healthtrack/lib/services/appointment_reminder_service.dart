@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'user_session.dart';
+import 'user_session_storage.dart';
 import 'api_config.dart';
 import '../utils/time_utils.dart';
 
@@ -22,6 +24,8 @@ class AppointmentReminderService {
         };
       }
 
+      final token = await UserSessionStorage.getToken();
+
       Object? lastException;
       for (final url in ApiConfig.fallbackBaseUrls) {
         try {
@@ -29,6 +33,8 @@ class AppointmentReminderService {
             Uri.parse('$url/appointment-reminders/user/${userSession.userId}/check-upcoming'),
             headers: {
               'Content-Type': 'application/json',
+              if (token != null && token.isNotEmpty)
+                'Authorization': 'Bearer $token',
             },
           ).timeout(const Duration(seconds: 30));
 
@@ -67,12 +73,16 @@ class AppointmentReminderService {
         return [];
       }
 
+      final token = await UserSessionStorage.getToken();
+
       for (final url in ApiConfig.fallbackBaseUrls) {
         try {
           final response = await http.get(
             Uri.parse('$url/appointment-reminders/user/${userSession.userId}/upcoming'),
             headers: {
               'Content-Type': 'application/json',
+              if (token != null && token.isNotEmpty)
+                'Authorization': 'Bearer $token',
             },
           ).timeout(const Duration(seconds: 30));
 
@@ -159,19 +169,44 @@ class AppointmentReminderService {
     }
   }
 
-  /// Show in-app notification
+  /// Show in-app notification via system local notification
   Future<void> _showInAppNotification(String title, String message) async {
-    // This would integrate with your in-app notification system
-    // For now, we'll just log it and you can integrate it with your existing notification widgets
-    if (kDebugMode) {
-      print('🔔 In-App Notification: $title - $message');
+    try {
+      final plugin = FlutterLocalNotificationsPlugin();
+
+      const androidDetails = AndroidNotificationDetails(
+        'healthtrack_channel',
+        'HealthTrack Notifications',
+        channelDescription: 'General HealthTrack notifications',
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        icon: '@mipmap/ic_launcher',
+      );
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+
+      await plugin.show(
+        DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF,
+        title,
+        message,
+        details,
+        payload: json.encode({'type': 'appointment_reminder', 'title': title, 'body': message}),
+      );
+
+      if (kDebugMode) {
+        print('🔔 In-App Notification shown: $title - $message');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ Error showing in-app notification: $e');
+      }
     }
-    
-    // You can integrate this with your existing notification system:
-    // - Show a snackbar
-    // - Update notification badge
-    // - Add to notification list
-    // - Trigger local notification (if using flutter_local_notifications)
   }
 
   /// Schedule periodic reminder checks (optional)

@@ -10,6 +10,7 @@ import 'services/websocket_service.dart';
 import 'services/fcm_service.dart';
 import 'services/connection_status_service.dart';
 import 'services/startup_health_check.dart';
+import 'services/reminder_notification_service.dart';
 import 'dashboard.dart';
 import 'unified_register_screen.dart';
 
@@ -117,6 +118,11 @@ class _LoginScreenState extends State<LoginScreen>
               debugPrint("❌ WebSocket init/join failed: $e");
             }
           }
+
+          // Sync reminder local notifications now that the user is logged in
+          ReminderNotificationService.syncSchedules().catchError((e) {
+            debugPrint("⚠️ Reminder sync failed (non-fatal): $e");
+          });
           
           // Log service type for debugging
           final serviceType = userInfo['service_type']?.toString() ?? 'immunization';

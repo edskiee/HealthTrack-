@@ -305,10 +305,21 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
       showDialog(
         context: context,
         builder: (BuildContext context) {
+          // Resolve service name from the loaded services list
+          String? resolvedServiceName;
+          if (_activeServiceId != null) {
+            try {
+              final svc = widget.services.firstWhere(
+                  (s) => s.id == _activeServiceId);
+              resolvedServiceName = svc.serviceName;
+            } catch (_) {}
+          }
+
           return SlotDetailsModal(
             selectedDate: normalizedSelectedDay,
-            slots: slotsForDate,
-            serviceId: _activeServiceId,
+            slots:        slotsForDate,
+            serviceId:    _activeServiceId,
+            serviceName:  resolvedServiceName,
             onSlotsUpdated: () {
               // Refresh slots for the current month to reflect changes
               _loadSlotsForMonth(_focusedDay);

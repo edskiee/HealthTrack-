@@ -488,4 +488,124 @@ class AppointmentSlotService {
     }
     throw lastException ?? Exception("Failed to delete appointment slots");
   }
+
+  // ── Step 2: Per-date detail with linked patient/appointment info ─────────────
+
+  /// Fetch slots for a given date enriched with booked appointment + patient info.
+  /// Returns { slots: [...], summary: { total, available, booked, fully_booked } }
+  static Future<Map<String, dynamic>> getDateDetail({
+    required int serviceId,
+    required String date,
+  }) async {
+    Exception? lastException;
+    for (final url in fallbackBaseUrls) {
+      try {
+        final headers = await _adminHeaders();
+        final response = await http.get(
+          Uri.parse('$url/appointment-slots/date-detail?serviceId=$serviceId&date=$date'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 15));
+
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          if (data['success'] == true) {
+            return Map<String, dynamic>.from(data['data'] ?? {});
+          }
+          lastException = Exception(data['message'] ?? 'Failed to fetch date detail');
+        } else {
+          lastException = Exception('HTTP ${response.statusCode}: Failed to fetch date detail');
+        }
+      } on TimeoutException {
+        lastException = Exception('Request timed out fetching date detail.');
+      } catch (e) {
+        lastException = Exception('Failed to fetch date detail: $e');
+      }
+    }
+    throw lastException ?? Exception('Failed to fetch date detail');
+  }
+
+  // ── Step 3: Reschedule entire date ──────────────────────────────────────────
+
+  /// Move all slots (and their linked appointments) from [fromDate] to [toDate].
+  static Future<Map<String, dynamic>> rescheduleDate({
+    required int serviceId,
+    required String fromDate,
+    required String toDate,
+    int? adminId,
+  }) async {
+    Exception? lastException;
+    for (final url in fallbackBaseUrls) {
+      try {
+        final headers = await _adminHeaders();
+        final response = await http.post(
+          Uri.parse('$url/appointment-slots/reschedule-date'),
+          headers: headers,
+          body: json.encode({
+            'service_id': serviceId,
+            'from_date':  fromDate,
+            'to_date':    toDate,
+            if (adminId != null) 'admin_id': adminId,
+          }),
+        ).timeout(const Duration(seconds: 30));
+
+        final data = json.decode(response.body);
+        if (response.statusCode == 200) return Map<String, dynamic>.from(data);
+        if (response.statusCode == 409) {
+          // Conflict — surface the detailed message from server
+          throw Exception(data['message'] ?? 'Conflict: target date already has slots');
+        }
+        lastException = Exception(data['message'] ?? 'HTTP ${response.statusCode}: Failed to reschedule date');
+      } on TimeoutException {
+        lastException = Exception('Request timed out. Rescheduling may still be in progress — refresh the calendar.');
+      } catch (e) {
+        if (e is Exception) { lastException = e; } else {
+          lastException = Exception('Failed to reschedule date: $e');
+        }
+      }
+    }
+    throw lastException ?? Exception('Failed to reschedule date');
+  }
+
+  // ── Step 4: Edit existing slot configuration for a date ─────────────────────
+
+  /// Regenerate the slot grid for [date] with new config.
+  /// Displaced bookings are automatically notified (handled server-side).
+  static Future<Map<String, dynamic>> editDateSlots({
+    required int serviceId,
+    required String date,
+    required String startTime,
+    required String endTime,
+    required int slotDurationMinutes,
+    int? adminId,
+  }) async {
+    Exception? lastException;
+    for (final url in fallbackBaseUrls) {
+      try {
+        final headers = await _adminHeaders();
+        final response = await http.put(
+          Uri.parse('$url/appointment-slots/edit-date'),
+          headers: headers,
+          body: json.encode({
+            'service_id':            serviceId,
+            'date':                  date,
+            'start_time':            startTime,
+            'end_time':              endTime,
+            'slot_duration_minutes': slotDurationMinutes,
+            if (adminId != null) 'admin_id': adminId,
+          }),
+        ).timeout(const Duration(seconds: 30));
+
+        final data = json.decode(response.body);
+        if (response.statusCode == 200) return Map<String, dynamic>.from(data);
+        lastException = Exception(data['message'] ?? 'HTTP ${response.statusCode}: Failed to edit date slots');
+      } on TimeoutException {
+        lastException = Exception('Request timed out editing slots.');
+      } catch (e) {
+        if (e is Exception) { lastException = e; } else {
+          lastException = Exception('Failed to edit date slots: $e');
+        }
+      }
+    }
+    throw lastException ?? Exception('Failed to edit date slots');
+  }
 }

@@ -1,12 +1,107 @@
 const db = require('../config/db');
 
 // ─── Column mapping (real DB schema):
-//   slot_date        → the date of the slot        (was: appointment_date)
-//   slot_time        → the start time of the slot  (was: start_time)
-//   capacity         → max patients per slot        (was: max_patients)
-//   booked_count     → how many booked             (was: booked_patients)
-//   is_available     → 0/1 availability flag
+//   slot_date             → the date of the slot        (was: appointment_date)
+//   slot_time             → the start time of the slot  (was: start_time)
+//   capacity              → max patients per slot        (was: max_patients)
+//   booked_count          → how many booked             (was: booked_patients)
+//   is_available          → 0/1 availability flag
+//   slot_duration_minutes → minutes per slot (added in migration 001)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Shared helper: format HH:MM:SS from total minutes ──────────────────────
+function minutesToTimeStr(totalMinutes) {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
+}
+
+// ─── Shared helper: write in-app notification rows + emit socket event ───────
+// Returns the list of inserted notification ids.
+async function dispatchBulkRescheduleNotifications(connection, {
+  affectedAppointments,   // array of { id, user_id, appointment_type, old_date, old_time, new_date, new_time }
+  serviceName,
+  adminId,
+  io,
+}) {
+  const notifIds = [];
+  for (const appt of affectedAppointments) {
+    const oldDateFmt = appt.old_date;
+    const newDateFmt = appt.new_date;
+    const oldTimeFmt = appt.old_time ? appt.old_time.substring(0,5) : '';
+    const newTimeFmt = appt.new_time ? appt.new_time.substring(0,5) : '';
+
+    const title   = 'Appointment Rescheduled';
+    const message =
+      `Your ${appt.appointment_type || serviceName} appointment has been rescheduled by the admin. ` +
+      `Old date/time: ${oldDateFmt} at ${oldTimeFmt}. ` +
+      `New date/time: ${newDateFmt} at ${newTimeFmt}. ` +
+      `Please confirm or contact us if you need a different time.`;
+
+    try {
+      const [ins] = await connection.execute(
+        `INSERT INTO notifications
+           (user_id, appointment_id, notification_type, title, message, is_read, created_at, updated_at)
+         VALUES (?, ?, 'appointment_rescheduled', ?, ?, 0, NOW(), NOW())`,
+        [appt.user_id, appt.id, title, message]
+      );
+      notifIds.push(ins.insertId);
+
+      // Also insert into legacy appointment_notifications for backward compat
+      await connection.execute(
+        `INSERT INTO appointment_notifications
+           (appointment_id, user_id, notification_type, message, is_read, created_at, updated_at)
+         VALUES (?, ?, 'appointment_rescheduled', ?, 0, NOW(), NOW())`,
+        [appt.id, appt.user_id, message]
+      );
+    } catch (notifErr) {
+      console.warn(`⚠️ dispatchBulkRescheduleNotifications: failed for appointment ${appt.id}:`, notifErr.message);
+    }
+  }
+
+  // Write audit log entry
+  if (adminId) {
+    try {
+      await connection.execute(
+        `INSERT INTO audit_logs (admin_id, action, description, metadata, created_at)
+         VALUES (?, 'bulk_slot_reschedule', ?, ?, NOW())`,
+        [
+          adminId,
+          `Bulk rescheduled ${affectedAppointments.length} appointment(s) for service: ${serviceName}`,
+          JSON.stringify({
+            affected_count:  affectedAppointments.length,
+            appointment_ids: affectedAppointments.map(a => a.id),
+            service_name:    serviceName,
+          }),
+        ]
+      );
+    } catch (auditErr) {
+      console.warn('⚠️ dispatchBulkRescheduleNotifications: audit log failed:', auditErr.message);
+    }
+  }
+
+  // Emit per-user socket events (after transaction commits, called by caller)
+  if (io) {
+    for (const appt of affectedAppointments) {
+      io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
+        appointment_id:    appt.id,
+        user_id:           appt.user_id,
+        notification_type: 'appointment_rescheduled',
+        title: 'Appointment Rescheduled',
+        message: `Your appointment has been rescheduled to ${appt.new_date} at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. Please confirm or request a different time.`,
+        is_read: false,
+        created_at: new Date().toISOString(),
+      });
+    }
+    // Broadcast slot change so all open admin calendars refresh
+    io.emit('slotsUpdated', {
+      action: 'date_rescheduled',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return notifIds;
+}
 
 // Helper: normalise a raw DB row to a consistent API shape
 function normaliseSlot(row) {
@@ -47,6 +142,7 @@ exports.getAllSlots = async (req, res) => {
         sc.service_name,
         s.slot_date,
         s.slot_time,
+        s.slot_duration_minutes,
         s.capacity,
         s.booked_count,
         s.is_available,
@@ -280,9 +376,9 @@ exports.createSlot = async (req, res) => {
 
           if (dupRows[0].cnt === 0) {
             await connection.execute(
-              `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
-               VALUES (?, ?, ?, 1, 0, 1, NOW(), NOW())`,
-              [serviceId, appointment_date, slotTime]
+              `INSERT INTO appointment_slots (service_id, slot_date, slot_time, slot_duration_minutes, capacity, booked_count, is_available, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, 0, 1, NOW(), NOW())`,
+              [serviceId, appointment_date, slotTime, duration]
             );
             generatedCount++;
           }
@@ -347,9 +443,9 @@ exports.createSlot = async (req, res) => {
         }
 
         const [result] = await connection.execute(
-          `INSERT INTO appointment_slots (service_id, slot_date, slot_time, capacity, booked_count, is_available, created_at, updated_at)
-           VALUES (?, ?, ?, 1, 0, 1, NOW(), NOW())`,
-          [serviceId, appointment_date, slotTime]
+          `INSERT INTO appointment_slots (service_id, slot_date, slot_time, slot_duration_minutes, capacity, booked_count, is_available, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, 0, 1, NOW(), NOW())`,
+          [serviceId, appointment_date, slotTime, duration]
         );
 
         const newSlotId = result.insertId;
@@ -662,6 +758,604 @@ exports.deleteAllSlots = async (req, res) => {
     if (connection) await connection.rollback();
     console.error('❌ deleteAllSlots error:', err);
     return res.status(500).json({ success: false, message: 'Failed to delete appointment slots', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// ─── Step 2: Get per-date slot detail with linked patient/appointment info ────
+// GET /appointment-slots/date-detail?serviceId=&date=
+exports.getDateDetail = async (req, res) => {
+  try {
+    const { serviceId, date } = req.query;
+    if (!serviceId || !date)
+      return res.status(400).json({ success: false, message: 'serviceId and date are required' });
+
+    // 1. Fetch all slots for this service+date
+    const [slots] = await db.execute(
+      `SELECT
+         s.id,
+         s.service_id,
+         sc.service_name,
+         s.slot_date,
+         s.slot_time,
+         s.slot_duration_minutes,
+         s.capacity,
+         s.booked_count,
+         s.is_available
+       FROM appointment_slots s
+       LEFT JOIN services_config sc ON s.service_id = sc.id
+       WHERE s.service_id = ? AND s.slot_date = ?
+       ORDER BY s.slot_time ASC`,
+      [serviceId, date]
+    );
+
+    if (slots.length === 0)
+      return res.status(200).json({ success: true, data: { slots: [], summary: { total: 0, available: 0, booked: 0, fully_booked: 0 } } });
+
+    // 2. For each slot that has bookings, find the linked appointments.
+    //    Match on appointment_date + appointment_time.  Also try slot_id if the
+    //    column already exists (migration 001).
+    const slotIds = slots.map(s => s.id);
+    const placeholders = slotIds.map(() => '?').join(',');
+
+    // Try slot_id FK first, fall back to date+time match
+    let appointmentRows = [];
+    try {
+      const [bySlotId] = await db.execute(
+        `SELECT
+           a.id           AS appointment_id,
+           a.user_id,
+           a.patient_id,
+           a.slot_id,
+           a.appointment_date,
+           a.appointment_time,
+           a.appointment_type,
+           a.status,
+           u.full_name    AS user_full_name,
+           p.child_fullname AS patient_name
+         FROM appointments a
+         LEFT JOIN users    u ON a.user_id    = u.id
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.slot_id IN (${placeholders})
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        slotIds
+      );
+      appointmentRows = bySlotId;
+    } catch (_) {
+      // slot_id column doesn't exist yet — fall back to date+time match
+    }
+
+    if (appointmentRows.length === 0) {
+      // Fall back: match by date + time + service (via appointment_type / service_name)
+      const [byDateTime] = await db.execute(
+        `SELECT
+           a.id           AS appointment_id,
+           a.user_id,
+           a.patient_id,
+           a.appointment_date,
+           a.appointment_time,
+           a.appointment_type,
+           a.status,
+           u.full_name    AS user_full_name,
+           p.child_fullname AS patient_name
+         FROM appointments a
+         LEFT JOIN users    u ON a.user_id    = u.id
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.appointment_date = ?
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [date]
+      );
+      appointmentRows = byDateTime;
+    }
+
+    // 3. Build a time→appointments index for fast join
+    const apptByTime = {};
+    for (const appt of appointmentRows) {
+      const t = (appt.appointment_time || '').substring(0, 8);
+      if (!apptByTime[t]) apptByTime[t] = [];
+      apptByTime[t].push(appt);
+    }
+
+    // 4. Enrich each slot with its appointments
+    let totalAvailable = 0, totalBooked = 0, totalFullyBooked = 0;
+    const enrichedSlots = slots.map(s => {
+      const timeKey  = (s.slot_time || '').substring(0, 8);
+      const appts    = apptByTime[timeKey] || [];
+      const isAvail  = s.is_available === 1;
+      const isFull   = s.booked_count >= s.capacity;
+
+      if (isAvail && !isFull) totalAvailable++;
+      if (s.booked_count > 0) totalBooked++;
+      if (isFull)             totalFullyBooked++;
+
+      return {
+        ...normaliseSlot(s),
+        appointments: appts.map(a => ({
+          appointment_id:   a.appointment_id,
+          user_id:          a.user_id,
+          patient_id:       a.patient_id,
+          patient_name:     a.patient_name || a.user_full_name || 'Unknown',
+          appointment_type: a.appointment_type,
+          status:           a.status,
+          appointment_date: a.appointment_date,
+          appointment_time: a.appointment_time,
+        })),
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        slots: enrichedSlots,
+        summary: {
+          total:        slots.length,
+          available:    totalAvailable,
+          booked:       totalBooked,
+          fully_booked: totalFullyBooked,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('❌ getDateDetail error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch slot detail', error: err.message });
+  }
+};
+
+// ─── Step 3: Reschedule entire date (bulk move all slots to a new date) ───────
+// POST /appointment-slots/reschedule-date
+// Body: { service_id, from_date, to_date, admin_id }
+exports.rescheduleDate = async (req, res) => {
+  let connection;
+  try {
+    const { service_id, from_date, to_date, admin_id } = req.body;
+
+    // ── Validation ────────────────────────────────────────────────────────────
+    if (!service_id || !from_date || !to_date)
+      return res.status(400).json({ success: false, message: 'service_id, from_date, and to_date are required' });
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from_date) || !/^\d{4}-\d{2}-\d{2}$/.test(to_date))
+      return res.status(400).json({ success: false, message: 'Dates must be in YYYY-MM-DD format' });
+
+    if (from_date === to_date)
+      return res.status(400).json({ success: false, message: 'from_date and to_date must be different' });
+
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    if (to_date < todayStr)
+      return res.status(400).json({ success: false, message: 'Cannot reschedule to a past date' });
+
+    const serviceId = parseInt(service_id);
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // ── Check source slots exist ──────────────────────────────────────────────
+    const [sourceSlots] = await connection.execute(
+      `SELECT id, slot_time, slot_duration_minutes, capacity, booked_count, is_available
+       FROM appointment_slots
+       WHERE service_id = ? AND slot_date = ?
+       ORDER BY slot_time ASC`,
+      [serviceId, from_date]
+    );
+
+    if (sourceSlots.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: `No slots found for service ${serviceId} on ${from_date}` });
+    }
+
+    // ── Conflict check: does to_date already have overlapping slots? ──────────
+    const [existingTarget] = await connection.execute(
+      `SELECT id, slot_time FROM appointment_slots
+       WHERE service_id = ? AND slot_date = ?
+       ORDER BY slot_time ASC`,
+      [serviceId, to_date]
+    );
+
+    if (existingTarget.length > 0) {
+      const sourceTimes  = new Set(sourceSlots.map(s => (s.slot_time || '').substring(0,8)));
+      const conflicting  = existingTarget.filter(t => sourceTimes.has((t.slot_time || '').substring(0,8)));
+      if (conflicting.length > 0) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `The target date ${to_date} already has ${existingTarget.length} slot(s) that overlap with the source date. Please choose a different date or delete the existing slots first.`,
+          conflict: {
+            existing_slots:    existingTarget.length,
+            conflicting_times: conflicting.map(t => t.slot_time),
+          },
+        });
+      }
+    }
+
+    // ── Find affected appointments (active bookings on source date) ───────────
+    let affectedAppointments = [];
+    // Try slot_id FK first
+    const sourceSlotIds = sourceSlots.map(s => s.id);
+    const slotPlaceholders = sourceSlotIds.map(() => '?').join(',');
+    try {
+      const [bySlotId] = await connection.execute(
+        `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time, a.appointment_type, a.slot_id
+         FROM appointments a
+         WHERE a.slot_id IN (${slotPlaceholders})
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        sourceSlotIds
+      );
+      affectedAppointments = bySlotId;
+    } catch (_) {}
+
+    if (affectedAppointments.length === 0) {
+      // Fall back to date match
+      const [byDate] = await connection.execute(
+        `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time, a.appointment_type
+         FROM appointments a
+         WHERE a.appointment_date = ?
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [from_date]
+      );
+      affectedAppointments = byDate;
+    }
+
+    // ── Move each source slot to to_date (update slot_date in place) ──────────
+    const sourceSlotIdList = sourceSlots.map(s => s.id);
+    await connection.execute(
+      `UPDATE appointment_slots SET slot_date = ?, updated_at = NOW()
+       WHERE id IN (${sourceSlotIdList.map(() => '?').join(',')})`,
+      [to_date, ...sourceSlotIdList]
+    );
+
+    // ── Update each affected appointment date ─────────────────────────────────
+    const appointmentsWithNewTime = [];
+    for (const appt of affectedAppointments) {
+      // Keep same time, just change date
+      const newDate = to_date;
+      const newTime = appt.appointment_time;
+
+      await connection.execute(
+        `UPDATE appointments
+         SET appointment_date = ?,
+             status = 'rescheduled',
+             updated_at = NOW()
+         WHERE id = ?`,
+        [newDate, appt.id]
+      );
+
+      appointmentsWithNewTime.push({
+        id:               appt.id,
+        user_id:          appt.user_id,
+        appointment_type: appt.appointment_type,
+        old_date:         appt.appointment_date,
+        old_time:         appt.appointment_time,
+        new_date:         newDate,
+        new_time:         newTime,
+      });
+    }
+
+    // ── Dispatch notifications + audit log ────────────────────────────────────
+    const [svcRow] = await connection.execute(
+      'SELECT service_name FROM services_config WHERE id = ?',
+      [serviceId]
+    );
+    const serviceName = svcRow[0]?.service_name || `Service ${serviceId}`;
+
+    await dispatchBulkRescheduleNotifications(connection, {
+      affectedAppointments: appointmentsWithNewTime,
+      serviceName,
+      adminId: admin_id || null,
+      io: null, // emitted after commit below
+    });
+
+    await connection.commit();
+
+    // Emit after commit so clients get correct DB state
+    if (req.app.locals.io) {
+      req.app.locals.io.emit('slotsUpdated', {
+        action: 'date_rescheduled',
+        serviceId,
+        from_date,
+        to_date,
+        slotCount:       sourceSlots.length,
+        appointmentCount: appointmentsWithNewTime.length,
+        timestamp:       new Date().toISOString(),
+      });
+      for (const appt of appointmentsWithNewTime) {
+        req.app.locals.io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
+          appointment_id:    appt.id,
+          user_id:           appt.user_id,
+          notification_type: 'appointment_rescheduled',
+          title:  'Appointment Rescheduled',
+          message: `Your appointment has been rescheduled from ${appt.old_date} to ${appt.new_date} at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. Please confirm or request a different time.`,
+          is_read:    false,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `${sourceSlots.length} slot(s) rescheduled from ${from_date} to ${to_date}. ${appointmentsWithNewTime.length} patient appointment(s) updated and notified.`,
+      data: {
+        from_date,
+        to_date,
+        slots_moved:          sourceSlots.length,
+        appointments_updated: appointmentsWithNewTime.length,
+        affected_appointment_ids: appointmentsWithNewTime.map(a => a.id),
+      },
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('❌ rescheduleDate error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to reschedule date', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// ─── Step 4: Edit existing generated slots for a date ────────────────────────
+// PUT /appointment-slots/edit-date
+// Body: { service_id, date, start_time, end_time, slot_duration_minutes, admin_id }
+//
+// Strategy:
+//   1. Identify all CURRENTLY BOOKED appointments on this date+service.
+//   2. Generate the new slot time grid.
+//   3. If a booked appointment's time slot no longer exists in the new grid →
+//      it is "displaced": we must keep those appointment records alive and
+//      notify patients — we do NOT delete them silently.
+//   4. Delete old UNBOOKED slots, insert new slots for the full new grid.
+//   5. For displaced bookings: keep the appointment as-is (date unchanged, time
+//      unchanged) but mark status 'rescheduled' and send a notification telling
+//      the patient to contact for a new time (since we can't auto-assign a slot).
+//   6. Emit slotsUpdated so all open calendars refresh.
+exports.editDateSlots = async (req, res) => {
+  let connection;
+  try {
+    const {
+      service_id,
+      date,
+      start_time,
+      end_time,
+      slot_duration_minutes,
+      admin_id,
+    } = req.body;
+
+    // ── Validation ────────────────────────────────────────────────────────────
+    if (!service_id || !date || !start_time || !end_time || !slot_duration_minutes)
+      return res.status(400).json({ success: false, message: 'service_id, date, start_time, end_time, and slot_duration_minutes are required' });
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+      return res.status(400).json({ success: false, message: 'date must be YYYY-MM-DD' });
+
+    if (!/^\d{2}:\d{2}(:\d{2})?$/.test(start_time) || !/^\d{2}:\d{2}(:\d{2})?$/.test(end_time))
+      return res.status(400).json({ success: false, message: 'Times must be HH:MM or HH:MM:SS' });
+
+    const serviceId = parseInt(service_id);
+    const duration  = parseInt(slot_duration_minutes);
+
+    if (isNaN(duration) || duration <= 0 || duration > 480)
+      return res.status(400).json({ success: false, message: 'slot_duration_minutes must be 1–480' });
+
+    const [startH, startM] = start_time.split(':').map(Number);
+    const [endH,   endM  ] = end_time.split(':').map(Number);
+    const startMin = startH * 60 + startM;
+    const endMin   = endH   * 60 + endM;
+
+    if (startMin >= endMin)
+      return res.status(400).json({ success: false, message: 'end_time must be after start_time' });
+    if (startMin < 8 * 60)
+      return res.status(400).json({ success: false, message: 'Start time cannot be before 8:00 AM' });
+    if (endMin > 18 * 60)
+      return res.status(400).json({ success: false, message: 'End time cannot be after 6:00 PM' });
+
+    // ── Build the new slot time grid ──────────────────────────────────────────
+    const newSlotTimes = [];
+    let cur = startMin;
+    while (cur + duration <= endMin) {
+      newSlotTimes.push(minutesToTimeStr(cur));
+      cur += duration;
+    }
+
+    if (newSlotTimes.length === 0)
+      return res.status(400).json({ success: false, message: 'Time range too short to generate any slots with that duration' });
+
+    if (newSlotTimes.length > 100)
+      return res.status(400).json({ success: false, message: 'Configuration would generate more than 100 slots — reduce the range or increase the duration' });
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // ── Fetch existing slots on this date ─────────────────────────────────────
+    const [existingSlots] = await connection.execute(
+      `SELECT id, slot_time, booked_count FROM appointment_slots
+       WHERE service_id = ? AND slot_date = ?
+       ORDER BY slot_time ASC`,
+      [serviceId, date]
+    );
+
+    if (existingSlots.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: `No existing slots found for service ${serviceId} on ${date}. Use Generate Slots to create new ones.` });
+    }
+
+    const existingByTime = {};
+    for (const s of existingSlots) {
+      existingByTime[(s.slot_time || '').substring(0,8)] = s;
+    }
+    const newTimeSet = new Set(newSlotTimes.map(t => t.substring(0,8)));
+
+    // ── Identify displaced appointments (booked slots not in new grid) ─────────
+    const bookedSlots        = existingSlots.filter(s => s.booked_count > 0);
+    const displacedSlotTimes = bookedSlots
+      .filter(s => !newTimeSet.has((s.slot_time || '').substring(0,8)))
+      .map(s => s.slot_time);
+
+    let displacedAppointments = [];
+    if (displacedSlotTimes.length > 0) {
+      // Find appointments at these times on this date
+      const tPlaceholders = displacedSlotTimes.map(() => '?').join(',');
+
+      // Try slot_id first
+      const displacedSlotIds = bookedSlots
+        .filter(s => !newTimeSet.has((s.slot_time || '').substring(0,8)))
+        .map(s => s.id);
+      try {
+        const [bySlotId] = await connection.execute(
+          `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time, a.appointment_type
+           FROM appointments a
+           WHERE a.slot_id IN (${displacedSlotIds.map(() => '?').join(',')})
+             AND a.status NOT IN ('cancelled','completed','no_show')`,
+          displacedSlotIds
+        );
+        displacedAppointments = bySlotId;
+      } catch (_) {}
+
+      if (displacedAppointments.length === 0) {
+        const [byDateTime] = await connection.execute(
+          `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time, a.appointment_type
+           FROM appointments a
+           WHERE a.appointment_date = ?
+             AND TIME(a.appointment_time) IN (${tPlaceholders})
+             AND a.status NOT IN ('cancelled','completed','no_show')`,
+          [date, ...displacedSlotTimes]
+        );
+        displacedAppointments = byDateTime;
+      }
+    }
+
+    // ── Delete all existing slots for this date (we fully replace the grid) ───
+    const existingIds = existingSlots.map(s => s.id);
+    await connection.execute(
+      `DELETE FROM appointment_slots
+       WHERE id IN (${existingIds.map(() => '?').join(',')})`,
+      existingIds
+    );
+
+    // ── Insert the new slot grid ───────────────────────────────────────────────
+    for (const slotTime of newSlotTimes) {
+      // Carry over booked_count if this time existed before (in-place slot)
+      const existing = existingByTime[slotTime.substring(0,8)];
+      const bookedCount = existing ? existing.booked_count : 0;
+      const isAvail     = bookedCount < 1 ? 1 : 0;
+
+      await connection.execute(
+        `INSERT INTO appointment_slots
+           (service_id, slot_date, slot_time, slot_duration_minutes, capacity, booked_count, is_available, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?, NOW(), NOW())`,
+        [serviceId, date, slotTime, duration, bookedCount, isAvail]
+      );
+    }
+
+    // ── Handle displaced appointments: mark rescheduled + notify ─────────────
+    const [svcRow] = await connection.execute(
+      'SELECT service_name FROM services_config WHERE id = ?', [serviceId]
+    );
+    const serviceName = svcRow[0]?.service_name || `Service ${serviceId}`;
+
+    const displacedWithTimes = displacedAppointments.map(a => ({
+      id:               a.id,
+      user_id:          a.user_id,
+      appointment_type: a.appointment_type,
+      old_date:         a.appointment_date,
+      old_time:         a.appointment_time,
+      new_date:         date,   // same date, but slot no longer exists — patient must contact
+      new_time:         null,
+    }));
+
+    for (const appt of displacedWithTimes) {
+      await connection.execute(
+        `UPDATE appointments SET status = 'rescheduled', updated_at = NOW() WHERE id = ?`,
+        [appt.id]
+      );
+
+      const oldTimeFmt = (appt.old_time || '').substring(0,5);
+      const title   = 'Appointment Slot Changed';
+      const message =
+        `Your ${appt.appointment_type || serviceName} appointment at ${oldTimeFmt} on ${date} ` +
+        `has been affected by a schedule change. Your original time slot no longer exists. ` +
+        `Please contact us to confirm a new appointment time.`;
+
+      try {
+        await connection.execute(
+          `INSERT INTO notifications
+             (user_id, appointment_id, notification_type, title, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_rescheduled', ?, ?, 0, NOW(), NOW())`,
+          [appt.user_id, appt.id, title, message]
+        );
+        await connection.execute(
+          `INSERT INTO appointment_notifications
+             (appointment_id, user_id, notification_type, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_rescheduled', ?, 0, NOW(), NOW())`,
+          [appt.id, appt.user_id, message]
+        );
+      } catch (notifErr) {
+        console.warn(`⚠️ editDateSlots: notification for appointment ${appt.id} failed:`, notifErr.message);
+      }
+    }
+
+    // Write audit log
+    if (admin_id) {
+      try {
+        await connection.execute(
+          `INSERT INTO audit_logs (admin_id, action, description, metadata, created_at)
+           VALUES (?, 'edit_date_slots', ?, ?, NOW())`,
+          [
+            admin_id,
+            `Edited slot configuration for service ${serviceId} on ${date}: ${newSlotTimes.length} new slots, ${displacedWithTimes.length} displaced booking(s)`,
+            JSON.stringify({
+              service_id:        serviceId,
+              date,
+              new_slot_count:    newSlotTimes.length,
+              start_time,
+              end_time,
+              slot_duration_minutes: duration,
+              displaced_appointments: displacedWithTimes.map(a => a.id),
+            }),
+          ]
+        );
+      } catch (auditErr) {
+        console.warn('⚠️ editDateSlots: audit log failed:', auditErr.message);
+      }
+    }
+
+    await connection.commit();
+
+    // Emit after commit
+    if (req.app.locals.io) {
+      req.app.locals.io.emit('slotsUpdated', {
+        action:     'date_edited',
+        serviceId,
+        date,
+        newSlotCount: newSlotTimes.length,
+        timestamp:  new Date().toISOString(),
+      });
+      for (const appt of displacedWithTimes) {
+        req.app.locals.io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
+          appointment_id:    appt.id,
+          user_id:           appt.user_id,
+          notification_type: 'appointment_rescheduled',
+          title:  'Appointment Slot Changed',
+          message: `Your appointment slot on ${date} has been modified. Please contact us to confirm your new time.`,
+          is_read:    false,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Slot configuration updated. ${newSlotTimes.length} new slot(s) created for ${date}. ${displacedWithTimes.length} displaced booking(s) notified.`,
+      data: {
+        date,
+        new_slot_count:          newSlotTimes.length,
+        new_slot_times:          newSlotTimes,
+        displaced_appointments:  displacedWithTimes.length,
+        displaced_appointment_ids: displacedWithTimes.map(a => a.id),
+        requires_admin_followup:   displacedWithTimes.length > 0,
+      },
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('❌ editDateSlots error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to edit date slots', error: err.message });
   } finally {
     if (connection) connection.release();
   }

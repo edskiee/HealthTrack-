@@ -197,75 +197,75 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
   Future<void> _loadSlotsForMonth(DateTime month) async {
     final serviceId = _activeServiceId;
     if (serviceId == null) return;
-    
-    print('🔄 Admin: Loading slots for month: ${month.year}-${month.month}, service: $serviceId');
-    
-    try {
-      setState(() {
-        _isLoadingSlots = true;
-      });
 
-      // Calculate first and last day of the month
-      final firstDay = DateTime(month.year, month.month, 1);
-      final lastDay = DateTime(month.year, month.month + 1, 0);
-      
-      print('📅 Admin: Month range: $firstDay to $lastDay');
-      
-      // Load all available slots for the service
+    print('🔄 Admin: Loading slots for month: ${month.year}-${month.month}, service: $serviceId');
+
+    try {
+      setState(() => _isLoadingSlots = true);
+
+      // Fetch ALL future slots for this service from the backend.
+      // We intentionally do NOT pass a date filter here so that navigating
+      // between calendar months never loses data — the full set is fetched
+      // once and grouped client-side across all months.
       final slots = await AppointmentSlotService.getAllSlots(
         serviceId: serviceId,
       );
-      
+
       print('📥 Admin: Received ${slots.length} slots from backend');
-      
-      // Group available slots by date, but only for the current month and future dates
+
+      // Group slots by normalised date.
+      // Rules:
+      //   • Include ALL future dates (slot_date > today) — no month restriction.
+      //   • Normalise the date key to midnight local time so isSameDay() matches.
       final newSlotEvents = <DateTime, List<Map<String, dynamic>>>{};
-      
-      // Define today's date for comparison (normalized to date only)
-      final today = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
-      
-      for (var slot in slots) {
+      final today = DateTime(
+          DateTime.now().year, DateTime.now().month, DateTime.now().day);
+
+      for (final slot in slots) {
         try {
-          final dateStr = slot['appointment_date'] as String;
-          // Parse date string without timezone conversion to avoid shifting
-          final dateParts = dateStr.split('-');
-          if (dateParts.length == 3) {
-            final year = int.parse(dateParts[0]);
-            final monthNum = int.parse(dateParts[1]);
-            final day = int.parse(dateParts[2]);
-            final date = DateTime(year, monthNum, day);
-          
-          // Only include slots from the current month and future dates (starting from tomorrow)
-          if (date.year == _focusedDay.year && date.month == _focusedDay.month && date.isAfter(today)) {
-            if (newSlotEvents.containsKey(date)) {
-              newSlotEvents[date]!.add(slot);
-            } else {
-              newSlotEvents[date] = [slot];
-            }
-            print('➕ Admin: Adding slot for date: $date');
-          }
+          // The backend returns slot_date as a plain "YYYY-MM-DD" string
+          // (dateStrings:true in the mysql2 pool config).
+          // Accept both 'slot_date' and 'appointment_date' — normaliseSlot()
+          // exposes both keys.
+          final rawDate =
+              (slot['slot_date'] ?? slot['appointment_date']) as String?;
+          if (rawDate == null || rawDate.isEmpty) continue;
+
+          // Take only the date portion (first 10 chars) in case the value
+          // ever contains a time component.
+          final dateOnly = rawDate.length >= 10 ? rawDate.substring(0, 10) : rawDate;
+          final parts = dateOnly.split('-');
+          if (parts.length != 3) continue;
+
+          final year  = int.tryParse(parts[0]);
+          final mon   = int.tryParse(parts[1]);
+          final day   = int.tryParse(parts[2]);
+          if (year == null || mon == null || day == null) continue;
+
+          final date = DateTime(year, mon, day);
+
+          // Skip today and past dates — admin cannot manage past slots.
+          if (!date.isAfter(today)) continue;
+
+          newSlotEvents.putIfAbsent(date, () => []).add(slot);
+          print('➕ Admin: Slot ${slot['id']} → $date');
+        } catch (e) {
+          print('Error parsing slot date: $e  slot=$slot');
         }
-      } catch (e) {
-        print("Error parsing date for slot: $e");
       }
-      }
-      
-      print('📊 Admin: Grouped slots by date: ${newSlotEvents.keys.length} dates with slots');
-      
+
+      print('📊 Admin: Grouped into ${newSlotEvents.keys.length} date(s)');
       if (!mounted) return;
-      
+
       setState(() {
-        _slotEvents = newSlotEvents;
+        _slotEvents    = newSlotEvents;
         _isLoadingSlots = false;
       });
-      
-      print('✅ Admin: Slots loading complete');
+
+      print('✅ Admin: Calendar updated');
     } catch (e) {
       if (!mounted) return;
-      
-      setState(() {
-        _isLoadingSlots = false;
-      });
+      setState(() => _isLoadingSlots = false);
       print('❌ Admin: Error loading slots: $e');
     }
   }
@@ -497,7 +497,9 @@ class _EnhancedSlotManagementCalendarState extends State<EnhancedSlotManagementC
                 
                 for (var event in events) {
                   if (event is Map<String, dynamic>) {
-                    final bookedPatients = event['booked_patients'] as int? ?? 0;
+                    final bookedPatients =
+                        (event['booked_count'] as int?) ??
+                        (event['booked_patients'] as int?) ?? 0;
                     final isAvailable = _parseBool(event['is_available'], true);
                     
                     totalSlots++;

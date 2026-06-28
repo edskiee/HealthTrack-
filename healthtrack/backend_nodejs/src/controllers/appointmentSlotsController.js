@@ -478,33 +478,242 @@ exports.createSlot = async (req, res) => {
   }
 };
 
-// ─── Delete single appointment slot (admin) ───────────────────────────────────
+// ─── Delete single appointment slot (admin) — with cascade + notification ─────
 exports.deleteSlot = async (req, res) => {
+  let connection;
+  try {
+    const { id } = req.params;
+    // admin_id may be passed as query param for audit logging
+    const adminId = req.query.adminId || req.body?.adminId || null;
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // 1. Lock and fetch the slot
+    const [slots] = await connection.execute(
+      `SELECT id, service_id, slot_date, slot_time, slot_duration_minutes,
+              capacity, booked_count
+       FROM appointment_slots WHERE id = ? FOR UPDATE`,
+      [id]
+    );
+    if (slots.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Appointment slot not found' });
+    }
+    const slot = slots[0];
+
+    // 2. Find active appointments linked to this slot
+    //    Try slot_id FK first; fall back to date+time match.
+    let linkedAppointments = [];
+    try {
+      const [bySlotId] = await connection.execute(
+        `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time,
+                a.appointment_type, a.status,
+                u.full_name AS user_name
+         FROM appointments a
+         LEFT JOIN users u ON a.user_id = u.id
+         WHERE a.slot_id = ?
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [id]
+      );
+      linkedAppointments = bySlotId;
+    } catch (_) {}
+
+    if (linkedAppointments.length === 0) {
+      // Fall back: match by slot_date + slot_time
+      const [byDateTime] = await connection.execute(
+        `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time,
+                a.appointment_type, a.status,
+                u.full_name AS user_name
+         FROM appointments a
+         LEFT JOIN users u ON a.user_id = u.id
+         WHERE a.appointment_date = ?
+           AND TIME(a.appointment_time) = TIME(?)
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [slot.slot_date, slot.slot_time]
+      );
+      linkedAppointments = byDateTime;
+    }
+
+    // 3. Cascade-cancel every linked appointment + send in-app notification
+    const cancelledApptIds = [];
+    for (const appt of linkedAppointments) {
+      // Cancel the appointment
+      await connection.execute(
+        `UPDATE appointments
+         SET status = 'cancelled', updated_at = NOW()
+         WHERE id = ?`,
+        [appt.id]
+      );
+      cancelledApptIds.push(appt.id);
+
+      const slotDateStr = String(slot.slot_date).substring(0, 10);
+      const slotTimeStr = String(slot.slot_time).substring(0, 5);
+      const title   = 'Appointment Slot Cancelled';
+      const message =
+        `Your ${appt.appointment_type || 'appointment'} appointment slot on ` +
+        `${slotDateStr} at ${slotTimeStr} has been removed by the admin. ` +
+        `Your booking has been cancelled. Please contact us to reschedule.`;
+
+      // Write to notifications table
+      try {
+        await connection.execute(
+          `INSERT INTO notifications
+             (user_id, appointment_id, notification_type, title, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_cancelled', ?, ?, 0, NOW(), NOW())`,
+          [appt.user_id, appt.id, title, message]
+        );
+      } catch (notifErr) {
+        console.warn(`⚠️ deleteSlot: notification insert failed for appt ${appt.id}:`, notifErr.message);
+      }
+
+      // Write to legacy appointment_notifications table
+      try {
+        await connection.execute(
+          `INSERT INTO appointment_notifications
+             (appointment_id, user_id, notification_type, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_cancellation', ?, 0, NOW(), NOW())`,
+          [appt.id, appt.user_id, message]
+        );
+      } catch (_) {}
+    }
+
+    // 4. Hard-delete the slot
+    await connection.execute('DELETE FROM appointment_slots WHERE id = ?', [id]);
+
+    // 5. Write audit log
+    try {
+      await connection.execute(
+        `INSERT INTO audit_logs (admin_id, action, description, metadata, created_at)
+         VALUES (?, 'delete_slot', ?, ?, NOW())`,
+        [
+          adminId,
+          `Deleted slot id=${id} (${String(slot.slot_date).substring(0,10)} ${String(slot.slot_time).substring(0,5)}) ` +
+          `for service_id=${slot.service_id}. Cancelled ${cancelledApptIds.length} appointment(s).`,
+          JSON.stringify({
+            slot_id:           parseInt(id),
+            service_id:        slot.service_id,
+            slot_date:         String(slot.slot_date).substring(0, 10),
+            slot_time:         String(slot.slot_time).substring(0, 5),
+            cancelled_appt_ids: cancelledApptIds,
+          }),
+        ]
+      );
+    } catch (auditErr) {
+      console.warn('⚠️ deleteSlot: audit log failed:', auditErr.message);
+    }
+
+    await connection.commit();
+
+    // 6. Emit real-time events after commit
+    if (req.app.locals.io) {
+      req.app.locals.io.emit('slotsUpdated', {
+        action:    'deleted',
+        slotId:    id,
+        serviceId: slot.service_id,
+        date:      String(slot.slot_date).substring(0, 10),
+        cancelledAppointments: cancelledApptIds.length,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Notify each affected patient via their personal room
+      for (const appt of linkedAppointments) {
+        const slotDateStr = String(slot.slot_date).substring(0, 10);
+        const slotTimeStr = String(slot.slot_time).substring(0, 5);
+        req.app.locals.io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
+          appointment_id:    appt.id,
+          user_id:           appt.user_id,
+          notification_type: 'appointment_cancelled',
+          title:  'Appointment Slot Cancelled',
+          message: `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. Please contact us to reschedule.`,
+          is_read:    false,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: cancelledApptIds.length > 0
+        ? `Slot deleted. ${cancelledApptIds.length} linked appointment(s) cancelled and patient(s) notified.`
+        : 'Appointment slot deleted successfully.',
+      data: {
+        slotId:              parseInt(id),
+        cancelledApptIds,
+        appointmentsCancelled: cancelledApptIds.length,
+      },
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('❌ deleteSlot error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to delete appointment slot', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// ─── Check bookings for a slot (admin — pre-delete preview) ──────────────────
+// GET /appointment-slots/:id/bookings
+exports.getSlotBookings = async (req, res) => {
   try {
     const { id } = req.params;
 
     const [slots] = await db.execute(
-      'SELECT service_id, slot_date FROM appointment_slots WHERE id = ?',
+      'SELECT id, service_id, slot_date, slot_time, booked_count FROM appointment_slots WHERE id = ?',
       [id]
     );
     if (slots.length === 0)
-      return res.status(404).json({ success: false, message: 'Appointment slot not found' });
+      return res.status(404).json({ success: false, message: 'Slot not found' });
 
     const slot = slots[0];
-    await db.execute('DELETE FROM appointment_slots WHERE id = ?', [id]);
 
-    if (req.app.locals.io) {
-      req.app.locals.io.emit('slotsUpdated', { action: 'deleted', slotId: id, serviceId: slot.service_id, date: slot.slot_date });
+    // Try slot_id FK first, then date+time fallback
+    let appointments = [];
+    try {
+      const [bySlotId] = await db.execute(
+        `SELECT a.id, a.user_id, a.appointment_type, a.status,
+                u.full_name AS patient_name
+         FROM appointments a
+         LEFT JOIN users u ON a.user_id = u.id
+         WHERE a.slot_id = ? AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [id]
+      );
+      appointments = bySlotId;
+    } catch (_) {}
+
+    if (appointments.length === 0) {
+      const [byDT] = await db.execute(
+        `SELECT a.id, a.user_id, a.appointment_type, a.status,
+                u.full_name AS patient_name
+         FROM appointments a
+         LEFT JOIN users u ON a.user_id = u.id
+         WHERE a.appointment_date = ? AND TIME(a.appointment_time) = TIME(?)
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        [slot.slot_date, slot.slot_time]
+      );
+      appointments = byDT;
     }
 
-    res.status(200).json({ success: true, message: 'Appointment slot deleted successfully' });
+    return res.status(200).json({
+      success: true,
+      data: {
+        slot_id:      parseInt(id),
+        slot_date:    String(slot.slot_date).substring(0, 10),
+        slot_time:    String(slot.slot_time).substring(0, 5),
+        booked_count: slot.booked_count,
+        appointments: appointments.map(a => ({
+          id:               a.id,
+          patient_name:     a.patient_name || 'Unknown',
+          appointment_type: a.appointment_type,
+          status:           a.status,
+        })),
+      },
+    });
   } catch (err) {
-    console.error('❌ deleteSlot error:', err);
-    return res.status(500).json({ success: false, message: 'Failed to delete appointment slot' });
+    console.error('❌ getSlotBookings error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch slot bookings' });
   }
 };
-
-// ─── Update appointment slot (admin) ─────────────────────────────────────────
 exports.updateSlot = async (req, res) => {
   try {
     const { id } = req.params;

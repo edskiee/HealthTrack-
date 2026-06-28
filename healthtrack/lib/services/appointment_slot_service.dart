@@ -489,10 +489,43 @@ class AppointmentSlotService {
     throw lastException ?? Exception("Failed to delete appointment slots");
   }
 
+  // ── Pre-delete bookings check ────────────────────────────────────────────────
+
+  /// Returns the list of active appointments linked to [slotId].
+  /// Used by the admin UI to show a booking-aware confirmation before deleting.
+  static Future<Map<String, dynamic>> getSlotBookings(int slotId) async {
+    Exception? lastException;
+    for (final url in fallbackBaseUrls) {
+      try {
+        final headers = await _adminHeaders();
+        final response = await http.get(
+          Uri.parse('$url/appointment-slots/$slotId/bookings'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          if (data['success'] == true) {
+            return Map<String, dynamic>.from(data['data'] ?? {});
+          }
+          lastException = Exception(data['message'] ?? 'Failed to fetch slot bookings');
+        } else if (response.statusCode == 404) {
+          return {'slot_id': slotId, 'appointments': [], 'booked_count': 0};
+        } else {
+          lastException = Exception('HTTP ${response.statusCode}: Failed to fetch slot bookings');
+        }
+      } on TimeoutException {
+        lastException = Exception('Request timed out fetching slot bookings.');
+      } catch (e) {
+        lastException = Exception('Failed to fetch slot bookings: $e');
+      }
+    }
+    throw lastException ?? Exception('Failed to fetch slot bookings');
+  }
+
   // ── Step 2: Per-date detail with linked patient/appointment info ─────────────
 
-  /// Fetch slots for a given date enriched with booked appointment + patient info.
-  /// Returns { slots: [...], summary: { total, available, booked, fully_booked } }
+  /// Fetch slots for a given date enriched with booked appointment + patient info.  /// Returns { slots: [...], summary: { total, available, booked, fully_booked } }
   static Future<Map<String, dynamic>> getDateDetail({
     required int serviceId,
     required String date,

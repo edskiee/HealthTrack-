@@ -131,16 +131,46 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
 
   // ── Delete a single slot ──────────────────────────────────────────────────
   Future<void> _handleDeleteSlot(Map<String, dynamic> slot) async {
-    final confirmed = await _confirmDialog(
-      title:   'Delete Slot',
-      content: 'Delete the ${_formatTime(slot['slot_time'] ?? slot['start_time'])} slot?\n'
-               'This cannot be undone.',
-      confirmLabel: 'Delete',
-      confirmColor: Colors.red,
+    final int slotId   = slot['id'] as int;
+    final String time  = _formatTime(slot['slot_time'] ?? slot['start_time']);
+    final int bc       = _intVal(slot['booked_count'] ?? slot['booked_patients']);
+
+    // ── Step 1: Check live bookings from backend before confirming ────────────
+    // Use the enriched appointment list already loaded into the slot map when
+    // available; otherwise fall back to a quick API check.
+    List<Map<String, dynamic>> activeBookings = [];
+
+    final inMemoryAppts = (slot['appointments'] as List?)
+        ?.map((a) => Map<String, dynamic>.from(a as Map))
+        .toList();
+
+    if (inMemoryAppts != null && inMemoryAppts.isNotEmpty) {
+      activeBookings = inMemoryAppts;
+    } else if (bc > 0) {
+      // booked_count says there are bookings but we don't have patient detail yet
+      try {
+        final bookingData = await AppointmentSlotService.getSlotBookings(slotId);
+        final rawList = bookingData['appointments'] as List?;
+        if (rawList != null) {
+          activeBookings = rawList
+              .map((a) => Map<String, dynamic>.from(a as Map))
+              .toList();
+        }
+      } catch (_) {
+        // Non-fatal — we still show a generic warning
+      }
+    }
+
+    final hasBookings = activeBookings.isNotEmpty;
+
+    // ── Step 2: Show booking-aware confirmation dialog ────────────────────────
+    final confirmed = await _showDeleteConfirmDialog(
+      time:         time,
+      hasBookings:  hasBookings,
+      bookings:     activeBookings,
     );
     if (!confirmed || !mounted) return;
 
-    final int slotId = slot['id'] as int;
     setState(() => _deletingSlotIds.add(slotId));
 
     try {
@@ -148,19 +178,32 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
       final response = await http.delete(
         Uri.parse('${ApiConfig.baseUrl}/appointment-slots/$slotId'),
         headers: headers,
-      ).timeout(const Duration(seconds: 15));
+      ).timeout(const Duration(seconds: 20));
 
       if (!mounted) return;
       final body = json.decode(response.body);
 
       if (response.statusCode == 200 && body['success'] == true) {
+        final cancelledCount =
+            (body['data']?['appointmentsCancelled'] as int?) ?? 0;
+
         setState(() {
           _slots.removeWhere((s) => s['id'] == slotId);
           _deletingSlotIds.remove(slotId);
           _computeSummaryFromSlots();
         });
-        MessageUtils.showSuccessMessage(context, 'Slot deleted', title: 'Done');
+
+        final msg = cancelledCount > 0
+            ? 'Slot deleted. $cancelledCount patient appointment(s) cancelled and notified.'
+            : 'Slot deleted successfully.';
+        MessageUtils.showSuccessMessage(context, msg, title: 'Deleted');
+
         widget.onSlotsUpdated?.call();
+
+        // Auto-close the modal if no slots remain
+        if (_slots.isEmpty && mounted) {
+          Navigator.of(context).pop();
+        }
       } else {
         throw Exception(body['message'] ?? 'Failed to delete slot');
       }
@@ -170,6 +213,132 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
       MessageUtils.showErrorMessage(
           context, e.toString().replaceFirst('Exception: ', ''));
     }
+  }
+
+  /// Booking-aware delete confirmation dialog.
+  Future<bool> _showDeleteConfirmDialog({
+    required String time,
+    required bool hasBookings,
+    required List<Map<String, dynamic>> bookings,
+  }) async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: Row(children: [
+              Icon(Icons.warning_amber_rounded,
+                  color: hasBookings ? Colors.red : Colors.orange, size: 24),
+              const SizedBox(width: 10),
+              Text(hasBookings ? 'Delete Booked Slot' : 'Delete Slot'),
+            ]),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Delete the $time slot?',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 12),
+                if (hasBookings) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          Icon(Icons.people,
+                              color: Colors.red.shade700, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${bookings.length} active booking(s) will be cancelled',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.red.shade800),
+                          ),
+                        ]),
+                        const SizedBox(height: 8),
+                        ...bookings.take(3).map((b) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(children: [
+                                const Icon(Icons.person_outline,
+                                    size: 13, color: Colors.grey),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    b['patient_name'] as String? ?? 'Unknown',
+                                    style: const TextStyle(fontSize: 12),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ]),
+                            )),
+                        if (bookings.length > 3)
+                          Text(
+                            '+ ${bookings.length - 3} more',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey.shade600),
+                          ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Each patient will receive an in-app notification automatically.',
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.red.shade700),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.info_outline, size: 15, color: Colors.grey),
+                      SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'This slot has no active bookings. It will be permanently removed.',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ),
+                    ]),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                onPressed: () => Navigator.pop(context, true),
+                icon: const Icon(Icons.delete_forever, size: 16),
+                label: Text(hasBookings ? 'Delete & Cancel Booking' : 'Delete'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   // ── Open Reschedule Date modal ────────────────────────────────────────────
@@ -250,37 +419,6 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
         },
       ),
     );
-  }
-
-  // ── Generic confirm dialog ────────────────────────────────────────────────
-  Future<bool> _confirmDialog({
-    required String title,
-    required String content,
-    required String confirmLabel,
-    Color confirmColor = Colors.blue,
-  }) async {
-    return await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            title: Text(title),
-            content: Text(content),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: confirmColor,
-                    foregroundColor: Colors.white),
-                child: Text(confirmLabel),
-              ),
-            ],
-          ),
-        ) ??
-        false;
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────

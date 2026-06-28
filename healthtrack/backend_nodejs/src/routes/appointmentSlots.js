@@ -28,4 +28,7 @@ router.put("/:id",     authenticateAdmin, appointmentSlotsController.updateSlot)
 router.delete("/",     authenticateAdmin, appointmentSlotsController.deleteAllSlots);
 router.delete("/:id",  authenticateAdmin, appointmentSlotsController.deleteSlot);
 
+// Pre-delete bookings check
+router.get("/:id/bookings", authenticateAdmin, appointmentSlotsController.getSlotBookings);
+
 module.exports = router;

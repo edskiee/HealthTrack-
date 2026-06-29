@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../services/appointment_slot_service.dart';
 import '../../utils/message_utils.dart';
+import 'reason_selector.dart';
 
 /// Modal that lets an admin bulk-move all slots from [sourceDate] to a new date.
 ///
@@ -39,6 +40,8 @@ class _RescheduleDateModalState extends State<RescheduleDateModal> {
   bool _isRescheduling = false;
   bool _showConfirmStep = false;
 
+  final _reasonCtrl = ReasonSelectorController();
+
   String get _sourceDateStr =>
       DateFormat('yyyy-MM-dd').format(widget.sourceDate);
 
@@ -71,18 +74,20 @@ class _RescheduleDateModalState extends State<RescheduleDateModal> {
         _targetDate = DateTime(picked.year, picked.month, picked.day);
         _showConfirmStep = false; // reset confirm if date changes
       });
-    }
-  }
+    }  }
 
   Future<void> _execute() async {
     if (_targetDate == null) return;
+    if (!_reasonCtrl.isValid) return;
     setState(() => _isRescheduling = true);
 
     try {
       final result = await AppointmentSlotService.rescheduleDate(
-        serviceId: widget.serviceId,
-        fromDate:  _sourceDateStr,
-        toDate:    _targetDateStr,
+        serviceId:  widget.serviceId,
+        fromDate:   _sourceDateStr,
+        toDate:     _targetDateStr,
+        reasonCode: _reasonCtrl.code,
+        reasonNote: _reasonCtrl.note,
       );
 
       if (!mounted) return;
@@ -262,6 +267,17 @@ class _RescheduleDateModalState extends State<RescheduleDateModal> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 20),
+
+                  // Reason selector
+                  ReasonSelector(
+                    serviceId:  widget.serviceId,
+                    controller: _reasonCtrl,
+                    onChanged:  () => setState(() {
+                      // resets confirm step if reason changes after review
+                      _showConfirmStep = false;
+                    }),
+                  ),
 
                   // Booked warning
                   if (widget.bookedCount > 0) ...[
@@ -313,7 +329,7 @@ class _RescheduleDateModalState extends State<RescheduleDateModal> {
                   const SizedBox(width: 12),
                   if (!_showConfirmStep)
                     ElevatedButton.icon(
-                      onPressed: _targetDate == null
+                      onPressed: (_targetDate == null || !_reasonCtrl.isValid)
                           ? null
                           : () => setState(() => _showConfirmStep = true),
                       icon: const Icon(Icons.arrow_forward, size: 18),

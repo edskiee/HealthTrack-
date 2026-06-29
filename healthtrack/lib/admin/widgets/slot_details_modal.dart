@@ -8,6 +8,7 @@ import '../../admin/services/admin_session_storage.dart';
 import '../../utils/message_utils.dart';
 import 'reschedule_date_modal.dart';
 import 'edit_slot_config_modal.dart';
+import 'reason_selector.dart';
 
 /// Per-date slot detail modal.
 ///
@@ -47,6 +48,10 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
   String _loadError = '';
   final Set<int> _deletingSlotIds = {};
   bool _isDeletingAll = false;
+
+  // ── Reason controllers (one per destructive action) ────────────────────────
+  final _bulkDeleteReasonCtrl  = ReasonSelectorController();
+  final _singleDeleteReasonCtrl = ReasonSelectorController();
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   String get _dateStr =>
@@ -137,8 +142,6 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
     final int bc       = _intVal(slot['booked_count'] ?? slot['booked_patients']);
 
     // ── Step 1: Check live bookings from backend before confirming ────────────
-    // Use the enriched appointment list already loaded into the slot map when
-    // available; otherwise fall back to a quick API check.
     List<Map<String, dynamic>> activeBookings = [];
 
     final inMemoryAppts = (slot['appointments'] as List?)
@@ -148,7 +151,6 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
     if (inMemoryAppts != null && inMemoryAppts.isNotEmpty) {
       activeBookings = inMemoryAppts;
     } else if (bc > 0) {
-      // booked_count says there are bookings but we don't have patient detail yet
       try {
         final bookingData = await AppointmentSlotService.getSlotBookings(slotId);
         final rawList = bookingData['appointments'] as List?;
@@ -157,12 +159,13 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
               .map((a) => Map<String, dynamic>.from(a as Map))
               .toList();
         }
-      } catch (_) {
-        // Non-fatal — we still show a generic warning
-      }
+      } catch (_) {}
     }
 
     final hasBookings = activeBookings.isNotEmpty;
+
+    // Reset reason controller before showing dialog
+    _singleDeleteReasonCtrl.reset();
 
     // ── Step 2: Show booking-aware confirmation dialog ────────────────────────
     final confirmed = await _showDeleteConfirmDialog(
@@ -176,8 +179,24 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
 
     try {
       final headers = await AdminSessionStorage.authHeaders();
+      // Build query params for reason
+      final qParams = <String, String>{};
+      if (hasBookings && _singleDeleteReasonCtrl.code != null) {
+        qParams['reasonCode'] = _singleDeleteReasonCtrl.code!;
+        if (_singleDeleteReasonCtrl.note != null) {
+          qParams['reasonNote'] = _singleDeleteReasonCtrl.note!;
+        }
+      }
+      final qs = qParams.entries
+          .map((e) =>
+              '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+          .join('&');
+      final urlSuffix = qs.isEmpty
+          ? '${ApiConfig.baseUrl}/appointment-slots/$slotId'
+          : '${ApiConfig.baseUrl}/appointment-slots/$slotId?$qs';
+
       final response = await http.delete(
-        Uri.parse('${ApiConfig.baseUrl}/appointment-slots/$slotId'),
+        Uri.parse(urlSuffix),
         headers: headers,
       ).timeout(const Duration(seconds: 20));
 
@@ -217,6 +236,7 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
   }
 
   /// Booking-aware delete confirmation dialog.
+  /// Shows a ReasonSelector when [hasBookings] is true.
   Future<bool> _showDeleteConfirmDialog({
     required String time,
     required bool hasBookings,
@@ -225,118 +245,154 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
     return await showDialog<bool>(
           context: context,
           barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-            title: Row(children: [
-              Icon(Icons.warning_amber_rounded,
-                  color: hasBookings ? Colors.red : Colors.orange, size: 24),
-              const SizedBox(width: 10),
-              Text(hasBookings ? 'Delete Booked Slot' : 'Delete Slot'),
-            ]),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Delete the $time slot?',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 12),
-                if (hasBookings) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade50,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.red.shade200),
-                    ),
+          builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setDialogState) {
+              final canConfirm =
+                  !hasBookings || _singleDeleteReasonCtrl.isValid;
+
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                title: Row(children: [
+                  Icon(Icons.warning_amber_rounded,
+                      color: hasBookings ? Colors.red : Colors.orange,
+                      size: 24),
+                  const SizedBox(width: 10),
+                  Text(hasBookings ? 'Delete Booked Slot' : 'Delete Slot'),
+                ]),
+                content: SizedBox(
+                  width: 400,
+                  child: SingleChildScrollView(
                     child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(children: [
-                          Icon(Icons.people,
-                              color: Colors.red.shade700, size: 16),
-                          const SizedBox(width: 6),
-                          Text(
-                            '${bookings.length} active booking(s) will be cancelled',
-                            style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.red.shade800),
-                          ),
-                        ]),
-                        const SizedBox(height: 8),
-                        ...bookings.take(3).map((b) => Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Row(children: [
-                                const Icon(Icons.person_outline,
-                                    size: 13, color: Colors.grey),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    b['patient_name'] as String? ?? 'Unknown',
-                                    style: const TextStyle(fontSize: 12),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ]),
-                            )),
-                        if (bookings.length > 3)
-                          Text(
-                            '+ ${bookings.length - 3} more',
-                            style: TextStyle(
-                                fontSize: 11, color: Colors.grey.shade600),
-                          ),
-                        const SizedBox(height: 8),
                         Text(
-                          'Each patient will receive an in-app notification automatically.',
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.red.shade700),
+                          'Delete the $time slot?',
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w600),
                         ),
+                        const SizedBox(height: 12),
+
+                        if (hasBookings) ...[
+                          // Reason selector — required when slot is booked
+                          ReasonSelector(
+                            serviceId:  widget.serviceId,
+                            controller: _singleDeleteReasonCtrl,
+                            onChanged:  () => setDialogState(() {}),
+                          ),
+                          const SizedBox(height: 12),
+
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.red.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Icon(Icons.people,
+                                      color: Colors.red.shade700, size: 16),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '${bookings.length} active booking(s) will be cancelled',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.red.shade800),
+                                  ),
+                                ]),
+                                const SizedBox(height: 8),
+                                ...bookings.take(3).map((b) => Padding(
+                                      padding:
+                                          const EdgeInsets.only(bottom: 4),
+                                      child: Row(children: [
+                                        const Icon(Icons.person_outline,
+                                            size: 13, color: Colors.grey),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: Text(
+                                            b['patient_name'] as String? ??
+                                                'Unknown',
+                                            style: const TextStyle(
+                                                fontSize: 12),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ]),
+                                    )),
+                                if (bookings.length > 3)
+                                  Text(
+                                    '+ ${bookings.length - 3} more',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey.shade600),
+                                  ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Each patient will receive an in-app notification automatically.',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.red.shade700),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ] else ...[
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border:
+                                  Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: const Row(children: [
+                              Icon(Icons.info_outline,
+                                  size: 15, color: Colors.grey),
+                              SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'This slot has no active bookings. It will be permanently removed.',
+                                  style: TextStyle(
+                                      fontSize: 12, color: Colors.grey),
+                                ),
+                              ),
+                            ]),
+                          ),
+                        ],
                       ],
                     ),
                   ),
-                ] else ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade50,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.grey.shade200),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Cancel'),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: canConfirm
+                        ? () => Navigator.pop(ctx, true)
+                        : null,
+                    icon: const Icon(Icons.delete_forever, size: 16),
+                    label: Text(hasBookings
+                        ? 'Delete & Cancel Booking'
+                        : 'Delete'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: Colors.red.shade200,
+                      disabledForegroundColor: Colors.white70,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                     ),
-                    child: const Row(children: [
-                      Icon(Icons.info_outline, size: 15, color: Colors.grey),
-                      SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          'This slot has no active bookings. It will be permanently removed.',
-                          style: TextStyle(fontSize: 12, color: Colors.grey),
-                        ),
-                      ),
-                    ]),
                   ),
                 ],
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton.icon(
-                onPressed: () => Navigator.pop(context, true),
-                icon: const Icon(Icons.delete_forever, size: 16),
-                label: Text(hasBookings ? 'Delete & Cancel Booking' : 'Delete'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                ),
-              ),
-            ],
+              );
+            },
           ),
         ) ??
         false;
@@ -368,6 +424,9 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
     final total  = _totalSlots;
     final booked = _booked;
 
+    // Reset reason controller so previous selections don't carry over
+    _bulkDeleteReasonCtrl.reset();
+
     // Step 1 — show confirmation dialog (requires typing "DELETE" if any bookings)
     final confirmed = await _showDeleteAllConfirmDialog(
       total:  total,
@@ -379,12 +438,12 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
 
     try {
       final result = await AppointmentSlotService.deleteAllSlotsForDate(
-        serviceId: widget.serviceId!,
-        date:      _dateStr,
-        // adminId is carried in the JWT; backend also accepts it as a query
-        // param for audit log — pass null here (the backend auth middleware
-        // resolves it from the token automatically).
-        adminId:   null,
+        serviceId:  widget.serviceId!,
+        date:       _dateStr,
+        reasonCode: _bulkDeleteReasonCtrl.code,
+        reasonNote: _bulkDeleteReasonCtrl.note,
+        // adminId is carried in the JWT auth header
+        adminId: null,
       );
 
       if (!mounted) return;
@@ -437,8 +496,9 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
           builder: (ctx) {
             return StatefulBuilder(
               builder: (ctx, setDialogState) {
-                final canConfirm = !needsTypedConfirm ||
+                final typedOk = !needsTypedConfirm ||
                     confirmCtrl.text.trim().toUpperCase() == 'DELETE';
+                final canConfirm = typedOk && _bulkDeleteReasonCtrl.isValid;
 
                 return AlertDialog(
                   shape: RoundedRectangleBorder(
@@ -456,122 +516,133 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
                   ]),
                   content: SizedBox(
                     width: 420,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // ── Summary ───────────────────────────────────────
-                        Text(
-                          'You are about to delete all $total slot(s) for '
-                          '${DateFormat('MMMM d, yyyy').format(widget.selectedDate)}.',
-                          style: const TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 14),
-
-                        // ── Booked-slots warning ──────────────────────────
-                        if (booked > 0) ...[
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade50,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.red.shade300),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(children: [
-                                  Icon(Icons.warning_amber_rounded,
-                                      color: Colors.red.shade700, size: 18),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      '$booked of these slot(s) have active bookings.',
-                                      style: TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w700,
-                                          color: Colors.red.shade800),
-                                    ),
-                                  ),
-                                ]),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Deleting will cancel those appointments and '
-                                  'immediately notify the affected patients via '
-                                  'in-app notification.',
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      color: Colors.red.shade700),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Typed confirmation field
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // ── Summary ─────────────────────────────────────
                           Text(
-                            'Type DELETE to confirm:',
-                            style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade800),
+                            'You are about to delete all $total slot(s) for '
+                            '${DateFormat('MMMM d, yyyy').format(widget.selectedDate)}.',
+                            style: const TextStyle(
+                                fontSize: 14, fontWeight: FontWeight.w600),
                           ),
-                          const SizedBox(height: 8),
-                          TextField(
-                            controller: confirmCtrl,
-                            autofocus: true,
-                            textCapitalization: TextCapitalization.characters,
-                            decoration: InputDecoration(
-                              hintText: 'DELETE',
-                              hintStyle: TextStyle(color: Colors.grey.shade400),
-                              filled: true,
-                              fillColor: Colors.grey.shade50,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                                borderSide: BorderSide(
-                                    color: Colors.red.shade300),
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                                borderSide: BorderSide(
-                                    color: Colors.red.shade300),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                                borderSide: BorderSide(
-                                    color: Colors.red.shade600, width: 2),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 10),
-                            ),
-                            onChanged: (_) => setDialogState(() {}),
+                          const SizedBox(height: 14),
+
+                          // ── Reason selector ─────────────────────────────
+                          ReasonSelector(
+                            serviceId:  widget.serviceId,
+                            controller: _bulkDeleteReasonCtrl,
+                            onChanged:  () => setDialogState(() {}),
                           ),
-                        ] else ...[
-                          // No bookings — simple info banner
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(10),
-                              border:
-                                  Border.all(color: Colors.orange.shade200),
+                          const SizedBox(height: 14),
+
+                          // ── Booked-slots warning ─────────────────────────
+                          if (booked > 0) ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade50,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.red.shade300),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(children: [
+                                    Icon(Icons.warning_amber_rounded,
+                                        color: Colors.red.shade700, size: 18),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        '$booked of these slot(s) have active bookings.',
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w700,
+                                            color: Colors.red.shade800),
+                                      ),
+                                    ),
+                                  ]),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Deleting will cancel those appointments and '
+                                    'immediately notify the affected patients via '
+                                    'in-app notification.',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.red.shade700),
+                                  ),
+                                ],
+                              ),
                             ),
-                            child: Row(children: [
-                              Icon(Icons.info_outline,
-                                  size: 16,
-                                  color: Colors.orange.shade700),
-                              const SizedBox(width: 8),
-                              const Expanded(
-                                child: Text(
-                                  'None of these slots have active bookings. '
-                                  'They will be permanently removed.',
-                                  style: TextStyle(fontSize: 13),
+                            const SizedBox(height: 16),
+                            // Typed confirmation field
+                            Text(
+                              'Type DELETE to confirm:',
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade800),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: confirmCtrl,
+                              autofocus: false,
+                              textCapitalization: TextCapitalization.characters,
+                              decoration: InputDecoration(
+                                hintText: 'DELETE',
+                                hintStyle:
+                                    TextStyle(color: Colors.grey.shade400),
+                                filled: true,
+                                fillColor: Colors.grey.shade50,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide:
+                                      BorderSide(color: Colors.red.shade300),
                                 ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide:
+                                      BorderSide(color: Colors.red.shade300),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide(
+                                      color: Colors.red.shade600, width: 2),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
                               ),
-                            ]),
-                          ),
+                              onChanged: (_) => setDialogState(() {}),
+                            ),
+                          ] else ...[
+                            // No bookings — simple info banner
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.shade50,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                    color: Colors.orange.shade200),
+                              ),
+                              child: Row(children: [
+                                Icon(Icons.info_outline,
+                                    size: 16,
+                                    color: Colors.orange.shade700),
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Text(
+                                    'None of these slots have active bookings. '
+                                    'They will be permanently removed.',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                ),
+                              ]),
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
                   ),
                   actions: [

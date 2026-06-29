@@ -355,13 +355,28 @@ class AppointmentSlotService {
     throw lastException ?? Exception("Failed to update appointment slot");
   }
 
-  /// Delete an appointment slot
-  static Future<Map<String, dynamic>> deleteSlot(int slotId) async {
+  /// Delete an appointment slot (single). Pass [reasonCode]/[reasonNote] when
+  /// the slot has active bookings so patients receive a meaningful notification.
+  static Future<Map<String, dynamic>> deleteSlot(
+    int slotId, {
+    String? reasonCode,
+    String? reasonNote,
+  }) async {
     Exception? lastException;
     for (final url in fallbackBaseUrls) {
       try {
+        final queryParams = <String, String>{};
+        if (reasonCode != null && reasonCode.isNotEmpty) queryParams['reasonCode'] = reasonCode;
+        if (reasonNote != null && reasonNote.isNotEmpty) queryParams['reasonNote'] = reasonNote;
+        final queryString = queryParams.entries
+            .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+            .join('&');
+        final urlPath = queryString.isEmpty
+            ? '/appointment-slots/$slotId'
+            : '/appointment-slots/$slotId?$queryString';
+
         final response = await http.delete(
-          Uri.parse('$url/appointment-slots/$slotId'),
+          Uri.parse('$url$urlPath'),
           headers: await _adminHeaders(),
         ).timeout(const Duration(seconds: 10));
 
@@ -455,6 +470,8 @@ class AppointmentSlotService {
     required int serviceId,
     required String date,
     String? adminId,
+    String? reasonCode,
+    String? reasonNote,
   }) async {
     Exception? lastException;
 
@@ -462,9 +479,9 @@ class AppointmentSlotService {
       'serviceId': serviceId.toString(),
       'date': date,
     };
-    if (adminId != null && adminId.isNotEmpty) {
-      queryParams['adminId'] = adminId;
-    }
+    if (adminId    != null && adminId.isNotEmpty)    queryParams['adminId']    = adminId;
+    if (reasonCode != null && reasonCode.isNotEmpty) queryParams['reasonCode'] = reasonCode;
+    if (reasonNote != null && reasonNote.isNotEmpty) queryParams['reasonNote'] = reasonNote;
 
     final queryString = queryParams.entries
         .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
@@ -609,11 +626,14 @@ class AppointmentSlotService {
   // ── Step 3: Reschedule entire date ──────────────────────────────────────────
 
   /// Move all slots (and their linked appointments) from [fromDate] to [toDate].
+  /// Bulk-move all slots from [fromDate] to [toDate] for [serviceId].
   static Future<Map<String, dynamic>> rescheduleDate({
     required int serviceId,
     required String fromDate,
     required String toDate,
     int? adminId,
+    String? reasonCode,
+    String? reasonNote,
   }) async {
     Exception? lastException;
     for (final url in fallbackBaseUrls) {
@@ -626,7 +646,9 @@ class AppointmentSlotService {
             'service_id': serviceId,
             'from_date':  fromDate,
             'to_date':    toDate,
-            if (adminId != null) 'admin_id': adminId,
+            if (adminId    != null) 'admin_id':    adminId,
+            if (reasonCode != null) 'reason_code': reasonCode,
+            if (reasonNote != null) 'reason_note': reasonNote,
           }),
         ).timeout(const Duration(seconds: 30));
 
@@ -659,6 +681,8 @@ class AppointmentSlotService {
     required String endTime,
     required int slotDurationMinutes,
     int? adminId,
+    String? reasonCode,
+    String? reasonNote,
   }) async {
     Exception? lastException;
     for (final url in fallbackBaseUrls) {
@@ -673,7 +697,9 @@ class AppointmentSlotService {
             'start_time':            startTime,
             'end_time':              endTime,
             'slot_duration_minutes': slotDurationMinutes,
-            if (adminId != null) 'admin_id': adminId,
+            if (adminId    != null) 'admin_id':    adminId,
+            if (reasonCode != null) 'reason_code': reasonCode,
+            if (reasonNote != null) 'reason_note': reasonNote,
           }),
         ).timeout(const Duration(seconds: 30));
 

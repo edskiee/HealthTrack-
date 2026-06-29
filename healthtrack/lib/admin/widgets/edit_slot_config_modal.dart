@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../services/appointment_slot_service.dart';
 import '../../utils/message_utils.dart';
+import 'reason_selector.dart';
 
 /// Modal for editing the slot configuration (time range / duration) of an
 /// already-generated date.
@@ -51,6 +52,12 @@ class _EditSlotConfigModalState extends State<EditSlotConfigModal> {
   String _validationError = '';
   int _calculatedSlots = 0;
   bool _isSaving = false;
+
+  final _reasonCtrl = ReasonSelectorController();
+
+  // True once the user has interacted with the form enough that we show
+  // the reason field (only relevant when bookings may be displaced).
+  bool _reasonRequired = false;
 
   @override
   void initState() {
@@ -109,7 +116,13 @@ class _EditSlotConfigModalState extends State<EditSlotConfigModal> {
       return;
     }
 
-    setState(() => _calculatedSlots = slots);
+    // Reason is required whenever there are existing bookings that could be
+    // displaced — i.e. any time the admin edits a date that has bookings.
+    final willAffectBookings = widget.currentBookedCount > 0;
+    setState(() {
+      _calculatedSlots  = slots;
+      _reasonRequired   = willAffectBookings;
+    });
   }
 
   Future<void> _pickTime({required bool isStart}) async {
@@ -143,15 +156,18 @@ class _EditSlotConfigModalState extends State<EditSlotConfigModal> {
 
   Future<void> _save() async {
     if (_validationError.isNotEmpty || _calculatedSlots == 0) return;
+    if (_reasonRequired && !_reasonCtrl.isValid) return;
     setState(() => _isSaving = true);
 
     try {
       final result = await AppointmentSlotService.editDateSlots(
-        serviceId:            widget.serviceId,
-        date:                 DateFormat('yyyy-MM-dd').format(widget.date),
-        startTime:            _timeOfDayToStr(_startTime),
-        endTime:              _timeOfDayToStr(_endTime),
-        slotDurationMinutes:  _duration!,
+        serviceId:           widget.serviceId,
+        date:                DateFormat('yyyy-MM-dd').format(widget.date),
+        startTime:           _timeOfDayToStr(_startTime),
+        endTime:             _timeOfDayToStr(_endTime),
+        slotDurationMinutes: _duration!,
+        reasonCode:          _reasonRequired ? _reasonCtrl.code : null,
+        reasonNote:          _reasonRequired ? _reasonCtrl.note : null,
       );
 
       if (!mounted) return;
@@ -373,6 +389,16 @@ class _EditSlotConfigModalState extends State<EditSlotConfigModal> {
                     _DisplacementWarning(
                         bookedCount: widget.currentBookedCount),
                   ],
+
+                  // ── Reason selector (required when existing bookings exist)
+                  if (_reasonRequired) ...[
+                    const SizedBox(height: 16),
+                    ReasonSelector(
+                      serviceId:  widget.serviceId,
+                      controller: _reasonCtrl,
+                      onChanged:  () => setState(() {}),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -401,7 +427,8 @@ class _EditSlotConfigModalState extends State<EditSlotConfigModal> {
                     onPressed: (_isSaving ||
                             _validationError.isNotEmpty ||
                             _calculatedSlots == 0 ||
-                            !hasChanges)
+                            !hasChanges ||
+                            (_reasonRequired && !_reasonCtrl.isValid))
                         ? null
                         : _save,
                     icon: _isSaving

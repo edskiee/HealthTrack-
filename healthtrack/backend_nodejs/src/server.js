@@ -294,7 +294,9 @@ async function initializeScheduledNotifications() {
     await createUserDeviceTokensTable();
 
     console.log("🚀 Starting enhanced notification scheduler...");
-    const schedulerResult = await startNotificationScheduler();
+    // Pass the Socket.IO instance so the missed-appointment sweep can emit
+    // real-time notifications to connected patients.
+    const schedulerResult = await startNotificationScheduler(io);
 
     if (schedulerResult.success) {
       console.log("✅ Enhanced notification scheduler started successfully");
@@ -310,6 +312,13 @@ async function initializeScheduledNotifications() {
         try { await checkAndSendDueReminders(); }
         catch (error) { console.error("Appointment reminders error:", error); }
       }, 60_000);
+
+      // Fallback missed-appointment sweep every 5 minutes
+      const { markMissedAppointments } = require("./services/missedAppointmentService");
+      setInterval(async () => {
+        try { await markMissedAppointments(io); }
+        catch (error) { console.error("Missed appointment sweep error:", error); }
+      }, 5 * 60_000);
     }
 
     console.log("✅ Scheduled notifications system initialized");

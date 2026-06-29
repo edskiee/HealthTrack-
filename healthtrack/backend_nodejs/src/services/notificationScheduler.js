@@ -10,18 +10,26 @@ const {
   cleanupOldReminders,
   getSystemSettings 
 } = require('./appointmentReminderService');
+const { markMissedAppointments } = require('./missedAppointmentService');
 
 let schedulerTasks = [];
 let isSchedulerRunning = false;
 const SCHEDULER_TIMEZONE = process.env.NOTIFICATION_TIMEZONE || 'Asia/Manila';
 
+// Socket.IO instance — set once by startNotificationScheduler caller
+let _io = null;
+
 /**
  * Start the notification scheduler
+ * @param {object|null} io  - Socket.IO server instance for real-time missed notifications
  */
-async function startNotificationScheduler() {
+async function startNotificationScheduler(io = null) {
   try {
     console.log('🚀 Starting notification scheduler...');
     
+    // Store io reference for use in cron callbacks
+    _io = io;
+
     // Stop any existing tasks
     stopNotificationScheduler();
     
@@ -43,6 +51,21 @@ async function startNotificationScheduler() {
       scheduled: false,
       timezone: SCHEDULER_TIMEZONE
     });
+
+    // Schedule missed-appointment sweep every 5 minutes
+    // Runs independently of reminders — flips approved/pending/scheduled
+    // appointments that are 30+ minutes past their scheduled time to no_show
+    // and fires in-app + FCM notifications to the patient automatically.
+    const missedCheckTask = cron.schedule('*/5 * * * *', async () => {
+      try {
+        await markMissedAppointments(_io);
+      } catch (error) {
+        console.error('❌ Error in missed appointment sweep:', error);
+      }
+    }, {
+      scheduled: false,
+      timezone: SCHEDULER_TIMEZONE
+    });
     
     // Schedule cleanup every day at 2 AM
     const cleanupTask = cron.schedule('0 2 * * *', async () => {
@@ -58,13 +81,15 @@ async function startNotificationScheduler() {
     
     // Start the tasks
     reminderCheckTask.start();
+    missedCheckTask.start();
     cleanupTask.start();
     
-    schedulerTasks = [reminderCheckTask, cleanupTask];
+    schedulerTasks = [reminderCheckTask, missedCheckTask, cleanupTask];
     isSchedulerRunning = true;
     
     console.log('✅ Notification scheduler started successfully');
     console.log('📅 Reminder checks: Every minute');
+    console.log('🚫 Missed appointment sweep: Every 5 minutes');
     console.log(`🧹 Cleanup: Daily at 2:00 AM (${SCHEDULER_TIMEZONE})`);
     
     return { success: true, message: "Scheduler started successfully" };
@@ -140,11 +165,20 @@ async function manualCleanup() {
   return await cleanupOldReminders();
 }
 
+/**
+ * Manual trigger for missed appointment sweep (for testing)
+ */
+async function manualMissedCheck(io = null) {
+  console.log('🔧 Manual missed appointment sweep triggered');
+  return await markMissedAppointments(io || _io);
+}
+
 module.exports = {
   startNotificationScheduler,
   stopNotificationScheduler,
   getSchedulerStatus,
   restartNotificationScheduler,
   manualReminderCheck,
-  manualCleanup
+  manualCleanup,
+  manualMissedCheck,
 };

@@ -899,69 +899,102 @@ class _AppointmentsViewState extends State<AppointmentsView> {
 
   Widget _buildStatsSummaryRow() {
     final totalCount = _appointments.length;
-    final approvedCount =
-        _appointments.where((apt) => (apt['status'] ?? '').toString().toLowerCase() == 'approved').length;
+    final approvedCount = _appointments
+        .where((apt) => (apt['status'] ?? '').toString().toLowerCase() == 'approved')
+        .length;
     final rescheduledCount = _appointments
         .where((apt) => (apt['status'] ?? '').toString().toLowerCase() == 'rescheduled')
         .length;
     final todayCount = _appointments.where(_isAppointmentToday).length;
 
+    // Each card fills its Expanded slot — no fixed min/max widths.
     Widget statCard(String label, int count, Color color) {
-      return ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 130, maxWidth: 160),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w700,
+                color: color,
               ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '$count',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w700,
-                  color: color,
-                ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B7280),
               ),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF6B7280),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     }
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Wrap(
-        alignment: WrapAlignment.start,
-        spacing: 12,
-        runSpacing: 12,
-        children: [
-          statCard('Total', totalCount, const Color(0xFF3B82F6)),
-          statCard('Approved', approvedCount, const Color(0xFF3B82F6)),
-          statCard('Rescheduled', rescheduledCount, const Color(0xFFF59E0B)),
-          statCard('Today', todayCount, const Color(0xFF14B8A6)),
-        ],
-      ),
+    // Use LayoutBuilder so cards reflow gracefully on narrow screens (< 480px):
+    //   wide  → single Row, all 4 cards side-by-side with equal width
+    //   narrow → two Rows of 2 cards each (2×2 grid)
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 12.0;
+        final isWide = constraints.maxWidth >= 480;
+
+        if (isWide) {
+          // ── Full-width 4-column row ────────────────────────────────────────
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: statCard('Total',       totalCount,       const Color(0xFF3B82F6))),
+              const SizedBox(width: gap),
+              Expanded(child: statCard('Approved',    approvedCount,    const Color(0xFF22C55E))),
+              const SizedBox(width: gap),
+              Expanded(child: statCard('Rescheduled', rescheduledCount, const Color(0xFFF59E0B))),
+              const SizedBox(width: gap),
+              Expanded(child: statCard('Today',       todayCount,       const Color(0xFF14B8A6))),
+            ],
+          );
+        }
+
+        // ── Narrow: 2×2 grid ──────────────────────────────────────────────
+        return Column(
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: statCard('Total',    totalCount,    const Color(0xFF3B82F6))),
+                const SizedBox(width: gap),
+                Expanded(child: statCard('Approved', approvedCount, const Color(0xFF22C55E))),
+              ],
+            ),
+            const SizedBox(height: gap),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: statCard('Rescheduled', rescheduledCount, const Color(0xFFF59E0B))),
+                const SizedBox(width: gap),
+                Expanded(child: statCard('Today',       todayCount,       const Color(0xFF14B8A6))),
+              ],
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1099,12 +1132,6 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                         case 'complete':
                           await _confirmAndSetVisitOutcome(appointments.first, 'completed');
                           break;
-                        case 'missed':
-                          await _confirmAndSetVisitOutcome(appointments.first, 'no_show');
-                          break;
-                        case 'reschedule':
-                          _handleAction('reschedule', appointment);
-                          break;
                       }
                     },
                     itemBuilder: (ctx) {
@@ -1117,7 +1144,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                               child: ListTile(
                                 leading: const Icon(Icons.people_outline, size: 22),
                                 title: const Text('Patients & actions'),
-                                subtitle: const Text('Complete, missed, reschedule per patient'),
+                                subtitle: const Text('Mark complete per patient'),
                                 contentPadding: EdgeInsets.zero,
                                 dense: true,
                                 visualDensity: VisualDensity.compact,
@@ -1145,42 +1172,6 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                 ),
                               ],
                             ),
-                          ),
-                        ),
-                        PopupMenuItem<String>(
-                          value: 'missed',
-                          child: Semantics(
-                            label: 'Mark appointment missed',
-                            button: true,
-                            child: Row(
-                              children: [
-                                Icon(Icons.cancel_rounded, color: Colors.red.shade700, size: 22),
-                                const SizedBox(width: 10),
-                                Text(
-                                  'Missed',
-                                  style: TextStyle(
-                                    color: Colors.red.shade800,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        PopupMenuItem<String>(
-                          value: 'reschedule',
-                          child: Row(
-                            children: [
-                              Icon(Icons.schedule_rounded, color: Colors.orange.shade800, size: 22),
-                              const SizedBox(width: 10),
-                              Text(
-                                'Reschedule',
-                                style: TextStyle(
-                                  color: const Color(0xFF475569),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
                           ),
                         ),
                       ];

@@ -16,6 +16,23 @@ function minutesToTimeStr(totalMinutes) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
 }
 
+// ─── Shared helper: convert a reason code + optional note to patient-friendly text ──
+// reasonCode: string key, reasonNote: free-text for 'other', returns one sentence.
+function reasonToPatientText(reasonCode, reasonNote) {
+  const map = {
+    'clinic_closed':       'The clinic will be closed on that date.',
+    'staff_unavailable':   'Staff availability adjustment.',
+    'facility_maintenance':'Facility maintenance or repair work is scheduled.',
+    'vaccine_shortage':    'Vaccine or supply shortage for this service.',
+    'overbooking':         'High patient volume or overbooking adjustment.',
+    'weather_calamity':    'Weather or calamity disruption.',
+    'prenatal_staff':      'Prenatal staff unavailability adjustment.',
+    'service_discontinued':'This service session has been discontinued for that date.',
+    'other':               reasonNote ? reasonNote.trim() : 'Administrative schedule change.',
+  };
+  return map[reasonCode] || (reasonNote ? reasonNote.trim() : 'Administrative schedule change.');
+}
+
 // ─── Shared helper: write in-app notification rows + emit socket event ───────
 // Returns the list of inserted notification ids.
 async function dispatchBulkRescheduleNotifications(connection, {
@@ -23,8 +40,11 @@ async function dispatchBulkRescheduleNotifications(connection, {
   serviceName,
   adminId,
   io,
+  reason,     // { code, note } — optional
 }) {
   const notifIds = [];
+  const reasonText = reason ? reasonToPatientText(reason.code, reason.note) : null;
+
   for (const appt of affectedAppointments) {
     const oldDateFmt = appt.old_date;
     const newDateFmt = appt.new_date;
@@ -36,6 +56,7 @@ async function dispatchBulkRescheduleNotifications(connection, {
       `Your ${appt.appointment_type || serviceName} appointment has been rescheduled by the admin. ` +
       `Old date/time: ${oldDateFmt} at ${oldTimeFmt}. ` +
       `New date/time: ${newDateFmt} at ${newTimeFmt}. ` +
+      (reasonText ? `Reason: ${reasonText} ` : '') +
       `Please confirm or contact us if you need a different time.`;
 
     try {
@@ -72,6 +93,8 @@ async function dispatchBulkRescheduleNotifications(connection, {
             affected_count:  affectedAppointments.length,
             appointment_ids: affectedAppointments.map(a => a.id),
             service_name:    serviceName,
+            reason_code:     reason?.code || null,
+            reason_note:     reason?.note || null,
           }),
         ]
       );
@@ -83,12 +106,16 @@ async function dispatchBulkRescheduleNotifications(connection, {
   // Emit per-user socket events (after transaction commits, called by caller)
   if (io) {
     for (const appt of affectedAppointments) {
+      const socketMsg =
+        `Your appointment has been rescheduled to ${appt.new_date} at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. ` +
+        (reasonText ? `Reason: ${reasonText} ` : '') +
+        `Please confirm or request a different time.`;
       io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
         appointment_id:    appt.id,
         user_id:           appt.user_id,
         notification_type: 'appointment_rescheduled',
         title: 'Appointment Rescheduled',
-        message: `Your appointment has been rescheduled to ${appt.new_date} at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. Please confirm or request a different time.`,
+        message: socketMsg,
         is_read: false,
         created_at: new Date().toISOString(),
       });
@@ -484,7 +511,12 @@ exports.deleteSlot = async (req, res) => {
   try {
     const { id } = req.params;
     // admin_id may be passed as query param for audit logging
-    const adminId = req.query.adminId || req.body?.adminId || null;
+    const adminId    = req.query.adminId    || req.body?.adminId    || null;
+    const reasonCode = req.query.reasonCode || req.body?.reasonCode || null;
+    const reasonNote = req.query.reasonNote || req.body?.reasonNote || null;
+    const reasonText = (reasonCode || reasonNote)
+      ? reasonToPatientText(reasonCode, reasonNote)
+      : null;
 
     connection = await db.getConnection();
     await connection.beginTransaction();
@@ -553,6 +585,7 @@ exports.deleteSlot = async (req, res) => {
       const message =
         `Your ${appt.appointment_type || 'appointment'} appointment slot on ` +
         `${slotDateStr} at ${slotTimeStr} has been removed by the admin. ` +
+        (reasonText ? `Reason: ${reasonText} ` : '') +
         `Your booking has been cancelled. Please contact us to reschedule.`;
 
       // Write to notifications table
@@ -591,11 +624,13 @@ exports.deleteSlot = async (req, res) => {
           `Deleted slot id=${id} (${String(slot.slot_date).substring(0,10)} ${String(slot.slot_time).substring(0,5)}) ` +
           `for service_id=${slot.service_id}. Cancelled ${cancelledApptIds.length} appointment(s).`,
           JSON.stringify({
-            slot_id:           parseInt(id),
-            service_id:        slot.service_id,
-            slot_date:         String(slot.slot_date).substring(0, 10),
-            slot_time:         String(slot.slot_time).substring(0, 5),
+            slot_id:            parseInt(id),
+            service_id:         slot.service_id,
+            slot_date:          String(slot.slot_date).substring(0, 10),
+            slot_time:          String(slot.slot_time).substring(0, 5),
             cancelled_appt_ids: cancelledApptIds,
+            reason_code:        reasonCode || null,
+            reason_note:        reasonNote || null,
           }),
         ]
       );
@@ -620,12 +655,16 @@ exports.deleteSlot = async (req, res) => {
       for (const appt of linkedAppointments) {
         const slotDateStr = String(slot.slot_date).substring(0, 10);
         const slotTimeStr = String(slot.slot_time).substring(0, 5);
+        const socketMsg =
+          `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. ` +
+          (reasonText ? `Reason: ${reasonText} ` : '') +
+          `Please contact us to reschedule.`;
         req.app.locals.io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
           appointment_id:    appt.id,
           user_id:           appt.user_id,
           notification_type: 'appointment_cancelled',
           title:  'Appointment Slot Cancelled',
-          message: `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. Please contact us to reschedule.`,
+          message: socketMsg,
           is_read:    false,
           created_at: new Date().toISOString(),
         });
@@ -922,7 +961,10 @@ exports.deleteAllSlots = async (req, res) => {
   let connection;
   try {
     // adminId may be passed as query param for audit logging
-    const { serviceId, date, adminId } = req.query;
+    const { serviceId, date, adminId, reasonCode, reasonNote } = req.query;
+    const reasonText = (reasonCode || reasonNote)
+      ? reasonToPatientText(reasonCode, reasonNote)
+      : null;
 
     connection = await db.getConnection();
     await connection.beginTransaction();
@@ -1030,7 +1072,9 @@ exports.deleteAllSlots = async (req, res) => {
       const message =
         `Your ${appt.appointment_type || serviceName} appointment on ` +
         `${slotDateStr} at ${slotTimeStr} has been removed by the admin as part of a bulk ` +
-        `date cancellation. Your booking has been cancelled. Please contact us to reschedule.`;
+        `date cancellation. ` +
+        (reasonText ? `Reason: ${reasonText} ` : '') +
+        `Your booking has been cancelled. Please contact us to reschedule.`;
 
       // Write to notifications table
       try {
@@ -1080,6 +1124,8 @@ exports.deleteAllSlots = async (req, res) => {
             slot_ids:            slotIds,
             cancelled_appt_ids:  cancelledApptIds,
             bookings_cancelled:  cancelledApptIds.length,
+            reason_code:         reasonCode || null,
+            reason_note:         reasonNote || null,
           }),
         ]
       );
@@ -1113,12 +1159,16 @@ exports.deleteAllSlots = async (req, res) => {
 
       // Notify each affected patient via their personal socket room
       for (const { userId, apptId, slotDateStr, slotTimeStr } of notifiedUserIds) {
+        const socketMsg =
+          `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. ` +
+          (reasonText ? `Reason: ${reasonText} ` : '') +
+          `Please contact us to reschedule.`;
         req.app.locals.io.to(`user_${userId}`).emit('appointmentNotification', {
           appointment_id:    apptId,
           user_id:           userId,
           notification_type: 'appointment_cancelled',
           title:  'Appointment Slot Cancelled',
-          message: `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. Please contact us to reschedule.`,
+          message: socketMsg,
           is_read:    false,
           created_at: new Date().toISOString(),
         });
@@ -1292,7 +1342,7 @@ exports.getDateDetail = async (req, res) => {
 exports.rescheduleDate = async (req, res) => {
   let connection;
   try {
-    const { service_id, from_date, to_date, admin_id } = req.body;
+    const { service_id, from_date, to_date, admin_id, reason_code, reason_note } = req.body;
 
     // ── Validation ────────────────────────────────────────────────────────────
     if (!service_id || !from_date || !to_date)
@@ -1427,6 +1477,7 @@ exports.rescheduleDate = async (req, res) => {
       serviceName,
       adminId: admin_id || null,
       io: null, // emitted after commit below
+      reason: (reason_code || reason_note) ? { code: reason_code, note: reason_note } : null,
     });
 
     await connection.commit();
@@ -1442,13 +1493,21 @@ exports.rescheduleDate = async (req, res) => {
         appointmentCount: appointmentsWithNewTime.length,
         timestamp:       new Date().toISOString(),
       });
+      const reschedReasonText = (reason_code || reason_note)
+        ? reasonToPatientText(reason_code, reason_note)
+        : null;
       for (const appt of appointmentsWithNewTime) {
+        const socketMsg =
+          `Your appointment has been rescheduled from ${appt.old_date} to ${appt.new_date} ` +
+          `at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. ` +
+          (reschedReasonText ? `Reason: ${reschedReasonText} ` : '') +
+          `Please confirm or request a different time.`;
         req.app.locals.io.to(`user_${appt.user_id}`).emit('appointmentNotification', {
           appointment_id:    appt.id,
           user_id:           appt.user_id,
           notification_type: 'appointment_rescheduled',
           title:  'Appointment Rescheduled',
-          message: `Your appointment has been rescheduled from ${appt.old_date} to ${appt.new_date} at ${appt.new_time ? appt.new_time.substring(0,5) : ''}. Please confirm or request a different time.`,
+          message: socketMsg,
           is_read:    false,
           created_at: new Date().toISOString(),
         });
@@ -1500,6 +1559,8 @@ exports.editDateSlots = async (req, res) => {
       end_time,
       slot_duration_minutes,
       admin_id,
+      reason_code,
+      reason_note,
     } = req.body;
 
     // ── Validation ────────────────────────────────────────────────────────────
@@ -1651,10 +1712,14 @@ exports.editDateSlots = async (req, res) => {
       );
 
       const oldTimeFmt = (appt.old_time || '').substring(0,5);
+      const editReasonText = (reason_code || reason_note)
+        ? reasonToPatientText(reason_code, reason_note)
+        : null;
       const title   = 'Appointment Slot Changed';
       const message =
         `Your ${appt.appointment_type || serviceName} appointment at ${oldTimeFmt} on ${date} ` +
         `has been affected by a schedule change. Your original time slot no longer exists. ` +
+        (editReasonText ? `Reason: ${editReasonText} ` : '') +
         `Please contact us to confirm a new appointment time.`;
 
       try {
@@ -1692,6 +1757,8 @@ exports.editDateSlots = async (req, res) => {
               end_time,
               slot_duration_minutes: duration,
               displaced_appointments: displacedWithTimes.map(a => a.id),
+              reason_code:       reason_code || null,
+              reason_note:       reason_note || null,
             }),
           ]
         );

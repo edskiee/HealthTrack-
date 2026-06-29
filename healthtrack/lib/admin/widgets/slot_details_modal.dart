@@ -46,6 +46,7 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
   bool _isLoading = true;
   String _loadError = '';
   final Set<int> _deletingSlotIds = {};
+  bool _isDeletingAll = false;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   String get _dateStr =>
@@ -358,6 +359,253 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
         },
       ),
     );
+  }
+
+  // ── Delete All Slots for this date ───────────────────────────────────────
+  Future<void> _handleDeleteAllSlots() async {
+    if (widget.serviceId == null) return;
+
+    final total  = _totalSlots;
+    final booked = _booked;
+
+    // Step 1 — show confirmation dialog (requires typing "DELETE" if any bookings)
+    final confirmed = await _showDeleteAllConfirmDialog(
+      total:  total,
+      booked: booked,
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _isDeletingAll = true);
+
+    try {
+      final result = await AppointmentSlotService.deleteAllSlotsForDate(
+        serviceId: widget.serviceId!,
+        date:      _dateStr,
+        // adminId is carried in the JWT; backend also accepts it as a query
+        // param for audit log — pass null here (the backend auth middleware
+        // resolves it from the token automatically).
+        adminId:   null,
+      );
+
+      if (!mounted) return;
+
+      final cancelledCount =
+          (result['data']?['appointmentsCancelled'] as int?) ?? 0;
+      final deletedCount =
+          (result['data']?['deletedCount'] as int?) ?? total;
+
+      setState(() {
+        _slots = [];
+        _summary = {
+          'total': 0, 'available': 0, 'booked': 0, 'fully_booked': 0
+        };
+        _isDeletingAll = false;
+      });
+
+      final msg = cancelledCount > 0
+          ? '$deletedCount slot(s) deleted. $cancelledCount appointment(s) cancelled and patient(s) notified.'
+          : '$deletedCount slot(s) deleted successfully.';
+      MessageUtils.showSuccessMessage(context, msg, title: 'All Slots Deleted');
+
+      widget.onSlotsUpdated?.call();
+
+      // Auto-close — the date has no slots left
+      if (mounted) Navigator.of(context).pop();
+
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isDeletingAll = false);
+      MessageUtils.showErrorMessage(
+          context, e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  /// Confirmation dialog for bulk delete.
+  ///
+  /// If [booked] > 0 the admin must type "DELETE" before the confirm button
+  /// becomes active, preventing accidental bulk cancellation of active bookings.
+  Future<bool> _showDeleteAllConfirmDialog({
+    required int total,
+    required int booked,
+  }) async {
+    final TextEditingController confirmCtrl = TextEditingController();
+    final bool needsTypedConfirm = booked > 0;
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            return StatefulBuilder(
+              builder: (ctx, setDialogState) {
+                final canConfirm = !needsTypedConfirm ||
+                    confirmCtrl.text.trim().toUpperCase() == 'DELETE';
+
+                return AlertDialog(
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                  title: Row(children: [
+                    Icon(Icons.delete_sweep,
+                        color: Colors.red.shade700, size: 24),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Delete All Slots',
+                        style: TextStyle(fontSize: 17),
+                      ),
+                    ),
+                  ]),
+                  content: SizedBox(
+                    width: 420,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ── Summary ───────────────────────────────────────
+                        Text(
+                          'You are about to delete all $total slot(s) for '
+                          '${DateFormat('MMMM d, yyyy').format(widget.selectedDate)}.',
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // ── Booked-slots warning ──────────────────────────
+                        if (booked > 0) ...[
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.red.shade300),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Icon(Icons.warning_amber_rounded,
+                                      color: Colors.red.shade700, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      '$booked of these slot(s) have active bookings.',
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.red.shade800),
+                                    ),
+                                  ),
+                                ]),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Deleting will cancel those appointments and '
+                                  'immediately notify the affected patients via '
+                                  'in-app notification.',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: Colors.red.shade700),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Typed confirmation field
+                          Text(
+                            'Type DELETE to confirm:',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade800),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: confirmCtrl,
+                            autofocus: true,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: InputDecoration(
+                              hintText: 'DELETE',
+                              hintStyle: TextStyle(color: Colors.grey.shade400),
+                              filled: true,
+                              fillColor: Colors.grey.shade50,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                    color: Colors.red.shade300),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                    color: Colors.red.shade300),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                    color: Colors.red.shade600, width: 2),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
+                            ),
+                            onChanged: (_) => setDialogState(() {}),
+                          ),
+                        ] else ...[
+                          // No bookings — simple info banner
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border:
+                                  Border.all(color: Colors.orange.shade200),
+                            ),
+                            child: Row(children: [
+                              Icon(Icons.info_outline,
+                                  size: 16,
+                                  color: Colors.orange.shade700),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  'None of these slots have active bookings. '
+                                  'They will be permanently removed.',
+                                  style: TextStyle(fontSize: 13),
+                                ),
+                              ),
+                            ]),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Cancel'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: canConfirm
+                          ? () => Navigator.pop(ctx, true)
+                          : null,
+                      icon: const Icon(Icons.delete_sweep, size: 16),
+                      label: Text(
+                        booked > 0
+                            ? 'Delete All & Cancel $booked Booking(s)'
+                            : 'Delete All $total Slot(s)',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: Colors.red.shade200,
+                        disabledForegroundColor: Colors.white70,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        ) ??
+        false;
   }
 
   // ── Open Edit Slot Config modal ───────────────────────────────────────────
@@ -857,7 +1105,7 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
             Tooltip(
               message: 'Move all slots to a different date',
               child: OutlinedButton.icon(
-                onPressed: _openRescheduleDateModal,
+                onPressed: _isDeletingAll ? null : _openRescheduleDateModal,
                 icon: const Icon(Icons.calendar_month, size: 16),
                 label: const Text('Reschedule Date',
                     style: TextStyle(fontSize: 13)),
@@ -877,9 +1125,8 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
             Tooltip(
               message: 'Change time range or slot duration',
               child: OutlinedButton.icon(
-                onPressed: _openEditConfigModal,
-                icon:
-                    const Icon(Icons.edit_calendar, size: 16),
+                onPressed: _isDeletingAll ? null : _openEditConfigModal,
+                icon: const Icon(Icons.edit_calendar, size: 16),
                 label: const Text('Edit Config',
                     style: TextStyle(fontSize: 13)),
                 style: OutlinedButton.styleFrom(
@@ -892,13 +1139,64 @@ class _SlotDetailsModalState extends State<SlotDetailsModal> {
                 ),
               ),
             ),
+            const SizedBox(width: 10),
+
+            // Delete All Slots
+            Tooltip(
+              message: 'Delete all slots for this date',
+              child: _isDeletingAll
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.red.shade600),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text('Deleting…',
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.red.shade700)),
+                        ],
+                      ),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _handleDeleteAllSlots,
+                      icon: const Icon(Icons.delete_sweep, size: 16),
+                      label: Text(
+                        'Delete All Slots ($_totalSlots)',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red.shade700,
+                        side: BorderSide(color: Colors.red.shade400),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+            ),
           ],
 
           const Spacer(),
 
           // ── Close (right side) ───────────────────────────────────────────
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: _isDeletingAll ? null : () => Navigator.pop(context),
             child: const Text('Close'),
           ),
         ],

@@ -446,7 +446,56 @@ class AppointmentSlotService {
     throw lastException ?? Exception("Failed to book slot");
   }
 
-  /// Delete all appointment slots with optional filtering
+  /// Delete all appointment slots for a specific date + service (bulk admin action).
+  ///
+  /// Passes [adminId] for server-side audit logging.
+  /// The backend will cascade-cancel any active appointments and send
+  /// in-app notifications to affected patients.
+  static Future<Map<String, dynamic>> deleteAllSlotsForDate({
+    required int serviceId,
+    required String date,
+    String? adminId,
+  }) async {
+    Exception? lastException;
+
+    final queryParams = <String, String>{
+      'serviceId': serviceId.toString(),
+      'date': date,
+    };
+    if (adminId != null && adminId.isNotEmpty) {
+      queryParams['adminId'] = adminId;
+    }
+
+    final queryString = queryParams.entries
+        .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+        .join('&');
+
+    final urlPath = '/appointment-slots?$queryString';
+
+    for (final url in fallbackBaseUrls) {
+      try {
+        final response = await http.delete(
+          Uri.parse('$url$urlPath'),
+          headers: await _adminHeaders(),
+        ).timeout(const Duration(seconds: 30));
+
+        if (response.statusCode == 200) {
+          return json.decode(response.body) as Map<String, dynamic>;
+        } else {
+          final data = json.decode(response.body);
+          lastException = Exception(
+              data['message'] ?? 'HTTP ${response.statusCode}: Failed to delete all slots');
+        }
+      } on TimeoutException {
+        lastException = Exception('Request timed out. Please check your connection and try again.');
+      } catch (e) {
+        lastException = Exception('Failed to delete all slots: $e');
+      }
+    }
+    throw lastException ?? Exception('Failed to delete all slots');
+  }
+
+  /// Delete all appointment slots with optional filtering (generic admin utility).
   static Future<Map<String, dynamic>> deleteAllSlots({
     int? serviceId,
     String? date,

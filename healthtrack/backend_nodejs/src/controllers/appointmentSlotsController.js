@@ -907,24 +907,36 @@ exports.getSlotsAvailabilityForMonth = async (req, res) => {
   }
 };
 
-// ─── Delete all / filtered slots (admin) ─────────────────────────────────────
+// ─── Delete all / filtered slots (admin) — with cascade + notifications ───────
+// DELETE /appointment-slots?serviceId=&date=&adminId=
+//
+// Mirrors the quality of deleteSlot() but applied to every slot matching the
+// filter in a single DB transaction:
+//   1. Lock + fetch all matching slots
+//   2. Find every active appointment across those slots (slot_id FK + date/time fallback)
+//   3. Cancel each appointment + write in-app notification (notifications + legacy table)
+//   4. Hard-delete all slot rows
+//   5. Write a single bulk audit log entry
+//   6. Commit — then emit socket events per-patient + broadcast slotsUpdated
 exports.deleteAllSlots = async (req, res) => {
   let connection;
   try {
-    const { serviceId, date } = req.query;
+    // adminId may be passed as query param for audit logging
+    const { serviceId, date, adminId } = req.query;
 
     connection = await db.getConnection();
     await connection.beginTransaction();
 
+    // ── 1. Lock + fetch all matching slots ─────────────────────────────────
     let whereClause = 'WHERE 1=1';
-    const params = [];
-
-    if (serviceId) { whereClause += ' AND service_id = ?';  params.push(serviceId); }
-    if (date)      { whereClause += ' AND slot_date = ?';   params.push(date); }
+    const filterParams = [];
+    if (serviceId) { whereClause += ' AND service_id = ?'; filterParams.push(serviceId); }
+    if (date)      { whereClause += ' AND slot_date = ?';  filterParams.push(date); }
 
     const [slotsToDelete] = await connection.execute(
-      `SELECT id, service_id, slot_date FROM appointment_slots ${whereClause}`,
-      params
+      `SELECT id, service_id, slot_date, slot_time, capacity, booked_count
+       FROM appointment_slots ${whereClause} FOR UPDATE`,
+      filterParams
     );
 
     if (slotsToDelete.length === 0) {
@@ -932,14 +944,155 @@ exports.deleteAllSlots = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No appointment slots found matching the criteria' });
     }
 
-    const [result] = await connection.execute(
+    const slotIds        = slotsToDelete.map(s => s.id);
+    const placeholders   = slotIds.map(() => '?').join(',');
+
+    // ── 2. Find all active appointments across these slots ──────────────────
+    // Try slot_id FK first; fall back to date+time match per-slot.
+    let linkedAppointments = [];
+
+    try {
+      const [bySlotId] = await connection.execute(
+        `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time,
+                a.appointment_type, a.status,
+                u.full_name AS user_name
+         FROM appointments a
+         LEFT JOIN users u ON a.user_id = u.id
+         WHERE a.slot_id IN (${placeholders})
+           AND a.status NOT IN ('cancelled','completed','no_show')`,
+        slotIds
+      );
+      linkedAppointments = bySlotId;
+    } catch (_) {
+      // slot_id column not present — use date/time fallback below
+    }
+
+    if (linkedAppointments.length === 0 && slotsToDelete.some(s => s.booked_count > 0)) {
+      // Build a date+time OR clause to catch all booked slots in one query
+      const dtPairs = slotsToDelete
+        .filter(s => s.booked_count > 0)
+        .map(s => `(a.appointment_date = ? AND TIME(a.appointment_time) = TIME(?))`)
+        .join(' OR ');
+
+      if (dtPairs) {
+        const dtParams = [];
+        slotsToDelete
+          .filter(s => s.booked_count > 0)
+          .forEach(s => {
+            dtParams.push(String(s.slot_date).substring(0, 10));
+            dtParams.push(String(s.slot_time).substring(0, 8));
+          });
+
+        try {
+          const [byDateTime] = await connection.execute(
+            `SELECT a.id, a.user_id, a.appointment_date, a.appointment_time,
+                    a.appointment_type, a.status,
+                    u.full_name AS user_name
+             FROM appointments a
+             LEFT JOIN users u ON a.user_id = u.id
+             WHERE (${dtPairs})
+               AND a.status NOT IN ('cancelled','completed','no_show')`,
+            dtParams
+          );
+          linkedAppointments = byDateTime;
+        } catch (dtErr) {
+          console.warn('⚠️ deleteAllSlots: date/time fallback query failed:', dtErr.message);
+        }
+      }
+    }
+
+    // Resolve service name for notification messages
+    let serviceName = `Service ${serviceId || '?'}`;
+    if (serviceId) {
+      try {
+        const [svcRows] = await connection.execute(
+          'SELECT service_name FROM services_config WHERE id = ?', [serviceId]
+        );
+        if (svcRows.length > 0) serviceName = svcRows[0].service_name;
+      } catch (_) {}
+    }
+
+    // ── 3. Cancel each linked appointment + write in-app notifications ──────
+    const cancelledApptIds = [];
+    const notifiedUserIds  = []; // track for socket emit after commit
+
+    for (const appt of linkedAppointments) {
+      // Cancel the appointment
+      await connection.execute(
+        'UPDATE appointments SET status = \'cancelled\', updated_at = NOW() WHERE id = ?',
+        [appt.id]
+      );
+      cancelledApptIds.push(appt.id);
+
+      const slotDateStr = String(appt.appointment_date).substring(0, 10);
+      const slotTimeStr = String(appt.appointment_time).substring(0, 5);
+      const title   = 'Appointment Slot Cancelled';
+      const message =
+        `Your ${appt.appointment_type || serviceName} appointment on ` +
+        `${slotDateStr} at ${slotTimeStr} has been removed by the admin as part of a bulk ` +
+        `date cancellation. Your booking has been cancelled. Please contact us to reschedule.`;
+
+      // Write to notifications table
+      try {
+        await connection.execute(
+          `INSERT INTO notifications
+             (user_id, appointment_id, notification_type, title, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_cancelled', ?, ?, 0, NOW(), NOW())`,
+          [appt.user_id, appt.id, title, message]
+        );
+      } catch (notifErr) {
+        console.warn(`⚠️ deleteAllSlots: notification insert failed for appt ${appt.id}:`, notifErr.message);
+      }
+
+      // Write to legacy appointment_notifications table
+      try {
+        await connection.execute(
+          `INSERT INTO appointment_notifications
+             (appointment_id, user_id, notification_type, message, is_read, created_at, updated_at)
+           VALUES (?, ?, 'appointment_cancellation', ?, 0, NOW(), NOW())`,
+          [appt.id, appt.user_id, message]
+        );
+      } catch (_) {}
+
+      notifiedUserIds.push({ userId: appt.user_id, apptId: appt.id, slotDateStr, slotTimeStr });
+    }
+
+    // ── 4. Hard-delete all matching slot rows ──────────────────────────────
+    await connection.execute(
       `DELETE FROM appointment_slots ${whereClause}`,
-      params
+      filterParams
     );
 
+    // ── 5. Write a single bulk audit log entry ─────────────────────────────
+    const uniqueDates = [...new Set(slotsToDelete.map(s => String(s.slot_date).substring(0, 10)))];
+    try {
+      await connection.execute(
+        `INSERT INTO audit_logs (admin_id, action, description, metadata, created_at)
+         VALUES (?, 'bulk_delete_all_slots', ?, ?, NOW())`,
+        [
+          adminId || null,
+          `Bulk deleted ${slotsToDelete.length} slot(s) for service_id=${serviceId || 'all'}, ` +
+          `date(s)=${uniqueDates.join(', ')}. Cancelled ${cancelledApptIds.length} appointment(s).`,
+          JSON.stringify({
+            service_id:          serviceId ? parseInt(serviceId) : null,
+            dates:               uniqueDates,
+            total_slots_deleted: slotsToDelete.length,
+            slot_ids:            slotIds,
+            cancelled_appt_ids:  cancelledApptIds,
+            bookings_cancelled:  cancelledApptIds.length,
+          }),
+        ]
+      );
+    } catch (auditErr) {
+      console.warn('⚠️ deleteAllSlots: audit log failed:', auditErr.message);
+    }
+
+    // ── 6. Commit ──────────────────────────────────────────────────────────
     await connection.commit();
 
-    if (req.app.locals.io && slotsToDelete.length > 0) {
+    // ── 7. Emit real-time events (after commit — DB is consistent now) ──────
+    if (req.app.locals.io) {
+      // Broadcast slot change so all open admin calendars refresh
       const slotsByService = {};
       slotsToDelete.forEach(s => {
         if (!slotsByService[s.service_id]) slotsByService[s.service_id] = [];
@@ -948,20 +1101,42 @@ exports.deleteAllSlots = async (req, res) => {
       Object.keys(slotsByService).forEach(sid => {
         const ss = slotsByService[sid];
         req.app.locals.io.emit('slotsUpdated', {
-          action: 'bulk_deleted',
+          action:    'bulk_deleted',
           serviceId: parseInt(sid),
-          slotIds: ss.map(s => s.id),
-          dates: [...new Set(ss.map(s => s.slot_date))],
-          count: ss.length,
+          slotIds:   ss.map(s => s.id),
+          dates:     [...new Set(ss.map(s => String(s.slot_date).substring(0, 10)))],
+          count:     ss.length,
+          cancelledAppointments: cancelledApptIds.length,
           timestamp: new Date().toISOString(),
         });
       });
+
+      // Notify each affected patient via their personal socket room
+      for (const { userId, apptId, slotDateStr, slotTimeStr } of notifiedUserIds) {
+        req.app.locals.io.to(`user_${userId}`).emit('appointmentNotification', {
+          appointment_id:    apptId,
+          user_id:           userId,
+          notification_type: 'appointment_cancelled',
+          title:  'Appointment Slot Cancelled',
+          message: `Your appointment on ${slotDateStr} at ${slotTimeStr} has been cancelled. Please contact us to reschedule.`,
+          is_read:    false,
+          created_at: new Date().toISOString(),
+        });
+      }
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: `${result.affectedRows} appointment slot(s) deleted successfully`,
-      data: { deletedCount: result.affectedRows, serviceId: serviceId || null, date: date || null },
+      message: cancelledApptIds.length > 0
+        ? `${slotsToDelete.length} slot(s) deleted. ${cancelledApptIds.length} appointment(s) cancelled and patient(s) notified.`
+        : `${slotsToDelete.length} appointment slot(s) deleted successfully.`,
+      data: {
+        deletedCount:          slotsToDelete.length,
+        cancelledApptIds,
+        appointmentsCancelled: cancelledApptIds.length,
+        serviceId:             serviceId || null,
+        date:                  date      || null,
+      },
     });
   } catch (err) {
     if (connection) await connection.rollback();

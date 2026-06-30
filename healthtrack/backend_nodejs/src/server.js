@@ -38,6 +38,7 @@ const appointmentRemindersRoutes = require("./routes/appointmentReminders");
 const systemSettingsRoutes      = require("./routes/systemSettings");
 const referralsRoutes           = require("./routes/referrals");
 const testNotificationsRoutes   = require("./routes/testNotifications");
+const vaccineRoutes             = require("./routes/vaccines");
 
 // ─── Service / Setup Imports ──────────────────────────────────────────────────
 const dbPool                = require("./config/db");
@@ -48,6 +49,7 @@ const { createUserDeviceTokensTable } = require("./services/appointmentPushServi
 const { createAppointmentRemindersTable } = require("./setup/appointmentReminderSetup");
 const { startNotificationScheduler }  = require("./services/notificationScheduler");
 const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
+const { setupVaccineTables } = require("./setup/vaccineTableSetup");
 
 /**
  * Update reminder system_settings to include same-day reminders (days_before=0).
@@ -174,6 +176,7 @@ app.use("/fcm-notifications",    fcmNotificationsRoutes);
 app.use("/appointment-reminders", appointmentRemindersRoutes);
 app.use("/system-settings",      systemSettingsRoutes);
 app.use("/referrals",            referralsRoutes);
+app.use("/vaccines",             vaccineRoutes);
 app.use("/test",                 testNotificationsRoutes); // disabled in production
 
 // ─── Health Check Endpoints ───────────────────────────────────────────────────
@@ -366,6 +369,7 @@ async function bootstrap() {
   await migrateNotificationsTable();
   await migrateAppointmentSlotsCapacity();
   await migrateReminderSettings();
+  await setupVaccineTables();
 
   initializeScheduledNotifications();
 

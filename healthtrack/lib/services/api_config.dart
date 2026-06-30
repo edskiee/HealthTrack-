@@ -83,4 +83,10 @@ class ApiConfig {
   static const String deleteReminderEndpoint = '/reminders';
   static const String sendReminderNotificationEndpoint = '/reminder-notifications/send-reminder';
   static const String getUpcomingRemindersEndpoint = '/reminder-notifications';
+
+  // ── Vaccine Tracking endpoints ─────────────────────────────────────────────
+  static const String getVaccineDashboardEndpoint = '/vaccines/dashboard';
+  static const String getVaccineCardEndpoint = '/vaccines/card';
+  static const String postVaccineRecordEndpoint = '/vaccines/record';
+  static const String deleteVaccineRecordEndpoint = '/vaccines/record';
 }

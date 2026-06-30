@@ -29,6 +29,9 @@ class WebSocketService {
 
   /// Multiple listeners for appointment record updates (avoids one screen clobbering another).
   final List<void Function(Map<String, dynamic>)> _appointmentUpdatedListeners = [];
+
+  /// Multiple listeners for vaccine record updates (vaccineRecordUpdated Socket.IO event).
+  final List<void Function(Map<String, dynamic>)> _vaccineRecordUpdatedListeners = [];
   
   WebSocketService._privateConstructor();
   
@@ -65,6 +68,16 @@ class WebSocketService {
 
   void removeAppointmentNotificationListener(void Function(Map<String, dynamic>) listener) {
     _appointmentNotificationListeners.remove(listener);
+  }
+
+  void addVaccineRecordUpdatedListener(void Function(Map<String, dynamic>) listener) {
+    if (!_vaccineRecordUpdatedListeners.contains(listener)) {
+      _vaccineRecordUpdatedListeners.add(listener);
+    }
+  }
+
+  void removeVaccineRecordUpdatedListener(void Function(Map<String, dynamic>) listener) {
+    _vaccineRecordUpdatedListeners.remove(listener);
   }
   
   // Get the correct WebSocket URL based on API service
@@ -224,6 +237,25 @@ class WebSocketService {
       // Also notify the legacy callback if set
       if (onSlotsUpdated != null) {
         onSlotsUpdated!();
+      }
+    });
+
+    // Listen for vaccine record updates (admin marks a dose as given/removed)
+    _socket?.on('vaccineRecordUpdated', (data) {
+      print('Vaccine record updated: $data');
+      Map<String, dynamic>? payload;
+      if (data is Map) {
+        try { payload = Map<String, dynamic>.from(data); } catch (_) {}
+      }
+      if (payload != null) {
+        for (final listener in List<void Function(Map<String, dynamic>)>.from(
+            _vaccineRecordUpdatedListeners)) {
+          try {
+            listener(payload);
+          } catch (e) {
+            print('vaccineRecordUpdated listener error: $e');
+          }
+        }
       }
     });
   }
@@ -488,6 +520,7 @@ class WebSocketService {
     _slotsUpdatedListeners.clear();
     _appointmentNotificationListeners.clear();
     _appointmentUpdatedListeners.clear();
+    _vaccineRecordUpdatedListeners.clear();
     onAppointmentNotification = null;
     onAppointmentUpdated = null;
     onSlotsUpdated = null;

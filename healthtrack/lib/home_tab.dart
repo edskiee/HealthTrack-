@@ -7,6 +7,7 @@ import 'package:healthtrack/services/appointment_service.dart';
 import 'package:healthtrack/services/health_tracking_service.dart';
 import 'package:healthtrack/services/websocket_service.dart';
 import 'package:healthtrack/widgets/user/health_tracking_card.dart';
+import 'package:healthtrack/widgets/user/vaccine_dashboard_widget.dart';
 
 class HomeTab extends StatefulWidget {
   final void Function(String action) onQuickActionSelected;
@@ -468,6 +469,12 @@ const SizedBox(height: 24),
           _buildHealthTrackingModule(),
 
           const SizedBox(height: 28),
+
+          // Vaccine Tracking — only for immunization service type
+          if (UserSession.instance.serviceType != 'maternal') ...[
+            const VaccineDashboardWidget(),
+            const SizedBox(height: 28),
+          ],
 
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,

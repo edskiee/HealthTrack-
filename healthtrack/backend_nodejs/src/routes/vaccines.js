@@ -76,7 +76,7 @@ router.get("/dashboard/:patientId", authenticateUser, async (req, res) => {
   try {
     // 1. Patient row
     const [patients] = await db.execute(
-      `SELECT id, COALESCE(dob, date_of_birth) AS dob,
+      `SELECT id, dob,
               child_fullname, mother_fullname
        FROM patients WHERE id = ? LIMIT 1`,
       [patientId]
@@ -207,7 +207,7 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
 
   try {
     const [patients] = await db.execute(
-      `SELECT id, COALESCE(dob, date_of_birth) AS dob,
+      `SELECT id, dob,
               child_fullname, mother_fullname
        FROM patients WHERE id = ? LIMIT 1`,
       [patientId]

@@ -373,7 +373,8 @@ async function bootstrap() {
   await migrateReminderSettings();
   await setupVaccineTables();
   await migrateDobVerification();
-  await backfillVaccineRecords(); // seeds pending records for existing patients (idempotent)
+  // ⚠️ backfillVaccineRecords is intentionally NOT awaited here.
+  // It runs after the server is already listening so it never blocks port binding.
 
   initializeScheduledNotifications();
 
@@ -381,6 +382,11 @@ async function bootstrap() {
     console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
     console.log(`📡 Socket.IO running on ws://0.0.0.0:${PORT}`);
     console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
+
+    // Run backfill in the background — does not block port binding or incoming requests
+    backfillVaccineRecords().catch(err =>
+      console.error("❌ Background backfillVaccineRecords error:", err.message)
+    );
   }).on("error", (err) => {
     if (err.code === "EADDRINUSE") {
       console.error(`❌ Port ${PORT} is already in use.`);

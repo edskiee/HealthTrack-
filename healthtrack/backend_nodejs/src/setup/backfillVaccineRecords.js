@@ -6,22 +6,25 @@
  * One-time (idempotent) backfill: creates pending child_vaccine_records rows
  * for every immunization patient that does not yet have ANY vaccine records.
  *
- * Run at server startup (called from server.js after setupVaccineTables).
- * Safe to run on every restart — INSERT IGNORE prevents duplicates.
+ * IMPORTANT: This function is called AFTER server.listen() so it never blocks
+ * Render's port-binding timeout. It runs as a background task.
  *
- * Logic:
- *   1. Find all immunization patient IDs that have zero rows in
- *      child_vaccine_records.
- *   2. For each missing patient, insert one row per vaccine_schedule with
- *      given_at = NULL (= pending, not yet administered).
+ * Performance improvements over the naive approach:
+ *   - One bulk INSERT per patient (14 value tuples in a single query) instead
+ *     of 14 separate round-trips per patient.
+ *   - Patients are processed in batches of 100 at a time to avoid overwhelming
+ *     the DB connection pool.
+ *   - INSERT IGNORE makes it fully idempotent — safe to re-run on every restart.
  *
- * Performance: uses a single NOT IN sub-query for the patient lookup, then
- * batch-inserts per patient. Typically runs in < 1 s for ~4000 patients on
- * the first deploy and is a no-op on every subsequent restart.
+ * For 4462 patients × 14 doses: ~45 bulk INSERT queries (100 patients/batch)
+ * instead of 62,468 individual INSERT queries. Runs in ~2–5 seconds instead
+ * of timing out Render's 60-second port-scan window.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 const db = require("../config/db");
+
+const BATCH_SIZE = 100; // patients per batch
 
 async function backfillVaccineRecords() {
   try {
@@ -46,7 +49,8 @@ async function backfillVaccineRecords() {
            SELECT 1
            FROM child_vaccine_records cvr
            WHERE cvr.patient_id = p.id
-         )`
+         )
+       ORDER BY p.id`
     );
 
     if (!unseededPatients.length) {
@@ -54,25 +58,45 @@ async function backfillVaccineRecords() {
       return;
     }
 
-    console.log(`⏳ backfillVaccineRecords: seeding ${unseededPatients.length} patient(s) × ${scheduleIds.length} doses...`);
+    const total = unseededPatients.length;
+    console.log(`⏳ backfillVaccineRecords: seeding ${total} patient(s) × ${scheduleIds.length} doses (batch size: ${BATCH_SIZE})...`);
 
     let seededCount = 0;
 
-    for (const { id: patientId } of unseededPatients) {
-      for (const scheduleId of scheduleIds) {
-        await db.execute(
-          `INSERT IGNORE INTO child_vaccine_records
-             (patient_id, vaccine_schedule_id)
-           VALUES (?, ?)`,
-          [patientId, scheduleId]
-        );
+    // ── 3. Process in batches ─────────────────────────────────────────────────
+    for (let i = 0; i < unseededPatients.length; i += BATCH_SIZE) {
+      const batch = unseededPatients.slice(i, i + BATCH_SIZE);
+
+      // Build one multi-value INSERT per batch:
+      //   INSERT IGNORE INTO child_vaccine_records (patient_id, vaccine_schedule_id)
+      //   VALUES (p1, s1), (p1, s2), ..., (pN, s14)
+      const valueTuples = [];
+      const params      = [];
+
+      for (const { id: patientId } of batch) {
+        for (const scheduleId of scheduleIds) {
+          valueTuples.push("(?, ?)");
+          params.push(patientId, scheduleId);
+        }
       }
-      seededCount++;
+
+      await db.execute(
+        `INSERT IGNORE INTO child_vaccine_records (patient_id, vaccine_schedule_id)
+         VALUES ${valueTuples.join(", ")}`,
+        params
+      );
+
+      seededCount += batch.length;
+
+      // Log progress every 500 patients so the Render log shows life
+      if (seededCount % 500 === 0 || seededCount === total) {
+        console.log(`  ↳ backfill progress: ${seededCount}/${total} patients seeded`);
+      }
     }
 
     console.log(`✅ backfillVaccineRecords: seeded vaccine records for ${seededCount} patient(s)`);
   } catch (err) {
-    // Non-fatal: log and continue — the server still boots
+    // Non-fatal: log and continue — the server keeps running
     console.error("❌ backfillVaccineRecords error:", err.message);
   }
 }

@@ -198,6 +198,15 @@ router.get("/dashboard/:patientId", authenticateUser, async (req, res) => {
 // ─── GET /vaccines/card/:patientId ───────────────────────────────────────────
 /**
  * Full vaccine card — every vaccine group with per-dose live status.
+ *
+ * Enhanced response includes:
+ *   total_doses_required   — total rows in vaccine_schedules
+ *   total_doses_completed  — doses with given_at set for this patient
+ *   fully_up_to_date       — true only when no due/overdue doses remain
+ *   overall_status         — "up_to_date" | "action_needed" | "overdue"
+ *   pending_doses          — flat list of non-completed doses sorted by urgency
+ *                            (overdue first, then due_soon, then not_yet_due/locked)
+ *   sex                    — child sex from patients table
  */
 router.get("/card/:patientId", authenticateUser, async (req, res) => {
   const patientId = parseInt(req.params.patientId, 10);
@@ -207,7 +216,7 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
 
   try {
     const [patients] = await db.execute(
-      `SELECT id, dob,
+      `SELECT id, dob, sex,
               child_fullname, mother_fullname
        FROM patients WHERE id = ? LIMIT 1`,
       [patientId]
@@ -239,6 +248,13 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
     let nextDue      = null;
     let overdueAlert = null;
 
+    // Progress counters
+    let totalDosesRequired = schedules.length;
+    let totalDosesCompleted = 0;
+
+    // Pending list (non-completed doses in priority order)
+    const pendingDoses = [];
+
     for (const sched of schedules) {
       if (!vaccineMap.has(sched.vaccine_key)) {
         vaccineMap.set(sched.vaccine_key, {
@@ -260,7 +276,14 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
       }
 
       const dueDateEstimate = addDaysToDate(patient.dob, sched.due_days_from_birth);
+      const maxDateEstimate  = addDaysToDate(patient.dob, sched.due_days_max);
 
+      // Progress tracking
+      if (status === "completed") {
+        totalDosesCompleted++;
+      }
+
+      // Overdue/next alerts (first occurrence only)
       if (!overdueAlert && status === "overdue") {
         overdueAlert = { vaccine_name: sched.vaccine_name, dose_label: sched.dose_label };
       }
@@ -272,6 +295,40 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
           due_date_estimate: dueDateEstimate,
           status,
         };
+      }
+
+      // Build pending list entry for non-completed doses
+      if (status !== "completed") {
+        // Compute days overdue (positive = overdue, negative = still has time)
+        let daysOverdue = null;
+        if (status === "overdue" && patient.dob) {
+          daysOverdue = age - sched.due_days_max;
+        }
+
+        // Locked item: find the blocking dose name
+        let waitingFor = null;
+        if (status === "locked" && sched.dose_number > 1) {
+          // The dose immediately before this one in the same vaccine_key
+          const prevSched = schedules.find(
+            s => s.vaccine_key === sched.vaccine_key && s.dose_number === sched.dose_number - 1
+          );
+          if (prevSched) {
+            waitingFor = `${prevSched.vaccine_name} (${prevSched.dose_label})`;
+          }
+        }
+
+        pendingDoses.push({
+          vaccine_name:      sched.vaccine_name,
+          vaccine_key:       sched.vaccine_key,
+          dose_number:       sched.dose_number,
+          dose_label:        sched.dose_label,
+          schedule_label:    sched.schedule_label,
+          due_date_estimate: dueDateEstimate,
+          max_date_estimate: maxDateEstimate,
+          days_overdue:      daysOverdue,
+          status,
+          waiting_for:       waitingFor,
+        });
       }
 
       vaccineMap.get(sched.vaccine_key).doses.push({
@@ -288,6 +345,34 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
       });
     }
 
+    // Sort pending: overdue first (by days_overdue desc), then due_soon, then not_yet_due, then locked
+    const statusPriority = { overdue: 0, due_soon: 1, not_yet_due: 2, locked: 3 };
+    pendingDoses.sort((a, b) => {
+      const pa = statusPriority[a.status] ?? 4;
+      const pb = statusPriority[b.status] ?? 4;
+      if (pa !== pb) return pa - pb;
+      // Within overdue: most overdue first
+      if (a.status === "overdue" && b.status === "overdue") {
+        return (b.days_overdue || 0) - (a.days_overdue || 0);
+      }
+      return 0;
+    });
+
+    // Overall status label
+    const hasOverdue  = pendingDoses.some(d => d.status === "overdue");
+    const hasDueSoon  = pendingDoses.some(d => d.status === "due_soon");
+    let overallStatus;
+    if (hasOverdue) {
+      overallStatus = "overdue";
+    } else if (hasDueSoon) {
+      overallStatus = "action_needed";
+    } else {
+      overallStatus = "up_to_date";
+    }
+
+    // Fully up to date: no overdue or due_soon doses exist
+    const fullyUpToDate = !hasOverdue && !hasDueSoon;
+
     const dobStr = patient.dob
       ? new Date(patient.dob).toISOString().split("T")[0]
       : null;
@@ -295,12 +380,18 @@ router.get("/card/:patientId", authenticateUser, async (req, res) => {
     return res.json({
       success: true,
       data: {
-        child_name:    patient.child_fullname || patient.mother_fullname || "Unknown",
-        dob:           dobStr,
-        age_in_days:   age,
-        vaccines:      Array.from(vaccineMap.values()),
-        next_due:      nextDue,
-        overdue_alert: overdueAlert,
+        child_name:             patient.child_fullname || patient.mother_fullname || "Unknown",
+        dob:                    dobStr,
+        sex:                    patient.sex || null,
+        age_in_days:            age,
+        total_doses_required:   totalDosesRequired,
+        total_doses_completed:  totalDosesCompleted,
+        fully_up_to_date:       fullyUpToDate,
+        overall_status:         overallStatus,
+        vaccines:               Array.from(vaccineMap.values()),
+        pending_doses:          pendingDoses,
+        next_due:               nextDue,
+        overdue_alert:          overdueAlert,
       },
     });
   } catch (err) {

@@ -128,6 +128,24 @@ const userRegister = async (req, res) => {
           message: "Username, password, child name, mother name, date of birth, and sex are required",
         });
       }
+
+      // ── Sanity check: child DOB must not be more than 5 years ago ──────────
+      // This prevents the mother's DOB (or any other implausible date) from
+      // silently corrupting the child record and breaking vaccine schedules.
+      const childBirth = new Date(dob);
+      if (!isNaN(childBirth.getTime())) {
+        const fiveYearsAgo = new Date();
+        fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
+        if (childBirth < fiveYearsAgo) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Child's date of birth appears incorrect — it indicates the child is older than 5 years. " +
+              "Please verify the child's date of birth. " +
+              "(Received: " + dob + ")",
+          });
+        }
+      }
     }
 
     // ── Password strength ─────────────────────────────────────────────────────

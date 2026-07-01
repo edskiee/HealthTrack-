@@ -4,6 +4,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:intl/intl.dart';
 import 'health_records_service.dart';
+import 'patients_service.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/dashboard_service.dart';
@@ -274,6 +275,84 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
               _buildDetailRow("Birth Height", record['birthHeight']),
               _buildDetailRow("Sex", record['sex']),
               _buildDetailRow("Address", record['address']),
+
+              // ── ⚠️ DOB verification banner inside view modal ──────────────
+              Builder(builder: (ctx) {
+                final needsVerif = record["dobNeedsVerification"] == true ||
+                    record["dobNeedsVerification"] == 1 ||
+                    record["dob_needs_verification"] == true ||
+                    record["dob_needs_verification"] == 1;
+                final svcType = record["serviceType"]?.toString().toLowerCase() ?? "";
+                if (!needsVerif || !svcType.contains('immun')) return const SizedBox.shrink();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF3C7),
+                        border: Border.all(color: const Color(0xFFFBBF24)),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.warning_amber_rounded,
+                              color: Color(0xFFD97706), size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  "Child's date of birth may be incorrect",
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13,
+                                    color: Color(0xFF92400E),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  "Stored DOB: ${record['dateOfBirth'] ?? 'unknown'}. "
+                                  "This date appears to be the mother's DOB, not the child's. "
+                                  "Please verify and update before vaccine tracking can be computed accurately.",
+                                  style: const TextStyle(
+                                      fontSize: 12, color: Color(0xFF78350F), height: 1.4),
+                                ),
+                                const SizedBox(height: 8),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFF59E0B),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 14, vertical: 8),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  icon: const Icon(Icons.edit_calendar_outlined, size: 16),
+                                  label: const Text("Edit Child DOB",
+                                      style: TextStyle(
+                                          fontSize: 12, fontWeight: FontWeight.w600)),
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    _showDobEditModal(
+                                      patientId: record['patientId']?.toString() ?? '',
+                                      patientName: record['patientName'] ?? '',
+                                      storedDob: record['dateOfBirth'] ?? '',
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }),
               
               const SizedBox(height: 20),
               
@@ -302,6 +381,198 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // ── DOB Edit Modal ─────────────────────────────────────────────────────────
+  // Admin enters the correct child DOB, which is validated (≤ 5 years ago),
+  // saved via PATCH /patients/:id/dob, and triggers an immediate vaccine
+  // schedule recomputation via the Socket.IO vaccineRecordUpdated event.
+  void _showDobEditModal({
+    required String patientId,
+    required String patientName,
+    required String storedDob,
+  }) {
+    final formKey = GlobalKey<FormState>();
+    final dobController = TextEditingController();
+    DateTime? pickedDate;
+    bool saving = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: const Row(
+              children: [
+                Icon(Icons.edit_calendar_outlined, color: Color(0xFFD97706), size: 22),
+                SizedBox(width: 8),
+                Text("Edit Child DOB",
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ],
+            ),
+            content: SizedBox(
+              width: 380,
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Context banner
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFFBBF24)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            patientName,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700, fontSize: 13),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            "Stored DOB: $storedDob",
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF78350F)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      "Enter the correct child date of birth:",
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: dobController,
+                      readOnly: true,
+                      decoration: InputDecoration(
+                        labelText: "Child's Date of Birth *",
+                        hintText: "Tap to select",
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                        suffixIcon: const Icon(Icons.calendar_today_outlined),
+                      ),
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty) {
+                          return "Please select the child's date of birth";
+                        }
+                        if (pickedDate != null) {
+                          final cutoff = DateTime.now()
+                              .subtract(const Duration(days: 365 * 5));
+                          if (pickedDate!.isBefore(cutoff)) {
+                            return "Child appears older than 5 years — please verify";
+                          }
+                        }
+                        return null;
+                      },
+                      onTap: () async {
+                        final now = DateTime.now();
+                        final picked = await showDatePicker(
+                          context: ctx,
+                          initialDate: now,
+                          firstDate:
+                              now.subtract(const Duration(days: 365 * 5)),
+                          lastDate: now,
+                          helpText: "Select Child's Correct Date of Birth",
+                        );
+                        if (picked != null) {
+                          setModalState(() {
+                            pickedDate = picked;
+                            dobController.text =
+                                DateFormat('MMMM d, yyyy').format(picked);
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      "After saving, vaccine schedules will recalculate automatically.",
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF6B7280),
+                          height: 1.4),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: saving ? null : () => Navigator.pop(ctx),
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFF59E0B),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: saving
+                    ? null
+                    : () async {
+                        if (!formKey.currentState!.validate()) return;
+                        if (pickedDate == null) return;
+
+                        setModalState(() => saving = true);
+
+                        final isoDate =
+                            DateFormat('yyyy-MM-dd').format(pickedDate!);
+                        final pid = int.tryParse(patientId) ?? 0;
+
+                        final result =
+                            await PatientsService.updateChildDob(pid, isoDate);
+
+                        if (!mounted) return;
+                        // Use ctx for dialog close, then outer context for snackbar
+                        if (ctx.mounted) Navigator.pop(ctx);
+
+                        if (result['success'] == true) {
+                          if (!mounted) return;
+                          MessageUtils.showSuccessMessage(
+                            // ignore: use_build_context_synchronously
+                            context,
+                            "Child's DOB updated to ${DateFormat('MMMM d, yyyy').format(pickedDate!)}. "
+                            "Vaccine schedules will recalculate automatically.",
+                            title: "DOB Updated",
+                          );
+                          // Reload health records so the badge disappears
+                          await _loadHealthRecords();
+                        } else {
+                          if (!mounted) return;
+                          MessageUtils.showErrorMessage(
+                            // ignore: use_build_context_synchronously
+                            context,
+                            result['message']?.toString() ??
+                                "Failed to update DOB. Please try again.",
+                            title: "Update Failed",
+                          );
+                        }
+                      },
+                child: saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Text("Save DOB",
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -930,6 +1201,13 @@ void _deleteRecord(int index) {
     final patientId = record["patientId"]?.toString() ?? "—";
     final statusRaw = record["status"]?.toString().toLowerCase() ?? "";
     final isActive = statusRaw == "active" || statusRaw == "1";
+    // ── DOB verification flag ─────────────────────────────────────────────────
+    final needsDobVerification = record["dobNeedsVerification"] == true ||
+        record["dobNeedsVerification"] == 1 ||
+        record["dob_needs_verification"] == true ||
+        record["dob_needs_verification"] == 1;
+    final storedDob = record["dateOfBirth"]?.toString() ?? "";
+    final serviceType = record["serviceType"]?.toString().toLowerCase() ?? "";
 
     final initials = _patientInitials(patientName);
     final avatarStyle = _avatarPaletteForIndex(index, initials);
@@ -1006,6 +1284,42 @@ void _deleteRecord(int index) {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
+                      // ── ⚠️ DOB needs verification badge ──────────────────
+                      if (needsDobVerification && serviceType.contains('immun')) ...[
+                        const SizedBox(height: 5),
+                        GestureDetector(
+                          onTap: () => _showDobEditModal(
+                            patientId: patientId,
+                            patientName: patientName,
+                            storedDob: storedDob,
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEF3C7),
+                              border: Border.all(color: const Color(0xFFFBBF24)),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.warning_amber_rounded,
+                                    size: 11, color: Color(0xFFD97706)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '⚠️ DOB needs verification',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF92400E),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -1132,6 +1446,21 @@ void _deleteRecord(int index) {
                   borderColor: const Color(0xFFDDD6FE),
                   onPressed: () => _showReferralModal(record),
                 ),
+                // ── Fix DOB button — only shown when flagged ──────────────
+                if (needsDobVerification && serviceType.contains('immun')) ...[
+                  const SizedBox(width: 4),
+                  _gridActionIcon(
+                    icon: Icons.edit_calendar_outlined,
+                    backgroundColor: const Color(0xFFFEF3C7),
+                    iconColor: const Color(0xFFD97706),
+                    borderColor: const Color(0xFFFBBF24),
+                    onPressed: () => _showDobEditModal(
+                      patientId: patientId,
+                      patientName: patientName,
+                      storedDob: storedDob,
+                    ),
+                  ),
+                ],
               ],
             ),
           ],

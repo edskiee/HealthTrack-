@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'utils/message_utils.dart';
 import 'services/registration_service.dart';
+import 'services/error_handler_service.dart';
 import 'package:intl/intl.dart';
 import 'login_screen.dart';
 import 'services/service_config_service.dart';
+import 'widgets/barangay_autocomplete_field.dart';
+import 'widgets/address_autocomplete_field.dart';
 
 class UnifiedRegisterScreen extends StatefulWidget {
   const UnifiedRegisterScreen({super.key});
@@ -289,6 +293,33 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
         return;
       }
 
+      // For immunization, separately format the child's DOB and validate it
+      String formattedChildDob = '';
+      if (_selectedServiceType != 'maternal') {
+        formattedChildDob = _formatDateForDatabase(_childDob.text.trim());
+        if (formattedChildDob.isEmpty) {
+          MessageUtils.showErrorMessage(
+              context, "Invalid child date of birth. Please select a valid date.");
+          return;
+        }
+        // Sanity check: child DOB must not be more than 5 years ago
+        try {
+          final childBirth = DateTime.parse(formattedChildDob);
+          final fiveYearsAgo = DateTime.now().subtract(const Duration(days: 365 * 5));
+          if (childBirth.isBefore(fiveYearsAgo)) {
+            MessageUtils.showErrorMessage(
+              context,
+              "Child's date of birth appears incorrect — it shows the child is older than 5 years. "
+              "Please verify the child's date of birth before submitting.",
+              title: "Invalid Child DOB",
+            );
+            return;
+          }
+        } catch (_) {
+          // If parsing fails, let backend handle it
+        }
+      }
+
       // Prepare registration data with null safety
       final registrationData = {
         // User account info
@@ -346,6 +377,10 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
       // Add immunization-specific fields if needed
       if (_selectedServiceType != 'maternal') {
         registrationData.addAll({
+          // ── CRITICAL FIX: override 'dob' with the CHILD's DOB, not the mother's ──
+          // The base map sets 'dob' to formattedMotherDob for maternal use.
+          // For immunization the child's DOB must go into the patients.dob column.
+          'dob': formattedChildDob,
           'childName': _childName.text.trim(),
           'placeOfBirth': _placeOfBirth.text.trim(),
           'birthWeight': _birthWeight.text.trim(),
@@ -498,8 +533,8 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
   Future<void> _selectChildDate(BuildContext context) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now().subtract(const Duration(days: 365 * 5)),
-      firstDate: DateTime(2010),
+      initialDate: DateTime.now(),
+      firstDate: DateTime.now().subtract(const Duration(days: 365 * 5)), // max 5 years ago
       lastDate: DateTime.now(),
       helpText: 'Select Child\'s Date of Birth',
     );
@@ -753,6 +788,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       controller: _fullName,
                                       decoration:
                                           _inputDecoration("Mother's Full Name", required: true),
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                       validator: (value) {
                                         if (value == null || value.trim().isEmpty) {
                                           return "Full name is required";
@@ -839,6 +875,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                     TextFormField(
                                       controller: _occupation,
                                       decoration: _inputDecoration("Occupation", required: true),
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                       validator: (value) {
                                         if (_selectedServiceType == 'maternal' && 
                                             (value == null || value.trim().isEmpty)) {
@@ -852,18 +889,14 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                     TextFormField(
                                       controller: _religion,
                                       decoration: _inputDecoration("Religion"),
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                     ),
                                     const SizedBox(height: 16),
                                     
-                                    TextFormField(
+                                    AddressAutocompleteField(
                                       controller: _address,
+                                      barangayController: _barangay,
                                       decoration: _inputDecoration("Address", required: true),
-                                      validator: (value) {
-                                        if (value == null || value.trim().isEmpty) {
-                                          return "Address is required";
-                                        }
-                                        return null;
-                                      },
                                     ),
                                     const SizedBox(height: 16),
                                     
@@ -884,6 +917,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       controller: _email,
                                       decoration: _inputDecoration("Email Address"),
                                       keyboardType: TextInputType.emailAddress,
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                     ),
                                   ],
                                 ),
@@ -914,6 +948,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       TextFormField(
                                         controller: _spouseName,
                                         decoration: _inputDecoration("Spouse's Full Name", required: true),
+                                        inputFormatters: [EmojiBlockingFormatter()],
                                         validator: (value) {
                                           if (value == null || value.trim().isEmpty) {
                                             return "Spouse's name is required";
@@ -940,6 +975,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       TextFormField(
                                         controller: _spouseEducation,
                                         decoration: _inputDecoration("Spouse's Highest Education", required: true),
+                                        inputFormatters: [EmojiBlockingFormatter()],
                                         validator: (value) {
                                           if (value == null || value.trim().isEmpty) {
                                             return "Spouse's education is required";
@@ -952,6 +988,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       TextFormField(
                                         controller: _spouseOccupation,
                                         decoration: _inputDecoration("Spouse's Occupation", required: true),
+                                        inputFormatters: [EmojiBlockingFormatter()],
                                         validator: (value) {
                                           if (value == null || value.trim().isEmpty) {
                                             return "Spouse's occupation is required";
@@ -1086,6 +1123,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       TextFormField(
                                         controller: _childName,
                                         decoration: _inputDecoration("Child's Name", required: true),
+                                        inputFormatters: [EmojiBlockingFormatter()],
                                         validator: (value) {
                                           if (value == null || value.trim().isEmpty) {
                                             return "Child's name is required";
@@ -1106,6 +1144,21 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                                 if (value == null || value.trim().isEmpty) {
                                                   return "Child's date of birth is required";
                                                 }
+                                                // Inline guard: child must not be older than 5 years
+                                                try {
+                                                  final parts = value.trim().split('/');
+                                                  if (parts.length == 3) {
+                                                    final dt = DateTime(
+                                                      int.parse(parts[2]),
+                                                      int.parse(parts[0]),
+                                                      int.parse(parts[1]),
+                                                    );
+                                                    final cutoff = DateTime.now().subtract(const Duration(days: 365 * 5));
+                                                    if (dt.isBefore(cutoff)) {
+                                                      return "Child appears older than 5 years — please verify DOB";
+                                                    }
+                                                  }
+                                                } catch (_) {}
                                                 return null;
                                               },
                                               onTap: () => _selectChildDate(context),
@@ -1117,6 +1170,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                             child: TextFormField(
                                               controller: _placeOfBirth,
                                               decoration: _inputDecoration("Place of Birth", required: true),
+                                              inputFormatters: [EmojiBlockingFormatter()],
                                               validator: (value) {
                                                 if (value == null || value.trim().isEmpty) {
                                                   return "Place of birth is required";
@@ -1199,12 +1253,13 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       TextFormField(
                                         controller: _healthCenter,
                                         decoration: _inputDecoration("Health Center"),
+                                        inputFormatters: [EmojiBlockingFormatter()],
                                       ),
                                       const SizedBox(height: 16),
                                       
-                                      TextFormField(
+                                      BarangayAutocompleteField(
                                         controller: _barangay,
-                                        decoration: _inputDecoration("Barangay"),
+                                        decoration: _inputDecoration("Barangay", required: true),
                                       ),
                                       const SizedBox(height: 16),
                                       
@@ -1240,6 +1295,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       controller: _username,
                                       decoration:
                                           _inputDecoration("Username", required: true),
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                       validator: (value) {
                                         if (value == null || value.trim().isEmpty) {
                                           return "Username is required";
@@ -1273,6 +1329,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                         ),
                                       ),
                                       obscureText: _obscurePassword,
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                       validator: (value) {
                                         if (value == null || value.trim().isEmpty) {
                                           return "Password is required";
@@ -1288,6 +1345,7 @@ class _UnifiedRegisterScreenState extends State<UnifiedRegisterScreen>
                                       controller: _confirmPassword,
                                       decoration: _inputDecoration("Confirm Password"),
                                       obscureText: _obscurePassword,
+                                      inputFormatters: [EmojiBlockingFormatter()],
                                       validator: (value) {
                                         if (value != _password.text) {
                                           return "Passwords do not match";

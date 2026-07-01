@@ -97,6 +97,9 @@ class HealthRecordsService {
       "birthHeight":   record['birth_height']?.toString() ?? '',
       "sex":           record['sex']?.toString() ?? '',
       "address":       record['address']?.toString() ?? '',
+      "serviceType":   record['service_type']?.toString() ?? '',
+      "dobNeedsVerification": record['dob_needs_verification'] == true ||
+                              record['dob_needs_verification'] == 1,
       "createdAt":     record['created_at']?.toString() ?? '',
     };
   }

@@ -460,4 +460,24 @@ class PatientsService {
       return false;
     }
   }
+
+  /// Correct a child's DOB — admin only.
+  /// [patientId] — the patients.id value.
+  /// [dob]       — ISO date string "YYYY-MM-DD".
+  /// Returns { success, message }.
+  static Future<Map<String, dynamic>> updateChildDob(int patientId, String dob) async {
+    try {
+      final response = await http.patch(
+        Uri.parse("$baseUrl/patients/$patientId/dob"),
+        headers: await _authHeaders(),
+        body: json.encode({'dob': dob}),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final success = _parseBool(data['success']);
+      return {'success': success, 'message': data['message']?.toString() ?? ''};
+    } catch (e) {
+      return {'success': false, 'message': 'Failed to update DOB: $e'};
+    }
+  }
 }

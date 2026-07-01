@@ -50,6 +50,7 @@ const { createAppointmentRemindersTable } = require("./setup/appointmentReminder
 const { startNotificationScheduler }  = require("./services/notificationScheduler");
 const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
 const { setupVaccineTables } = require("./setup/vaccineTableSetup");
+const { migrateDobVerification } = require("./setup/migrateDobVerification");
 
 /**
  * Update reminder system_settings to include same-day reminders (days_before=0).
@@ -370,6 +371,7 @@ async function bootstrap() {
   await migrateAppointmentSlotsCapacity();
   await migrateReminderSettings();
   await setupVaccineTables();
+  await migrateDobVerification();
 
   initializeScheduledNotifications();
 

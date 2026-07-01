@@ -51,6 +51,7 @@ const { startNotificationScheduler }  = require("./services/notificationSchedule
 const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
 const { setupVaccineTables } = require("./setup/vaccineTableSetup");
 const { migrateDobVerification } = require("./setup/migrateDobVerification");
+const { backfillVaccineRecords } = require("./setup/backfillVaccineRecords");
 
 /**
  * Update reminder system_settings to include same-day reminders (days_before=0).
@@ -372,6 +373,7 @@ async function bootstrap() {
   await migrateReminderSettings();
   await setupVaccineTables();
   await migrateDobVerification();
+  await backfillVaccineRecords(); // seeds pending records for existing patients (idempotent)
 
   initializeScheduledNotifications();
 

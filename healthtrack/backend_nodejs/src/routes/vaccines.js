@@ -550,4 +550,309 @@ router.delete("/record/:recordId", authenticateAdmin, async (req, res) => {
   }
 });
 
+// ─── GET /vaccines/admin/card/:patientId ─────────────────────────────────────
+/**
+ * Admin-authenticated version of GET /vaccines/card/:patientId.
+ *
+ * Identical logic to the user-facing endpoint but guarded by authenticateAdmin
+ * so the admin panel (which carries an admin Bearer token, not a user JWT) can
+ * call it without a 401.
+ *
+ * Also returns dob_needs_verification so the admin modal can gate display.
+ */
+router.get("/admin/card/:patientId", authenticateAdmin, async (req, res) => {
+  const patientId = parseInt(req.params.patientId, 10);
+  if (!patientId || patientId <= 0) {
+    return res.status(400).json({ success: false, message: "Invalid patient ID" });
+  }
+
+  try {
+    const [patients] = await db.execute(
+      `SELECT id, dob, sex, service_type,
+              dob_needs_verification,
+              child_fullname, mother_fullname
+       FROM patients WHERE id = ? LIMIT 1`,
+      [patientId]
+    );
+    if (!patients.length) {
+      return res.status(404).json({ success: false, message: "Patient not found" });
+    }
+    const patient = patients[0];
+
+    // ── Maternal Care guard — no schedule data for non-immunization patients ──
+    const svcType = (patient.service_type || "").toLowerCase();
+    if (!svcType.includes("immun")) {
+      return res.json({
+        success: true,
+        data: {
+          child_name:            patient.child_fullname || patient.mother_fullname || "Unknown",
+          service_type:          patient.service_type,
+          dob_needs_verification: false,
+          not_immunization:      true,
+          message:               "Vaccine tracking is for Immunization patients only.",
+        },
+      });
+    }
+
+    // ── DOB verification flag — return early if flagged ──────────────────────
+    const dobFlagged = patient.dob_needs_verification === 1 || patient.dob_needs_verification === true;
+    const dobStr = patient.dob ? new Date(patient.dob).toISOString().split("T")[0] : null;
+
+    if (dobFlagged) {
+      return res.json({
+        success: true,
+        data: {
+          child_name:            patient.child_fullname || patient.mother_fullname || "Unknown",
+          dob:                   dobStr,
+          service_type:          patient.service_type,
+          dob_needs_verification: true,
+          vaccines:              [],
+          pending_doses:         [],
+          total_doses_required:  0,
+          total_doses_completed: 0,
+        },
+      });
+    }
+
+    // ── Normal flow ───────────────────────────────────────────────────────────
+    const age = ageInDays(patient.dob);
+
+    const [schedules] = await db.execute(
+      `SELECT id, vaccine_name, vaccine_key, dose_number, dose_label,
+              schedule_label, due_days_from_birth, due_days_max, sort_order
+       FROM vaccine_schedules ORDER BY sort_order, dose_number`
+    );
+
+    const [records] = await db.execute(
+      `SELECT id AS record_id, vaccine_schedule_id, given_at, given_by, notes
+       FROM child_vaccine_records WHERE patient_id = ?`,
+      [patientId]
+    );
+
+    const recMap = {};
+    for (const r of records) recMap[r.vaccine_schedule_id] = r;
+
+    const vaccineMap = new Map();
+    const lockMap    = {};
+    let nextDue      = null;
+    let overdueAlert = null;
+    let totalDosesRequired  = schedules.length;
+    let totalDosesCompleted = 0;
+    const pendingDoses = [];
+
+    for (const sched of schedules) {
+      if (!vaccineMap.has(sched.vaccine_key)) {
+        vaccineMap.set(sched.vaccine_key, {
+          vaccine_name: sched.vaccine_name,
+          vaccine_key:  sched.vaccine_key,
+          doses: [],
+        });
+      }
+
+      const rec     = recMap[sched.id] || null;
+      const givenAt = rec ? rec.given_at : null;
+
+      let status;
+      if (lockMap[sched.vaccine_key]) {
+        status = "locked";
+      } else {
+        status = computeStatus(age, sched, givenAt);
+        if (status !== "completed") lockMap[sched.vaccine_key] = true;
+      }
+
+      const dueDateEstimate = addDaysToDate(patient.dob, sched.due_days_from_birth);
+      const maxDateEstimate  = addDaysToDate(patient.dob, sched.due_days_max);
+
+      if (status === "completed") totalDosesCompleted++;
+
+      if (!overdueAlert && status === "overdue") {
+        overdueAlert = { vaccine_name: sched.vaccine_name, dose_label: sched.dose_label };
+      }
+      if (!nextDue && (status === "due_soon" || status === "not_yet_due")) {
+        nextDue = {
+          vaccine_name:      sched.vaccine_name,
+          dose_label:        sched.dose_label,
+          schedule_label:    sched.schedule_label,
+          due_date_estimate: dueDateEstimate,
+          status,
+        };
+      }
+
+      if (status !== "completed") {
+        let daysOverdue = null;
+        if (status === "overdue" && patient.dob) {
+          daysOverdue = age - sched.due_days_max;
+        }
+        let waitingFor = null;
+        if (status === "locked" && sched.dose_number > 1) {
+          const prevSched = schedules.find(
+            s => s.vaccine_key === sched.vaccine_key && s.dose_number === sched.dose_number - 1
+          );
+          if (prevSched) waitingFor = `${prevSched.vaccine_name} (${prevSched.dose_label})`;
+        }
+        pendingDoses.push({
+          vaccine_name:      sched.vaccine_name,
+          vaccine_key:       sched.vaccine_key,
+          dose_number:       sched.dose_number,
+          dose_label:        sched.dose_label,
+          schedule_label:    sched.schedule_label,
+          due_date_estimate: dueDateEstimate,
+          max_date_estimate: maxDateEstimate,
+          days_overdue:      daysOverdue,
+          status,
+          waiting_for:       waitingFor,
+        });
+      }
+
+      vaccineMap.get(sched.vaccine_key).doses.push({
+        schedule_id:       sched.id,
+        record_id:         rec ? rec.record_id : null,
+        dose_number:       sched.dose_number,
+        dose_label:        sched.dose_label,
+        schedule_label:    sched.schedule_label,
+        due_date_estimate: dueDateEstimate,
+        given_at:          givenAt || null,
+        given_by:          rec ? rec.given_by || null : null,
+        notes:             rec ? rec.notes    || null : null,
+        status,
+      });
+    }
+
+    const statusPriority = { overdue: 0, due_soon: 1, not_yet_due: 2, locked: 3 };
+    pendingDoses.sort((a, b) => {
+      const pa = statusPriority[a.status] ?? 4;
+      const pb = statusPriority[b.status] ?? 4;
+      if (pa !== pb) return pa - pb;
+      if (a.status === "overdue" && b.status === "overdue") {
+        return (b.days_overdue || 0) - (a.days_overdue || 0);
+      }
+      return 0;
+    });
+
+    const hasOverdue = pendingDoses.some(d => d.status === "overdue");
+    const hasDueSoon = pendingDoses.some(d => d.status === "due_soon");
+    let overallStatus;
+    if (hasOverdue)      overallStatus = "overdue";
+    else if (hasDueSoon) overallStatus = "action_needed";
+    else                 overallStatus = "up_to_date";
+
+    return res.json({
+      success: true,
+      data: {
+        child_name:             patient.child_fullname || patient.mother_fullname || "Unknown",
+        dob:                    dobStr,
+        sex:                    patient.sex || null,
+        service_type:           patient.service_type,
+        dob_needs_verification: false,
+        not_immunization:       false,
+        age_in_days:            age,
+        total_doses_required:   totalDosesRequired,
+        total_doses_completed:  totalDosesCompleted,
+        fully_up_to_date:       !hasOverdue && !hasDueSoon,
+        overall_status:         overallStatus,
+        vaccines:               Array.from(vaccineMap.values()),
+        pending_doses:          pendingDoses,
+        next_due:               nextDue,
+        overdue_alert:          overdueAlert,
+      },
+    });
+  } catch (err) {
+    console.error("[GET /vaccines/admin/card]", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /vaccines/admin/badge/:patientId ─────────────────────────────────────
+/**
+ * Lightweight badge summary for a single patient card.
+ * Returns only the fields needed to render the small status pill on the card —
+ * no full vaccine list, keeping the payload tiny.
+ *
+ * Response:
+ *   { overall_status, total_doses_required, total_doses_completed,
+ *     next_due_date, dob_needs_verification, not_immunization }
+ */
+router.get("/admin/badge/:patientId", authenticateAdmin, async (req, res) => {
+  const patientId = parseInt(req.params.patientId, 10);
+  if (!patientId || patientId <= 0) {
+    return res.status(400).json({ success: false, message: "Invalid patient ID" });
+  }
+
+  try {
+    const [patients] = await db.execute(
+      `SELECT id, dob, service_type, dob_needs_verification
+       FROM patients WHERE id = ? LIMIT 1`,
+      [patientId]
+    );
+    if (!patients.length) {
+      return res.status(404).json({ success: false, message: "Patient not found" });
+    }
+    const patient = patients[0];
+    const svcType = (patient.service_type || "").toLowerCase();
+    if (!svcType.includes("immun")) {
+      return res.json({ success: true, data: { not_immunization: true } });
+    }
+
+    const dobFlagged = patient.dob_needs_verification === 1 || patient.dob_needs_verification === true;
+    if (dobFlagged) {
+      return res.json({ success: true, data: { dob_needs_verification: true, overall_status: "unverified" } });
+    }
+
+    const age = ageInDays(patient.dob);
+
+    const [schedules] = await db.execute(
+      `SELECT id, vaccine_key, dose_number, due_days_from_birth, due_days_max
+       FROM vaccine_schedules ORDER BY sort_order, dose_number`
+    );
+    const [records] = await db.execute(
+      `SELECT vaccine_schedule_id FROM child_vaccine_records WHERE patient_id = ? AND given_at IS NOT NULL`,
+      [patientId]
+    );
+    const givenSet = new Set(records.map(r => r.vaccine_schedule_id));
+    const lockMap  = {};
+    let totalRequired  = schedules.length;
+    let totalCompleted = 0;
+    let hasOverdue     = false;
+    let hasDueSoon     = false;
+    let nextDueDate    = null;
+
+    for (const sched of schedules) {
+      const given = givenSet.has(sched.id);
+      let status;
+      if (lockMap[sched.vaccine_key]) {
+        status = "locked";
+      } else {
+        status = computeStatus(age, sched, given ? "given" : null);
+        if (status !== "completed") lockMap[sched.vaccine_key] = true;
+      }
+      if (status === "completed") totalCompleted++;
+      if (status === "overdue") hasOverdue = true;
+      if (status === "due_soon" && !nextDueDate) {
+        nextDueDate = addDaysToDate(patient.dob, sched.due_days_from_birth);
+        hasDueSoon = true;
+      }
+    }
+
+    let overallStatus;
+    if (hasOverdue)      overallStatus = "overdue";
+    else if (hasDueSoon) overallStatus = "action_needed";
+    else                 overallStatus = "up_to_date";
+
+    return res.json({
+      success: true,
+      data: {
+        overall_status:         overallStatus,
+        total_doses_required:   totalRequired,
+        total_doses_completed:  totalCompleted,
+        next_due_date:          nextDueDate,
+        dob_needs_verification: false,
+        not_immunization:       false,
+      },
+    });
+  } catch (err) {
+    console.error("[GET /vaccines/admin/badge]", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

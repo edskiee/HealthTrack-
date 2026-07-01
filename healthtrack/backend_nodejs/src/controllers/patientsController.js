@@ -337,6 +337,31 @@ exports.addPatient = async (req, res) => {
     await connection.execute(healthRecordSql, [userId, patientId]);
     console.log("✅ Health record created successfully for patient ID:", patientId);
 
+    // ── Auto-seed vaccine records for immunization patients ────────────────
+    // Fetch all vaccine_schedules and insert a pending child_vaccine_records
+    // row for each one (given_at = NULL = not yet given).
+    // Uses INSERT IGNORE so a second call (e.g. retry) is safe.
+    const svcTypeNorm = (serviceType || "immunization").toLowerCase();
+    if (svcTypeNorm.includes("immun")) {
+      try {
+        const [schedRows] = await connection.execute(
+          `SELECT id FROM vaccine_schedules ORDER BY sort_order, dose_number`
+        );
+        for (const sched of schedRows) {
+          await connection.execute(
+            `INSERT IGNORE INTO child_vaccine_records
+               (patient_id, vaccine_schedule_id)
+             VALUES (?, ?)`,
+            [patientId, sched.id]
+          );
+        }
+        console.log(`✅ Auto-seeded ${schedRows.length} vaccine records for new patient ID: ${patientId}`);
+      } catch (vaccineErr) {
+        // Non-fatal: log and continue — patient registration still succeeds
+        console.error(`⚠️ Failed to auto-seed vaccine records for patient ${patientId}:`, vaccineErr.message);
+      }
+    }
+
     // Fetch the created patient data using shared helper
     const fetchCols = buildFullSelectCols(existingColumns);
     const fetchSql = `SELECT ${fetchCols} FROM patients WHERE id = ?`;

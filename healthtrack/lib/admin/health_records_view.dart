@@ -5,6 +5,7 @@ import 'package:printing/printing.dart';
 import 'package:intl/intl.dart';
 import 'health_records_service.dart';
 import 'patients_service.dart';
+import 'services/vaccine_tracking_service.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/dashboard_service.dart';
@@ -42,6 +43,11 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
   String _filterGender = 'All';
   DateTime? _filterStartDate;
   DateTime? _filterEndDate;
+
+  // ── Vaccine badge cache ────────────────────────────────────────────────
+  // Map of patientId → badge summary (lazy-loaded per visible card)
+  final Map<int, VaccineBadgeSummary?> _badgeCache = {};
+  final Map<int, bool> _badgeLoading = {};
 
   @override
   void initState() {
@@ -107,6 +113,9 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
         _totalRecords    = result['total'] as int;
         _totalPages      = result['totalPages'] as int;
         isLoading        = false;
+        // Clear badge cache on every page load — fresh badges per page
+        _badgeCache.clear();
+        _badgeLoading.clear();
       });
     } catch (e) {
       setState(() {
@@ -598,75 +607,6 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
       ),
     );
   }
-
-// 🗑 DELETE RECORD with confirmation dialog 
-void _deleteRecord(int index) {
-  final record = filteredRecords[index];
-  
-  showDialog(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text("Delete Record"),
-      content: const Text(
-        "Are you sure you want to delete this health record? This action cannot be undone.",
-      ),
-      actions: [
-        // ✅ Cancel Text (Green)
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text(
-            "Cancel",
-            style: TextStyle(
-              color: Colors.green, // Green text color
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-
-        // 🟥 Delete Button (Red background, White text)
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red, // Red background
-            foregroundColor: Colors.white, // White text
-          ),
-          onPressed: () async {
-            Navigator.pop(ctx); // Close confirmation dialog
-            
-            try {
-              final recordId = int.parse(record['id']);
-              final success = await HealthRecordsService.deleteHealthRecord(recordId);
-              
-              if (success) {
-                await _loadHealthRecords(); // Refresh the list
-                if (mounted) {
-                  MessageUtils.showSuccessMessage(
-                    context,
-                    "Health record has been deleted successfully!",
-                    title: "Record Deleted",
-                  );
-                }
-              } else {
-                throw Exception('Failed to delete record');
-              }
-            } catch (e) {
-              if (mounted) {
-                MessageUtils.showErrorMessage(
-                  context,
-                  'Error deleting record: $e',
-                  title: "Delete Error",
-                );
-              }
-            }
-          },
-          child: const Text(
-            "Delete",
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-        ),
-      ],
-    ),
-  );
-}
 
   // Filter Panel
   Widget _buildFilterPanel() {
@@ -1421,6 +1361,7 @@ void _deleteRecord(int index) {
                   iconColor: const Color(0xFF3B82F6),
                   borderColor: const Color(0xFFBFDBFE),
                   onPressed: () => _viewRecord(record),
+                  tooltip: 'View record',
                 ),
                 const SizedBox(width: 4),
                 _gridActionIcon(
@@ -1429,14 +1370,17 @@ void _deleteRecord(int index) {
                   iconColor: const Color(0xFF22C55E),
                   borderColor: const Color(0xFFA7F3D0),
                   onPressed: () => _printRecord(context, record),
+                  tooltip: 'Print record',
                 ),
                 const SizedBox(width: 4),
+                // ── Vaccine Tracking icon (replaces delete) ────────────────
                 _gridActionIcon(
-                  icon: Icons.delete_outline,
-                  backgroundColor: const Color(0xFFFEF2F2),
-                  iconColor: const Color(0xFFEF4444),
-                  borderColor: const Color(0xFFFECACA),
-                  onPressed: () => _deleteRecord(index),
+                  icon: Icons.vaccines_outlined,
+                  backgroundColor: const Color(0xFFECFDF5),
+                  iconColor: const Color(0xFF0D9488),
+                  borderColor: const Color(0xFF99F6E4),
+                  onPressed: () => _showVaccineTrackingModal(record),
+                  tooltip: 'View vaccine tracking',
                 ),
                 const SizedBox(width: 4),
                 _gridActionIcon(
@@ -1445,6 +1389,7 @@ void _deleteRecord(int index) {
                   iconColor: const Color(0xFF8B5CF6),
                   borderColor: const Color(0xFFDDD6FE),
                   onPressed: () => _showReferralModal(record),
+                  tooltip: 'Create referral',
                 ),
                 // ── Fix DOB button — only shown when flagged ──────────────
                 if (needsDobVerification && serviceType.contains('immun')) ...[
@@ -1463,6 +1408,11 @@ void _deleteRecord(int index) {
                 ],
               ],
             ),
+            // ── Vaccine status badge (lazy-loaded) ─────────────────────────
+            if (serviceType.contains('immun')) ...[
+              const SizedBox(height: 8),
+              _buildVaccineBadge(patientId),
+            ],
           ],
         ),
       ),
@@ -1536,8 +1486,9 @@ void _deleteRecord(int index) {
     required Color iconColor,
     required Color borderColor,
     required VoidCallback onPressed,
+    String? tooltip,
   }) {
-    return SizedBox(
+    final btn = SizedBox(
       width: 24,
       height: 24,
       child: IconButton(
@@ -1557,6 +1508,10 @@ void _deleteRecord(int index) {
         icon: Icon(icon, size: 14, color: iconColor),
       ),
     );
+    if (tooltip != null) {
+      return Tooltip(message: tooltip, child: btn);
+    }
+    return btn;
   }
 
   String _formatDateShort(String dateString) {
@@ -1567,6 +1522,126 @@ void _deleteRecord(int index) {
     } catch (e) {
       return dateString;
     }
+  }
+
+  // ── Vaccine badge (lazy-loaded per card) ──────────────────────────────────
+  Widget _buildVaccineBadge(String patientIdStr) {
+    final patientId = int.tryParse(patientIdStr) ?? 0;
+    if (patientId <= 0) return const SizedBox.shrink();
+
+    final badge = _badgeCache[patientId];
+    final loading = _badgeLoading[patientId] ?? false;
+
+    // Trigger load if not yet loaded
+    if (badge == null && !loading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_badgeLoading[patientId] == true) return;
+        setState(() => _badgeLoading[patientId] = true);
+        VaccineTrackingService.getAdminBadge(patientId).then((result) {
+          if (!mounted) return;
+          setState(() {
+            _badgeCache[patientId] = result;
+            _badgeLoading[patientId] = false;
+          });
+        }).catchError((_) {
+          if (!mounted) return;
+          setState(() => _badgeLoading[patientId] = false);
+        });
+      });
+      // Show a tiny placeholder while we wait
+      return Container(
+        height: 16,
+        width: 60,
+        decoration: BoxDecoration(
+          color: const Color(0xFFE2E8F0),
+          borderRadius: BorderRadius.circular(999),
+        ),
+      );
+    }
+
+    if (loading || badge == null) {
+      return Container(
+        height: 16,
+        width: 60,
+        decoration: BoxDecoration(
+          color: const Color(0xFFE2E8F0),
+          borderRadius: BorderRadius.circular(999),
+        ),
+      );
+    }
+
+    // Not an immunization patient — don't show badge
+    if (badge.notImmunization) return const SizedBox.shrink();
+
+    Color bgColor;
+    Color textColor;
+    String label;
+
+    if (badge.dobNeedsVerification) {
+      bgColor   = const Color(0xFFFEF3C7);
+      textColor = const Color(0xFF92400E);
+      label     = '⚠️ DOB unverified';
+    } else if (badge.overallStatus == 'overdue') {
+      bgColor   = const Color(0xFFFEE2E2);
+      textColor = const Color(0xFF991B1B);
+      label     = '❌ Overdue';
+    } else if (badge.overallStatus == 'action_needed') {
+      bgColor   = const Color(0xFFFEF3C7);
+      textColor = const Color(0xFF92400E);
+      label     = '⚠️ Due soon';
+    } else {
+      // up_to_date
+      bgColor   = const Color(0xFFDCFCE7);
+      textColor = const Color(0xFF166534);
+      label     = '${badge.totalDosesCompleted}/${badge.totalDosesRequired} ✅';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+          height: 1.2,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+
+  // ── Vaccine Tracking Modal ────────────────────────────────────────────────
+  void _showVaccineTrackingModal(Map<String, dynamic> record) {
+    final patientId = int.tryParse(record['patientId']?.toString() ?? '0') ?? 0;
+    final patientName  = record['patientName']?.toString()  ?? 'Unknown Patient';
+    final storedDob    = record['dateOfBirth']?.toString()  ?? '';
+    final serviceType  = record['serviceType']?.toString()  ?? '';
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _VaccineTrackingModal(
+        patientId:    patientId,
+        patientName:  patientName,
+        storedDob:    storedDob,
+        serviceType:  serviceType,
+        onDobCorrected: () async {
+          // Clear badge cache for this patient and refresh list
+          setState(() {
+            _badgeCache.remove(patientId);
+            _badgeLoading.remove(patientId);
+          });
+          await _loadHealthRecords();
+        },
+      ),
+    );
   }
 
   // 🏥 SHOW REFERRAL MODAL
@@ -1600,6 +1675,645 @@ void _deleteRecord(int index) {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vaccine Tracking Modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _VaccineTrackingModal extends StatefulWidget {
+  const _VaccineTrackingModal({
+    required this.patientId,
+    required this.patientName,
+    required this.storedDob,
+    required this.serviceType,
+    required this.onDobCorrected,
+  });
+
+  final int patientId;
+  final String patientName;
+  final String storedDob;
+  final String serviceType;
+  final VoidCallback onDobCorrected;
+
+  @override
+  State<_VaccineTrackingModal> createState() => _VaccineTrackingModalState();
+}
+
+class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
+  bool _loading = true;
+  String? _error;
+  VaccineCardData? _cardData;
+
+  // Polling timer for realtime sync (fallback if Socket.IO is not used here)
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCard();
+    // Poll every 15 s so the modal always reflects current DB state
+    // (Socket.IO push is handled server-side; this is the Flutter-side safety net)
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) => _loadCard(silent: true));
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadCard({bool silent = false}) async {
+    if (!mounted) return;
+    if (!silent) setState(() { _loading = true; _error = null; });
+    try {
+      final data = await VaccineTrackingService.getAdminVaccineCard(widget.patientId);
+      if (!mounted) return;
+      setState(() { _cardData = data; _loading = false; });
+    } catch (e) {
+      if (!mounted) return;
+      if (!silent) setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
+
+  // ── Age formatting ─────────────────────────────────────────────────────────
+  String _formatAge(int days) {
+    if (days < 30)  return '$days day${days == 1 ? '' : 's'} old';
+    if (days < 365) { final m = (days / 30).floor(); return '$m month${m == 1 ? '' : 's'} old'; }
+    final y = (days / 365).floor();
+    final rem = ((days % 365) / 30).floor();
+    if (rem == 0) return '$y year${y == 1 ? '' : 's'} old';
+    return '$y yr $rem mo old';
+  }
+
+  String _formatDateDisplay(String? isoDate) {
+    if (isoDate == null || isoDate.isEmpty) return 'N/A';
+    try { return DateFormat('MMM d, yyyy').format(DateTime.parse(isoDate)); }
+    catch (_) { return isoDate; }
+  }
+
+  // ── DOB correction handler ─────────────────────────────────────────────────
+  void _showDobCorrection(BuildContext outerCtx) {
+    final formKey = GlobalKey<FormState>();
+    final dobCtrl = TextEditingController();
+    DateTime? picked;
+    bool saving = false;
+
+    showDialog(
+      context: outerCtx,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setS) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Row(children: [
+          Icon(Icons.edit_calendar_outlined, color: Color(0xFFD97706), size: 20),
+          SizedBox(width: 8),
+          Text('Edit Child DOB', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        ]),
+        content: SizedBox(
+          width: 360,
+          child: Form(
+            key: formKey,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFFBBF24)),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(widget.patientName,
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 2),
+                  Text('Stored DOB: ${widget.storedDob}',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF78350F))),
+                ]),
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: dobCtrl,
+                readOnly: true,
+                decoration: InputDecoration(
+                  labelText: "Child's Date of Birth *",
+                  hintText: 'Tap to select',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                  suffixIcon: const Icon(Icons.calendar_today_outlined),
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return "Please select the child's date of birth";
+                  if (picked != null) {
+                    final cutoff = DateTime.now().subtract(const Duration(days: 365 * 5));
+                    if (picked!.isBefore(cutoff)) return 'Child appears older than 5 years — please verify';
+                  }
+                  return null;
+                },
+                onTap: () async {
+                  final now = DateTime.now();
+                  final p = await showDatePicker(
+                    context: ctx,
+                    initialDate: now,
+                    firstDate: now.subtract(const Duration(days: 365 * 5)),
+                    lastDate: now,
+                    helpText: "Select Child's Correct Date of Birth",
+                  );
+                  if (p != null) {
+                    setS(() {
+                      picked = p;
+                      dobCtrl.text = DateFormat('MMMM d, yyyy').format(p);
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'After saving, vaccine schedules will recalculate automatically.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF6B7280), height: 1.4),
+              ),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: saving ? null : () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF59E0B),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: saving ? null : () async {
+              if (!formKey.currentState!.validate()) return;
+              if (picked == null) return;
+              setS(() => saving = true);
+              final isoDate = DateFormat('yyyy-MM-dd').format(picked!);
+              // Capture messenger before async gap
+              final messenger = ScaffoldMessenger.of(outerCtx);
+              final result  = await PatientsService.updateChildDob(widget.patientId, isoDate);
+              if (!mounted) return;
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (result['success'] == true) {
+                widget.onDobCorrected();
+                await _loadCard(); // Refresh modal immediately
+              } else {
+                messenger.showSnackBar(
+                  SnackBar(content: Text(result['message']?.toString() ?? 'Failed to update DOB')),
+                );
+              }
+            },
+            child: saving
+                ? const SizedBox(width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Save DOB', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
+      )),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth:  MediaQuery.of(context).size.width  * 0.72,
+          maxHeight: MediaQuery.of(context).size.height * 0.88,
+        ),
+        child: Column(children: [
+          // ── Modal header ────────────────────────────────────────────────
+          _buildModalHeader(context),
+          // ── Body ────────────────────────────────────────────────────────
+          Expanded(child: _buildModalBody(context)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildModalHeader(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F766E),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(16), topRight: Radius.circular(16),
+        ),
+      ),
+      child: Row(children: [
+        const Icon(Icons.vaccines_outlined, color: Colors.white, size: 22),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              widget.patientName,
+              style: const TextStyle(
+                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700),
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              'Vaccine Tracking  •  ID ${widget.patientId}',
+              style: const TextStyle(color: Color(0xFFCCFBF1), fontSize: 11),
+            ),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.close, color: Colors.white, size: 20),
+          onPressed: () => Navigator.pop(context),
+          splashRadius: 18,
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildModalBody(BuildContext context) {
+    if (_loading) return _buildSkeleton();
+
+    if (_error != null) {
+      return Center(child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.cloud_off_outlined, size: 48, color: Color(0xFF94A3B8)),
+          const SizedBox(height: 12),
+          const Text('Unable to load vaccine record.', style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          const Text('Please try again.', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _loadCard,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: const Text('Retry'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ]),
+      ));
+    }
+
+    final data = _cardData!;
+
+    // ── Not an immunization patient ─────────────────────────────────────────
+    if (data.notImmunization) {
+      return Center(child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.pregnant_woman_outlined, size: 48, color: Color(0xFF94A3B8)),
+          const SizedBox(height: 16),
+          const Text(
+            'Vaccine tracking is for Immunization patients only.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+          ),
+        ]),
+      ));
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+        // ── 3a Header — age + progress ────────────────────────────────────
+        _buildProgressHeader(data),
+        const SizedBox(height: 16),
+
+        // ── 3b DOB verification warning ───────────────────────────────────
+        if (data.dobNeedsVerification) ...[
+          _buildDobWarningBanner(context, data),
+          const SizedBox(height: 8),
+        ],
+
+        // ── Sections only for non-flagged records ─────────────────────────
+        if (!data.dobNeedsVerification) ...[
+
+          // Completed doses
+          if (data.completedDoses.isNotEmpty) ...[
+            _sectionHeader('Completed Doses', color: const Color(0xFF166534)),
+            const SizedBox(height: 8),
+            ...data.vaccines.expand((g) => g.doses
+                .where((d) => d.status == VaccineDoseStatus.completed)
+                .map((d) => _buildCompletedDoseRow(g.vaccineName, d))),
+            const SizedBox(height: 16),
+          ],
+
+          // Pending / incomplete doses
+          if (data.pendingDoses.isNotEmpty) ...[
+            _sectionHeader('Pending / Upcoming Doses', color: const Color(0xFF1E3A5F)),
+            const SizedBox(height: 8),
+            ...data.pendingDoses.map(_buildPendingDoseRow),
+            const SizedBox(height: 16),
+          ],
+
+          // ── 3e Bottom summary banner ─────────────────────────────────────
+          _buildSummaryBanner(data),
+        ],
+      ]),
+    );
+  }
+
+  // ── 3a Progress header ────────────────────────────────────────────────────
+  Widget _buildProgressHeader(VaccineCardData data) {
+    final pct = data.totalDosesRequired > 0
+        ? data.totalDosesCompleted / data.totalDosesRequired
+        : 0.0;
+
+    Color statusColor;
+    String statusLabel;
+    Color statusBg;
+    switch (data.overallStatus) {
+      case 'overdue':
+        statusColor = const Color(0xFF991B1B);
+        statusBg    = const Color(0xFFFEE2E2);
+        statusLabel = 'Overdue vaccines';
+        break;
+      case 'action_needed':
+        statusColor = const Color(0xFF92400E);
+        statusBg    = const Color(0xFFFEF3C7);
+        statusLabel = 'Action needed';
+        break;
+      default:
+        statusColor = const Color(0xFF166534);
+        statusBg    = const Color(0xFFDCFCE7);
+        statusLabel = 'Up to date';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDFA),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF99F6E4)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              _formatAge(data.ageInDays),
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF0F766E)),
+            ),
+            if (data.dob != null)
+              Text('DOB: ${_formatDateDisplay(data.dob)}',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+          ])),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: statusBg,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(statusLabel,
+                style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700, color: statusColor)),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 6,
+                backgroundColor: const Color(0xFFCCFBF1),
+                valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '${data.totalDosesCompleted} of ${data.totalDosesRequired} doses',
+            style: const TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0F766E)),
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  // ── 3b DOB warning banner ─────────────────────────────────────────────────
+  Widget _buildDobWarningBanner(BuildContext context, VaccineCardData data) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFCA5A5), width: 1.5),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.error_outline, color: Color(0xFFDC2626), size: 22),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text(
+            '⚠️ Child DOB needs verification',
+            style: TextStyle(
+                fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF991B1B)),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'This child\'s date of birth may be incorrect (${widget.storedDob.isNotEmpty ? widget.storedDob : 'unknown'}). '
+            'Vaccine tracking cannot be computed accurately until the DOB is verified.',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF7F1D1D), height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            icon: const Icon(Icons.edit_calendar_outlined, size: 16),
+            label: const Text('Edit Child DOB',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+            onPressed: () => _showDobCorrection(context),
+          ),
+        ])),
+      ]),
+    );
+  }
+
+  // ── Section header ────────────────────────────────────────────────────────
+  Widget _sectionHeader(String title, {Color color = const Color(0xFF1E3A5F)}) {
+    return Text(title,
+        style: TextStyle(
+            fontSize: 13, fontWeight: FontWeight.w700, color: color, letterSpacing: 0.2));
+  }
+
+  // ── 3c Completed dose row ─────────────────────────────────────────────────
+  Widget _buildCompletedDoseRow(String vaccineName, VaccineDose dose) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDF4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFBBF7D0)),
+      ),
+      child: Row(children: [
+        const Icon(Icons.check_circle_rounded, color: Color(0xFF16A34A), size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            '$vaccineName — ${dose.doseLabel}',
+            style: const TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF14532D)),
+          ),
+          if (dose.givenAt != null)
+            Text('Given: ${_formatDateDisplay(dose.givenAt?.substring(0, 10))}',
+                style: const TextStyle(fontSize: 11, color: Color(0xFF16A34A))),
+          if (dose.givenBy != null && dose.givenBy!.isNotEmpty)
+            Text('By: ${dose.givenBy}',
+                style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+          if (dose.notes != null && dose.notes!.isNotEmpty)
+            Text('Note: ${dose.notes}',
+                style: const TextStyle(
+                    fontSize: 11, color: Color(0xFF64748B), fontStyle: FontStyle.italic)),
+        ])),
+      ]),
+    );
+  }
+
+  // ── 3d Pending dose row ───────────────────────────────────────────────────
+  Widget _buildPendingDoseRow(PendingDose dose) {
+    final Color bg, border, iconColor, labelColor;
+    final IconData icon;
+    String subtitle;
+
+    switch (dose.status) {
+      case VaccineDoseStatus.overdue:
+        bg         = const Color(0xFFFEF2F2);
+        border     = const Color(0xFFFCA5A5);
+        iconColor  = const Color(0xFFDC2626);
+        labelColor = const Color(0xFF991B1B);
+        icon       = Icons.warning_rounded;
+        subtitle   = 'Was due ${_formatDateDisplay(dose.dueDateEstimate)}'
+            '${dose.daysOverdue != null ? ', ${dose.daysOverdue} day${dose.daysOverdue == 1 ? '' : 's'} overdue' : ''}';
+        break;
+      case VaccineDoseStatus.dueSoon:
+        bg         = const Color(0xFFFFFBEB);
+        border     = const Color(0xFFFDE68A);
+        iconColor  = const Color(0xFFD97706);
+        labelColor = const Color(0xFF92400E);
+        icon       = Icons.access_time_rounded;
+        subtitle   = 'Due ${_formatDateDisplay(dose.dueDateEstimate)}';
+        break;
+      case VaccineDoseStatus.locked:
+        bg         = const Color(0xFFF8FAFC);
+        border     = const Color(0xFFE2E8F0);
+        iconColor  = const Color(0xFF94A3B8);
+        labelColor = const Color(0xFF64748B);
+        icon       = Icons.lock_outline_rounded;
+        subtitle   = dose.waitingFor != null
+            ? 'Waiting for ${dose.waitingFor} to be completed first'
+            : 'Locked until prior dose is completed';
+        break;
+      default: // not_yet_due
+        bg         = const Color(0xFFF8FAFC);
+        border     = const Color(0xFFE2E8F0);
+        iconColor  = const Color(0xFF94A3B8);
+        labelColor = const Color(0xFF475569);
+        icon       = Icons.lock_clock_outlined;
+        subtitle   = 'Due at ${dose.scheduleLabel}, est. ${_formatDateDisplay(dose.dueDateEstimate)}';
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: border),
+      ),
+      child: Row(children: [
+        Icon(icon, color: iconColor, size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            '${dose.vaccineName} — ${dose.doseLabel}',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: labelColor),
+          ),
+          Text(subtitle,
+              style: TextStyle(fontSize: 11, color: iconColor, height: 1.4)),
+        ])),
+      ]),
+    );
+  }
+
+  // ── 3e Bottom summary banner ───────────────────────────────────────────────
+  Widget _buildSummaryBanner(VaccineCardData data) {
+    Color bg, border, textColor;
+    String message;
+
+    final hasOverdue = data.pendingDoses.any((d) => d.status == VaccineDoseStatus.overdue);
+    final hasDueSoon = data.pendingDoses.any((d) => d.status == VaccineDoseStatus.dueSoon);
+    final nextDueSoon = data.pendingDoses
+        .where((d) => d.status == VaccineDoseStatus.dueSoon)
+        .firstOrNull;
+
+    if (hasOverdue) {
+      bg        = const Color(0xFFFEF2F2);
+      border    = const Color(0xFFFCA5A5);
+      textColor = const Color(0xFF991B1B);
+      message   = 'This child has overdue vaccines. Follow up with the patient immediately.';
+    } else if (hasDueSoon && nextDueSoon != null) {
+      bg        = const Color(0xFFFFFBEB);
+      border    = const Color(0xFFFDE68A);
+      textColor = const Color(0xFF92400E);
+      message   = 'Next: ${nextDueSoon.vaccineName} ${nextDueSoon.doseLabel}, '
+                  'due ${_formatDateDisplay(nextDueSoon.dueDateEstimate)}.';
+    } else {
+      bg        = const Color(0xFFDCFCE7);
+      border    = const Color(0xFFBBF7D0);
+      textColor = const Color(0xFF166534);
+      message   = 'This child is fully up to date for their current age.';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: border),
+      ),
+      child: Text(message,
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textColor, height: 1.4)),
+    );
+  }
+
+  // ── Skeleton loader ───────────────────────────────────────────────────────
+  Widget _buildSkeleton() {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _skBox(60, double.infinity),
+        const SizedBox(height: 16),
+        _skBox(14, 120),
+        const SizedBox(height: 8),
+        ...List.generate(5, (_) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _skBox(52, double.infinity),
+        )),
+      ]),
+    );
+  }
+
+  Widget _skBox(double h, double w) => Container(
+    height: h,
+    width: w == double.infinity ? double.infinity : w,
+    margin: const EdgeInsets.only(bottom: 2),
+    decoration: BoxDecoration(
+      color: const Color(0xFFE2E8F0),
+      borderRadius: BorderRadius.circular(8),
+    ),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hover card wrapper (unchanged)
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _HoverRecordCard extends StatefulWidget {
   const _HoverRecordCard({required this.child});

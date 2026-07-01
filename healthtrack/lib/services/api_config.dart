@@ -89,4 +89,8 @@ class ApiConfig {
   static const String getVaccineCardEndpoint = '/vaccines/card';
   static const String postVaccineRecordEndpoint = '/vaccines/record';
   static const String deleteVaccineRecordEndpoint = '/vaccines/record';
+
+  // ── Admin Vaccine Tracking endpoints (authenticateAdmin) ───────────────────
+  static const String getAdminVaccineCardEndpoint   = '/vaccines/admin/card';
+  static const String getAdminVaccineBadgeEndpoint  = '/vaccines/admin/badge';
 }

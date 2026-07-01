@@ -2,18 +2,64 @@
   "version": 2,
   "outputDirectory": "build/web",
   "rewrites": [
-    { "source": "/flutter_service_worker.js", "destination": "/flutter_service_worker.js" },
-    { "source": "/flutter_bootstrap.js", "destination": "/flutter_bootstrap.js" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/flutter_service_worker.js",  "destination": "/flutter_service_worker.js" },
+    { "source": "/flutter_bootstrap.js",       "destination": "/flutter_bootstrap.js" },
+    { "source": "/flutter.js",                 "destination": "/flutter.js" },
+    { "source": "/main.dart.js",               "destination": "/main.dart.js" },
+    { "source": "/manifest.json",              "destination": "/manifest.json" },
+    { "source": "/favicon.png",                "destination": "/favicon.png" },
+    { "source": "/version.json",               "destination": "/version.json" },
+    { "source": "/assets/(.*)",                "destination": "/assets/$1" },
+    { "source": "/canvaskit/(.*)",             "destination": "/canvaskit/$1" },
+    { "source": "/icons/(.*)",                 "destination": "/icons/$1" },
+    { "source": "/(.*)",                       "destination": "/index.html" }
   ],
   "headers": [
     {
       "source": "/flutter_service_worker.js",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Service-Worker-Allowed", "value": "/" }
+      ]
     },
     {
       "source": "/flutter_bootstrap.js",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/flutter.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/main.dart.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/canvaskit/(.*)",
+      "headers": [
+        { "key": "Cache-Control",   "value": "public, max-age=31536000, immutable" },
+        { "key": "Cross-Origin-Embedder-Policy",  "value": "require-corp" },
+        { "key": "Cross-Origin-Opener-Policy",    "value": "same-origin" }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
+        { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" }
+      ]
     }
   ]
 }

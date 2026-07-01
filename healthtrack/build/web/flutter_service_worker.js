@@ -3,7 +3,7 @@ const MANIFEST = 'flutter-app-manifest';
 const TEMP = 'flutter-temp-cache';
 const CACHE_NAME = 'flutter-app-cache';
 
-const RESOURCES = {".vercel/project.json": "d904e51cc7422981398d0556bb6155d4",
+const RESOURCES = {".vercel/project.json": "c6cad34e87d77fb5a0907440fae1053a",
 ".vercel/README.txt": "2b13c79d37d6ed82a3255b83b6815034",
 "assets/AssetManifest.bin": "f1014ea5de65efdd7542d345449cda52",
 "assets/AssetManifest.bin.json": "6f9ecb5f4b419068c5247139b2d5dce5",
@@ -15,7 +15,7 @@ const RESOURCES = {".vercel/project.json": "d904e51cc7422981398d0556bb6155d4",
 "assets/assets/images/logoadmin.png": "cf7f440689d753a242e050992e975335",
 "assets/assets/images/profile.png": "4bad1a34f23e79fe0910846d627887e8",
 "assets/FontManifest.json": "dc3d03800ccca4601324923c0b1d6d57",
-"assets/fonts/MaterialIcons-Regular.otf": "830dce4c424b90a92a6f482f69ce55f8",
+"assets/fonts/MaterialIcons-Regular.otf": "8ca2980cf21ef3c8e99ce120ad0ff5fd",
 "assets/NOTICES": "f7b40595c5c7d1941b6ab8c1673412b2",
 "assets/packages/cupertino_icons/assets/CupertinoIcons.ttf": "33b7d9392238c04c131b6ce224e13711",
 "assets/shaders/ink_sparkle.frag": "ecc85a2e95f5e9f53123dcaf8cb9b6ce",
@@ -33,16 +33,16 @@ const RESOURCES = {".vercel/project.json": "d904e51cc7422981398d0556bb6155d4",
 "canvaskit/skwasm_heavy.wasm": "8034ad26ba2485dab2fd49bdd786837b",
 "favicon.png": "c265ccc8a40492e11d2ab41592f20602",
 "flutter.js": "888483df48293866f9f41d3d9274a779",
-"flutter_bootstrap.js": "d634dd2af927bea5e48fbf599b7099a1",
+"flutter_bootstrap.js": "d70fb72349122ff1a55d0c263d09dd18",
 "icons/Icon-192.png": "ac9a721a12bbc803b44f645561ecb1e1",
 "icons/Icon-512.png": "96e752610906ba2a93c65f8abe1645f1",
 "icons/Icon-maskable-192.png": "c457ef57daa1d16f64b27b786ec2ea3c",
 "icons/Icon-maskable-512.png": "301a7604d45b3e739efc881eb04896ea",
 "index.html": "a4203a7db1ba7797a03f29e8fa2bde76",
 "/": "a4203a7db1ba7797a03f29e8fa2bde76",
-"main.dart.js": "fcd99e0e0f714dc4f6d37e8da8dc3085",
+"main.dart.js": "f56acb33a0d000dbd7c6be4b31e26b05",
 "manifest.json": "a84db953fe439044960a60de449c88d8",
-"vercel.json": "84d2a571021eed0f66e5b06b113034f0",
+"vercel.json": "fd8a93b4eed6c0de8fc90b4194066e00",
 "version.json": "437a7a68eef04979121998435f7e28a8"};
 // The application shell files that are downloaded before a service worker can
 // start.

@@ -37,6 +37,10 @@ class _AppointmentTabState extends State<AppointmentTab> {
   bool _isBooking = false;
   String _errorMessage = '';
 
+  // Child selector for booking (multi-child support)
+  // null = not yet chosen (required when multiple children exist)
+  int? _selectedChildId;
+
   // Appointment history state
   List<Map<String, dynamic>> _appointments = [];
   bool _isLoadingAppointments = false;
@@ -45,6 +49,12 @@ class _AppointmentTabState extends State<AppointmentTab> {
   void initState() {
     super.initState();
     
+    // Auto-select child when only one exists; require explicit selection for 2+
+    final session = UserSession.instance;
+    if (!session.hasMultipleChildren && session.activeChild != null) {
+      _selectedChildId = session.activeChild!.id;
+    }
+
     // Initialize WebSocket connection and add listener for slot updates
     _initializeWebSocket();
     
@@ -608,6 +618,41 @@ class _AppointmentTabState extends State<AppointmentTab> {
                       ),
                     ),
                     
+                    // ── Child selector (shown only when parent has 2+ children) ──
+                    Builder(builder: (ctx) {
+                      final session  = UserSession.instance;
+                      final children = session.children;
+                      if (children.length <= 1) return const SizedBox.shrink();
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 16),
+                          const Text(
+                            'For which child?',
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 8),
+                          DropdownButtonFormField<int>(
+                            value: _selectedChildId,
+                            hint: const Text('Select child'),
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            items: children.map((c) => DropdownMenuItem<int>(
+                              value: c.id,
+                              child: Text(c.childFullname, overflow: TextOverflow.ellipsis),
+                            )).toList(),
+                            onChanged: (v) {
+                              setState(() => _selectedChildId = v);
+                              this.setState(() => _selectedChildId = v);
+                            },
+                          ),
+                        ],
+                      );
+                    }),
+
                     const SizedBox(height: 20),
                     
                     // Action buttons - using responsive layout
@@ -861,53 +906,61 @@ class _AppointmentTabState extends State<AppointmentTab> {
       return;
     }
 
+    // Require explicit child selection when parent has multiple children
+    final session = UserSession.instance;
+    if (session.hasMultipleChildren && (_selectedChildId == null || _selectedChildId! <= 0)) {
+      MessageUtils.showErrorMessage(
+        context,
+        "Please select which child this appointment is for.",
+        title: "Child Required",
+      );
+      return;
+    }
+
+    // Use selected child, or fall back to the active (only) child
+    final effectivePatientId = _selectedChildId != null && _selectedChildId! > 0
+        ? _selectedChildId.toString()
+        : session.patientData?['id']?.toString() ?? '';
+
     // Final availability check before booking
     final slotId = _selectedSlot!['id'] as int;
     final calculatedAvailable = _selectedSlot!['calculated_available'] as bool? ?? false;
     
     if (!calculatedAvailable) {
       MessageUtils.showErrorMessage(context, "This slot is no longer available. Please select another slot.");
-      // Refresh slots to get current state
       _loadAvailableSlots();
       return;
     }
 
-    setState(() {
-      _isBooking = true;
-    });
+    setState(() { _isBooking = true; });
 
     try {
-      final userSession = UserSession.instance;
-      if (!userSession.isLoggedIn) {
-        throw Exception("User not logged in");
-      }
+      if (!session.isLoggedIn) throw Exception("User not logged in");
 
       // Step 1: Book the slot first (atomic operation)
       final bookResult = await AppointmentSlotService.bookSlot(slotId);
-      
       if (!mounted) return;
-      
+
       if (bookResult['success'] != true) {
-        // If booking failed, refresh slots and show error
         _loadAvailableSlots();
         throw Exception(bookResult['message'] ?? "Failed to book slot");
       }
 
-      // Step 2: Create the appointment record with approved status
-      final startTime = _selectedSlot!['start_time'] as String;
+      // Step 2: Create the appointment record
+      final startTime  = _selectedSlot!['start_time'] as String;
       final dateString = _selectedSlot!['appointment_date'] as String;
-      
+
       final appointmentData = {
-        'userId': userSession.userId,
-        'patientId': userSession.patientData?['id']?.toString() ?? '',
-        'doctorName': 'Available Doctor',
-        'clinicHospital': 'Balangasan Health Center',
+        'userId':          session.userId,
+        'patientId':       effectivePatientId,
+        'doctorName':      'Available Doctor',
+        'clinicHospital':  'Balangasan Health Center',
         'appointmentDate': dateString,
         'appointmentTime': startTime,
         'appointmentType': _getSelectedServiceName(),
-        'notes': '',
-        'slotId': slotId,
-        'status': 'approved', // Auto-approved since slot was successfully booked
+        'notes':           '',
+        'slotId':          slotId,
+        'status':          'approved',
       };
 
       final result = await AppointmentService.addAppointment(appointmentData);
@@ -1962,6 +2015,29 @@ class _AppointmentTabState extends State<AppointmentTab> {
                     appt["appointment_type"] ?? "General Check-up",
                     style: const TextStyle(color: Colors.grey, fontSize: 12),
                   ),
+                  // Show child name so parent can distinguish appointments per child
+                  if ((appt["patient_full_name"] ?? appt["patient_name"] ?? "").toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.child_care, size: 12, color: Colors.blueAccent),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              appt["patient_full_name"]?.toString() ??
+                                  appt["patient_name"]?.toString() ?? "",
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.blueAccent,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   const SizedBox(height: 6),
                   Row(
                     children: [

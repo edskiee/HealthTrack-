@@ -92,6 +92,7 @@ class RegistrationService {
             // Store user and patient data in session - SAFE TYPE CONVERSION
             final userData = data['data']?['user'] ?? data['user'];
             final patientData = data['data']?['patient'] ?? data['patient'];
+            final rawChildren = data['children'] ?? data['data']?['children'];
                         
             if (userData != null) {
               // Ensure userData is a Map before setting
@@ -106,6 +107,8 @@ class RegistrationService {
               // Ensure patientData is a Map before setting
               if (patientData is Map<String, dynamic>) {
                 UserSession.instance.setPatientData(patientData);
+                // Also seed the children list with this first child
+                UserSession.instance.setChildren([patientData]);
               } else {
                 print('⚠️ Warning: patientData is not a Map, creating minimal data');
                 // Create minimal patient data as fallback
@@ -119,6 +122,7 @@ class RegistrationService {
                   'status': 'active'
                 };
                 UserSession.instance.setPatientData(minimalPatientData);
+                UserSession.instance.setChildren([minimalPatientData]);
               }
             } else {
               // Create a minimal patient data object from user data - SAFE TYPE CONVERSION
@@ -132,6 +136,12 @@ class RegistrationService {
                 'status': 'active'
               };
               UserSession.instance.setPatientData(minimalPatientData);
+              UserSession.instance.setChildren([minimalPatientData]);
+            }
+
+            // If the server returned a full children array (future-proof), use it
+            if (rawChildren is List && rawChildren.isNotEmpty) {
+              UserSession.instance.setChildren(rawChildren);
             }
           } catch (e) {
             print('⚠️ Error setting session data: $e');

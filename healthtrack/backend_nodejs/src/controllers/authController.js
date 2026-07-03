@@ -426,8 +426,13 @@ const userLogin = async (req, res) => {
       console.warn("⚠️ JWT_SECRET not set — access_token not issued");
     }
 
-    // Load associated patient record
-    const [patientResults] = await db.execute("SELECT * FROM patients WHERE user_id = ? LIMIT 1", [userRow.id]);
+    // Load ALL child records for this parent (ordered by child_sort_order, then created_at)
+    // First child in the array is the primary/oldest child (backward-compatible with
+    // code that reads responseData.patient — it still gets the first child row).
+    const [allChildren] = await db.execute(
+      `SELECT * FROM patients WHERE user_id = ? ORDER BY child_sort_order ASC, created_at ASC`,
+      [userRow.id]
+    );
 
     // Strip password from the response object
     const { password: _pw, ...safeUser } = userRow;
@@ -438,8 +443,11 @@ const userLogin = async (req, res) => {
       access_token: accessToken,
       user: safeUser,
     };
-    if (patientResults.length > 0) {
-      responseData.patient = patientResults[0];
+    if (allChildren.length > 0) {
+      // `patient` stays as the primary child for backward compatibility
+      responseData.patient  = allChildren[0];
+      // `children` is the full list — used by the new multi-child switcher
+      responseData.children = allChildren;
     }
 
     console.log(`✅ User ${username} (ID=${userRow.id}) logged in`);

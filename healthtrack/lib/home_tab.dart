@@ -31,7 +31,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   String? _healthTrackingLoadError;
   Timer? _refreshTimer;
   StreamSubscription<int>? _notificationSubscription;
-  StreamSubscription<void>? _userSessionNotificationSubscription; // Add this
+  StreamSubscription<void>? _userSessionNotificationSubscription;
+  StreamSubscription<void>? _activeChildSubscription;
   final Random _random = Random();
   late void Function(Map<String, dynamic>) _onAppointmentRealtime;
 
@@ -50,6 +51,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _startAutoRefresh();
     _listenForNotificationChanges();
     _listenForUserSessionNotificationChanges();
+    // Rebuild when active child changes so the tracking label updates
+    _activeChildSubscription =
+        UserSession.instance.onActiveChildChanged.listen((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   // Add this method to listen for notification changes from user session
@@ -99,7 +105,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
     _notificationSubscription?.cancel();
-    _userSessionNotificationSubscription?.cancel(); // Add this
+    _userSessionNotificationSubscription?.cancel();
+    _activeChildSubscription?.cancel();
     super.dispose();
   }
 
@@ -472,6 +479,26 @@ const SizedBox(height: 24),
 
           // Vaccine Tracking — only for immunization service type
           if (UserSession.instance.serviceType != 'maternal') ...[
+            // Show which child's data is being tracked when multiple children exist
+            if (UserSession.instance.hasMultipleChildren) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.child_care, size: 14, color: Colors.blueAccent.shade200),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Tracking: ${UserSession.instance.childName}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.blueAccent.shade400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const VaccineDashboardWidget(),
             const SizedBox(height: 28),
           ],

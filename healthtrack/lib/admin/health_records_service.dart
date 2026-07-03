@@ -79,6 +79,7 @@ class HealthRecordsService {
     return {
       "id":            record['id']?.toString() ?? '',
       "recordId":      record['record_id']?.toString() ?? '',
+      "userId":        record['user_id']?.toString() ?? '',
       "patientId":     record['patient_id']?.toString() ?? '',
       "name":          record['name']?.toString() ?? '',
       "age":           record['age']?.toString() ?? '',
@@ -101,6 +102,7 @@ class HealthRecordsService {
       "dobNeedsVerification": record['dob_needs_verification'] == true ||
                               record['dob_needs_verification'] == 1,
       "createdAt":     record['created_at']?.toString() ?? '',
+      "childCount":    (record['child_count'] as num?)?.toInt() ?? 1,
     };
   }
 

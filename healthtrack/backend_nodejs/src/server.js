@@ -39,6 +39,7 @@ const systemSettingsRoutes      = require("./routes/systemSettings");
 const referralsRoutes           = require("./routes/referrals");
 const testNotificationsRoutes   = require("./routes/testNotifications");
 const vaccineRoutes             = require("./routes/vaccines");
+const childrenRoutes            = require("./routes/children");
 
 // ─── Service / Setup Imports ──────────────────────────────────────────────────
 const dbPool                = require("./config/db");
@@ -51,6 +52,7 @@ const { startNotificationScheduler }  = require("./services/notificationSchedule
 const { migrateNotificationsTable, migrateAppointmentSlotsCapacity } = require("./setup/migrateNotificationsTable");
 const { setupVaccineTables } = require("./setup/vaccineTableSetup");
 const { migrateDobVerification } = require("./setup/migrateDobVerification");
+const { migrateChildSortOrder } = require("./setup/migrateChildSortOrder");
 const { backfillVaccineRecords } = require("./setup/backfillVaccineRecords");
 
 /**
@@ -179,6 +181,7 @@ app.use("/appointment-reminders", appointmentRemindersRoutes);
 app.use("/system-settings",      systemSettingsRoutes);
 app.use("/referrals",            referralsRoutes);
 app.use("/vaccines",             vaccineRoutes);
+app.use("/children",             childrenRoutes);
 app.use("/test",                 testNotificationsRoutes); // disabled in production
 
 // ─── Health Check Endpoints ───────────────────────────────────────────────────
@@ -373,6 +376,7 @@ async function bootstrap() {
   await migrateReminderSettings();
   await setupVaccineTables();
   await migrateDobVerification();
+  await migrateChildSortOrder();
   // ⚠️ backfillVaccineRecords is intentionally NOT awaited here.
   // It runs after the server is already listening so it never blocks port binding.
 

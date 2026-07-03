@@ -33,6 +33,7 @@ class _VaccineDashboardWidgetState extends State<VaccineDashboardWidget>
   bool _loading = true;
   String? _error;
   Timer? _pollTimer;
+  StreamSubscription<void>? _activeChildSub;
 
   // Bound once so we can remove the same instance in dispose()
   late final void Function(Map<String, dynamic>) _onVaccineUpdate;
@@ -48,6 +49,11 @@ class _VaccineDashboardWidgetState extends State<VaccineDashboardWidget>
       if (mounted) _fetchSummary(silent: true);
     };
 
+    // Re-fetch immediately when the parent switches the active child
+    _activeChildSub = UserSession.instance.onActiveChildChanged.listen((_) {
+      if (mounted) _fetchSummary();
+    });
+
     _initRealtime();
     _fetchSummary();
     _startPollTimer();
@@ -57,6 +63,7 @@ class _VaccineDashboardWidgetState extends State<VaccineDashboardWidget>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
+    _activeChildSub?.cancel();
     WebSocketService.instance.removeVaccineRecordUpdatedListener(_onVaccineUpdate);
     super.dispose();
   }

@@ -129,9 +129,22 @@ exports.getPatients = async (req, res) => {
     const params       = [];
 
     if (searchQ) {
-      whereClauses.push('(child_fullname LIKE ? OR mother_fullname LIKE ? OR father_fullname LIKE ?)');
+      // Match parent name (mother/father) OR any child name under this parent's user_id.
+      // The subquery finds user_ids that have at least one child matching the search term,
+      // then returns any patient row (child) belonging to that same parent — so all children
+      // of a matched parent appear together, and searching by child name returns the parent card.
+      whereClauses.push(`(
+        child_fullname  LIKE ? OR
+        mother_fullname LIKE ? OR
+        father_fullname LIKE ? OR
+        user_id IN (
+          SELECT DISTINCT user_id FROM patients
+          WHERE user_id IS NOT NULL
+            AND (child_fullname LIKE ? OR mother_fullname LIKE ?)
+        )
+      )`);
       const term = `%${searchQ}%`;
-      params.push(term, term, term);
+      params.push(term, term, term, term, term);
     }
     if (serviceType && serviceType !== 'All') {
       whereClauses.push('service_type = ?');
@@ -709,7 +722,7 @@ exports.searchPatients = async (req, res) => {
   return exports.getPatients(req, res);
 };
 
-// Get patient data for specific user
+// Get patient data for specific user (returns first/primary child — backward compatible)
 exports.getUserPatient = async (req, res) => {
   const { userId } = req.params;
 
@@ -724,7 +737,8 @@ exports.getUserPatient = async (req, res) => {
     const existingColumns = await getMaternalColumns();
     const selectCols = buildFullSelectCols(existingColumns);
 
-    const sql = `SELECT ${selectCols} FROM patients WHERE user_id = ? LIMIT 1`;
+    // Return the primary child (lowest child_sort_order, then oldest created_at)
+    const sql = `SELECT ${selectCols} FROM patients WHERE user_id = ? ORDER BY child_sort_order ASC, created_at ASC LIMIT 1`;
     const [results] = await db.execute(sql, [userId]);
 
     if (results.length === 0) {
@@ -735,7 +749,7 @@ exports.getUserPatient = async (req, res) => {
     }
 
     const patient = results[0];
-    console.log(`✅ Found patient data for user ${userId}: ${patient.childName}`);
+    console.log(`✅ Found primary patient data for user ${userId}: ${patient.childName}`);
 
     res.status(200).json({
       success: true,
@@ -747,6 +761,37 @@ exports.getUserPatient = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch patient data",
+      error: error.message,
+    });
+  }
+};
+
+// Get ALL children records for a user (admin use — full detail)
+exports.getUserChildren = async (req, res) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return res.status(400).json({ success: false, message: "User ID is required" });
+  }
+
+  try {
+    const existingColumns = await getMaternalColumns();
+    const selectCols      = buildFullSelectCols(existingColumns);
+
+    const sql = `SELECT ${selectCols} FROM patients WHERE user_id = ? ORDER BY child_sort_order ASC, created_at ASC`;
+    const [results] = await db.execute(sql, [userId]);
+
+    res.status(200).json({
+      success: true,
+      message: "Children fetched successfully",
+      data:    results,
+      count:   results.length,
+    });
+  } catch (error) {
+    console.error("❌ Database error getUserChildren:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch children",
       error: error.message,
     });
   }

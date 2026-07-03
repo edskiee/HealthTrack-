@@ -93,4 +93,10 @@ class ApiConfig {
   // ── Admin Vaccine Tracking endpoints (authenticateAdmin) ───────────────────
   static const String getAdminVaccineCardEndpoint   = '/vaccines/admin/card';
   static const String getAdminVaccineBadgeEndpoint  = '/vaccines/admin/badge';
+
+  // ── Multi-child endpoints ──────────────────────────────────────────────────
+  static const String getChildrenEndpoint      = '/children/user';  // + /:userId
+  static const String addChildEndpoint         = '/children';
+  static const String updateChildEndpoint      = '/children';       // + /:childId (PATCH)
+  static const String getChildCountEndpoint    = '/children/user';  // + /:userId/count
 }

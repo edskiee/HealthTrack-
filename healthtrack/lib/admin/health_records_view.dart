@@ -1,15 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:intl/intl.dart';
 import 'health_records_service.dart';
 import 'patients_service.dart';
 import 'services/vaccine_tracking_service.dart';
+import 'services/admin_session_storage.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/dashboard_service.dart';
 import '../services/connection_status_service.dart';
+import '../services/api_config.dart';
 import 'widgets/admin_header.dart';
 import 'widgets/referral_modal.dart';
 
@@ -1266,6 +1270,38 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
               ],
             ),
             const SizedBox(height: 10),
+            // ── Child count badge ─────────────────────────────────────────────
+            Builder(builder: (ctx) {
+              final childCount = record["childCount"] as int? ?? 1;
+              final label = childCount == 1 ? '1 child' : '$childCount children';
+              return Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F5F9),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.child_care, size: 10, color: Color(0xFF64748B)),
+                      const SizedBox(width: 3),
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF475569),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
             Container(height: 0.5, color: const Color(0xFFBFDBFE)),
             const SizedBox(height: 10),
             _metaLabel("SERVICE"),
@@ -1619,16 +1655,20 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
 
   // ── Vaccine Tracking Modal ────────────────────────────────────────────────
   void _showVaccineTrackingModal(Map<String, dynamic> record) {
-    final patientId = int.tryParse(record['patientId']?.toString() ?? '0') ?? 0;
-    final patientName  = record['patientName']?.toString()  ?? 'Unknown Patient';
-    final storedDob    = record['dateOfBirth']?.toString()  ?? '';
-    final serviceType  = record['serviceType']?.toString()  ?? '';
+    final patientId   = int.tryParse(record['patientId']?.toString() ?? '0') ?? 0;
+    final userId      = int.tryParse(record['userId']?.toString() ?? record['user_id']?.toString() ?? '0') ?? 0;
+    final patientName = record['patientName']?.toString()  ?? 'Unknown Patient';
+    final storedDob   = record['dateOfBirth']?.toString()  ?? '';
+    final serviceType = record['serviceType']?.toString()  ?? '';
+    final childCount  = record['childCount'] as int? ?? 1;
 
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _VaccineTrackingModal(
         patientId:    patientId,
+        userId:       userId,
+        childCount:   childCount,
         patientName:  patientName,
         storedDob:    storedDob,
         serviceType:  serviceType,
@@ -1683,6 +1723,8 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
 class _VaccineTrackingModal extends StatefulWidget {
   const _VaccineTrackingModal({
     required this.patientId,
+    required this.userId,
+    required this.childCount,
     required this.patientName,
     required this.storedDob,
     required this.serviceType,
@@ -1690,6 +1732,8 @@ class _VaccineTrackingModal extends StatefulWidget {
   });
 
   final int patientId;
+  final int userId;
+  final int childCount;
   final String patientName;
   final String storedDob;
   final String serviceType;
@@ -1703,17 +1747,61 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
   bool _loading = true;
   String? _error;
   VaccineCardData? _cardData;
-
-  // Polling timer for realtime sync (fallback if Socket.IO is not used here)
   Timer? _pollTimer;
+
+  // Multi-child: when null we show the child-selector; when set we show the card
+  int? _activeChildId;
+  String? _activeChildName;
+  bool _loadingChildren = false;
+  List<Map<String, dynamic>> _children = [];
 
   @override
   void initState() {
     super.initState();
+    if (widget.childCount >= 2) {
+      // Show child list first
+      _loadingChildren = true;
+      _fetchChildren();
+    } else {
+      // Single child — go straight to card
+      _activeChildId = widget.patientId;
+      _loadCard();
+      _pollTimer = Timer.periodic(
+          const Duration(seconds: 15), (_) => _loadCard(silent: true));
+    }
+  }
+
+  Future<void> _fetchChildren() async {
+    try {
+      // Use the admin patients endpoint to get all children for this parent
+      final children = await _AdminChildrenHelper.fetchChildren(widget.userId);
+      if (!mounted) return;
+      setState(() {
+        _children = children;
+        _loadingChildren = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingChildren = false;
+        _error = 'Failed to load children: $e';
+      });
+    }
+  }
+
+  void _selectChild(Map<String, dynamic> child) {
+    final id   = int.tryParse(child['id']?.toString() ?? '0') ?? 0;
+    final name = child['child_fullname']?.toString() ?? 'Unknown Child';
+    setState(() {
+      _activeChildId   = id;
+      _activeChildName = name;
+      _loading         = true;
+      _error           = null;
+    });
     _loadCard();
-    // Poll every 15 s so the modal always reflects current DB state
-    // (Socket.IO push is handled server-side; this is the Flutter-side safety net)
-    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) => _loadCard(silent: true));
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(
+        const Duration(seconds: 15), (_) => _loadCard(silent: true));
   }
 
   @override
@@ -1724,9 +1812,10 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
 
   Future<void> _loadCard({bool silent = false}) async {
     if (!mounted) return;
+    final targetId = _activeChildId ?? widget.patientId;
     if (!silent) setState(() { _loading = true; _error = null; });
     try {
-      final data = await VaccineTrackingService.getAdminVaccineCard(widget.patientId);
+      final data = await VaccineTrackingService.getAdminVaccineCard(targetId);
       if (!mounted) return;
       setState(() { _cardData = data; _loading = false; });
     } catch (e) {
@@ -1884,13 +1973,88 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
           // ── Modal header ────────────────────────────────────────────────
           _buildModalHeader(context),
           // ── Body ────────────────────────────────────────────────────────
-          Expanded(child: _buildModalBody(context)),
+          // If multi-child and no child selected yet, show child-list screen
+          if (widget.childCount >= 2 && _activeChildId == null)
+            Expanded(child: _buildChildListScreen(context))
+          else
+            Expanded(child: _buildModalBody(context)),
         ]),
       ),
     );
   }
 
+  // ── Child list screen (shown first when 2+ children) ──────────────────────
+  Widget _buildChildListScreen(BuildContext context) {
+    if (_loadingChildren) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(_error!, style: const TextStyle(color: Colors.red)),
+        ),
+      );
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Select a child to view vaccine tracking:',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+          ),
+          ..._children.map((child) {
+            final name = child['child_fullname']?.toString() ?? 'Unknown Child';
+            final dob  = child['dob']?.toString() ?? '';
+            final age  = _ageFromDob(dob);
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: const Color(0xFF0F766E),
+                  child: Text(
+                    name.isNotEmpty ? name[0].toUpperCase() : '?',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: age.isNotEmpty ? Text(age) : null,
+                trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Color(0xFF0F766E)),
+                onTap: () => _selectChild(child),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  String _ageFromDob(String dob) {
+    if (dob.isEmpty) return '';
+    try {
+      final birth = DateTime.parse(dob);
+      final now   = DateTime.now();
+      final days  = now.difference(birth).inDays;
+      if (days < 30)  return '$days day${days == 1 ? "" : "s"} old';
+      if (days < 365) { final m = (days / 30).floor(); return '$m month${m == 1 ? "" : "s"} old'; }
+      final y = (days / 365).floor();
+      return '$y year${y == 1 ? "" : "s"} old';
+    } catch (_) { return ''; }
+  }
+
   Widget _buildModalHeader(BuildContext context) {
+    // In multi-child mode with a child selected, show "← Back to children"
+    final showBackButton = widget.childCount >= 2 && _activeChildId != null;
+    final displayName = showBackButton
+        ? (_activeChildName ?? widget.patientName)
+        : widget.patientName;
+    final displayId = _activeChildId ?? widget.patientId;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
       decoration: const BoxDecoration(
@@ -1900,18 +2064,39 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
         ),
       ),
       child: Row(children: [
-        const Icon(Icons.vaccines_outlined, color: Colors.white, size: 22),
-        const SizedBox(width: 10),
+        if (showBackButton) ...[
+          IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+            onPressed: () {
+              _pollTimer?.cancel();
+              setState(() {
+                _activeChildId   = null;
+                _activeChildName = null;
+                _cardData        = null;
+              });
+            },
+            tooltip: 'Back to children',
+            splashRadius: 18,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+          ),
+          const SizedBox(width: 4),
+        ] else ...[
+          const Icon(Icons.vaccines_outlined, color: Colors.white, size: 22),
+          const SizedBox(width: 10),
+        ],
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(
-              widget.patientName,
+              displayName,
               style: const TextStyle(
-                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700),
+                  color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700),
               maxLines: 1, overflow: TextOverflow.ellipsis,
             ),
             Text(
-              'Vaccine Tracking  •  ID ${widget.patientId}',
+              showBackButton
+                  ? '${widget.patientName}  •  Vaccine Tracking'
+                  : 'Vaccine Tracking  •  ID $displayId',
               style: const TextStyle(color: Color(0xFFCCFBF1), fontSize: 11),
             ),
           ]),
@@ -2346,5 +2531,38 @@ class _HoverRecordCardState extends State<_HoverRecordCard> {
         child: widget.child,
       ),
     );
+  }
+}
+
+// =============================================================================
+// Helper for fetching children list (used by multi-child vaccine modal)
+// =============================================================================
+
+class _AdminChildrenHelper {
+  static Future<List<Map<String, dynamic>>> fetchChildren(int userId) async {
+    try {
+      final token = await AdminSessionStorage.getToken();
+      final headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/patients/user/$userId/children'),
+        headers: headers,
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body) as Map<String, dynamic>;
+        if (body['success'] == true && body['data'] is List) {
+          return (body['data'] as List)
+              .whereType<Map<String, dynamic>>()
+              .toList();
+        }
+      }
+      throw Exception('Failed to fetch children');
+    } catch (e) {
+      throw Exception('Error fetching children: $e');
+    }
   }
 }

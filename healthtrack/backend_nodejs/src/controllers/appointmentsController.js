@@ -53,7 +53,9 @@ function formatNotificationDateTimeParts(appointmentDate, appointmentTime) {
 
 /** FCM + in-app row types for Health Tracking admin actions */
 function buildTrackingStatusNotification(status, appt) {
-  const typeLabel = (appt.appointment_type || "Appointment").toString();
+  const typeLabel  = (appt.appointment_type || "Appointment").toString();
+  const childName  = appt.patient_name || null;
+  const childLabel = childName ? ` for ${childName}` : "";
   const { dateStr, timeStr } = formatNotificationDateTimeParts(
     appt.appointment_date,
     appt.appointment_time
@@ -63,7 +65,7 @@ function buildTrackingStatusNotification(status, appt) {
       notificationType: "appointment_in_progress",
       fcmType: "appointment_in_progress",
       title: "Appointment In Progress",
-      message: `Your ${typeLabel} appointment on ${dateStr} at ${timeStr} is now in progress. Please wait for your consultation.`,
+      message: `Your ${typeLabel} appointment${childLabel} on ${dateStr} at ${timeStr} is now in progress. Please wait for your consultation.`,
     };
   }
   if (status === "completed") {
@@ -71,7 +73,7 @@ function buildTrackingStatusNotification(status, appt) {
       notificationType: "appointment_completed",
       fcmType: "appointment_completed",
       title: "Appointment Completed",
-      message: `Your ${typeLabel} appointment on ${dateStr} at ${timeStr} has been marked as completed. Thank you for attending!`,
+      message: `Your ${typeLabel} appointment${childLabel} on ${dateStr} at ${timeStr} has been marked as completed. Thank you for attending!`,
     };
   }
   if (status === "no_show") {
@@ -79,7 +81,7 @@ function buildTrackingStatusNotification(status, appt) {
       notificationType: "appointment_missed",
       fcmType: "appointment_missed",
       title: "Appointment Missed",
-      message: `Your ${typeLabel} appointment on ${dateStr} at ${timeStr} was marked as missed. Please reschedule if needed.`,
+      message: `Your ${typeLabel} appointment${childLabel} on ${dateStr} at ${timeStr} was marked as missed. Please reschedule if needed.`,
     };
   }
   return null;
@@ -194,11 +196,13 @@ exports.deleteAppointment = async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // First, get the appointment details for notification
+    // First, get the appointment details for notification (including child name)
     const getAppointmentSql = `
-      SELECT a.id, a.user_id, a.doctor_name, a.clinic_hospital, 
-             a.appointment_date, a.appointment_time, a.appointment_type
+      SELECT a.id, a.user_id, a.doctor_name, a.clinic_hospital,
+             a.appointment_date, a.appointment_time, a.appointment_type,
+             p.child_fullname AS child_name
       FROM appointments a
+      LEFT JOIN patients p ON a.patient_id = p.id
       WHERE a.id = ?
     `;
 
@@ -230,8 +234,9 @@ exports.deleteAppointment = async (req, res) => {
       });
     }
 
-    // Create notification for user about appointment deletion
-    const notificationMessage = `Your appointment with Dr. ${appointment.doctor_name} at ${appointment.clinic_hospital} on ${appointment.appointment_date} at ${appointment.appointment_time} has been deleted by the admin.`;
+    // Create notification for user about appointment deletion (includes child name)
+    const childLabel = appointment.child_name ? ` for ${appointment.child_name}` : "";
+    const notificationMessage = `Your appointment${childLabel} with Dr. ${appointment.doctor_name} at ${appointment.clinic_hospital} on ${appointment.appointment_date} at ${appointment.appointment_time} has been cancelled by the administrator.`;
     
     const createNotificationSql = `
       INSERT INTO appointment_notifications (appointment_id, user_id, notification_type, message, is_read, created_at, updated_at)
@@ -529,6 +534,20 @@ exports.addAppointment = async (req, res) => {
     // Define valid status values that match the database ENUM exactly
     const validStatuses = ['pending', 'scheduled', 'approved', 'completed', 'cancelled', 'rescheduled', 'no_show'];
     
+    // ── Validate patient_id belongs to this user ────────────────────────────
+    if (normalizedPatientId) {
+      const [ownerCheck] = await db.execute(
+        `SELECT id, child_fullname FROM patients WHERE id = ? AND user_id = ? LIMIT 1`,
+        [normalizedPatientId, normalizedUserId]
+      );
+      if (ownerCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "The selected child does not belong to this account.",
+        });
+      }
+    }
+
     // ── ONE USER, ONE ACTIVE APPOINTMENT RULE ────────────────────────────────
     // Block the booking if the user already has an approved or rescheduled appointment.
     const [activeAppts] = await db.execute(
@@ -672,8 +691,12 @@ exports.addAppointment = async (req, res) => {
     
     // If the appointment was automatically approved, send notification
     if (initialStatus === 'approved') {
-      // Create notification for the user
-      const notificationMessage = `Your appointment with Dr. ${normalizedDoctorName} on ${normalizedAppointmentDate} at ${normalizedAppointmentTime} has been automatically approved.`;
+      // Fetch child name from the already-retrieved appointment data
+      const childName = fetchResults[0]?.patient_name || null;
+      const childLabel = childName ? ` for ${childName}` : "";
+
+      // Create notification for the user (includes child name)
+      const notificationMessage = `Your appointment${childLabel} on ${normalizedAppointmentDate} at ${normalizedAppointmentTime} has been confirmed.`;
       
       const notificationSql = `
         INSERT INTO appointment_notifications (
@@ -1033,25 +1056,37 @@ exports.updateAppointmentStatus = async (req, res) => {
     const trackingNotif = buildTrackingStatusNotification(status, updatedAppointment);
     let insertedNotificationsId = null;
 
+    // Include child name in all status notification messages
+    const childName   = updatedAppointment.patient_name || null;
+    const childLabel  = childName ? ` for ${childName}` : "";
+    const { dateStr, timeStr } = formatNotificationDateTimeParts(
+      updatedAppointment.appointment_date,
+      updatedAppointment.appointment_time
+    );
+
     let notificationMessage;
     switch (status) {
       case 'approved':
-        notificationMessage = 'Your appointment has been approved.';
+        notificationMessage = `Your appointment${childLabel} on ${dateStr} at ${timeStr} has been approved.`;
         break;
       case 'cancelled':
-        notificationMessage = 'Your appointment has been cancelled.';
+        notificationMessage = `Your appointment${childLabel} on ${dateStr} at ${timeStr} has been cancelled.`;
         break;
-      case 'rescheduled':
-        notificationMessage = 'Your appointment has been rescheduled.';
+      case 'rescheduled': {
+        const newDate = rescheduleDate || updatedAppointment.appointment_date;
+        const newTime = rescheduleTime || updatedAppointment.appointment_time;
+        const { dateStr: rdStr, timeStr: rtStr } = formatNotificationDateTimeParts(newDate, newTime);
+        notificationMessage = `Your appointment${childLabel} has been rescheduled to ${rdStr} at ${rtStr}.`;
         break;
+      }
       case 'completed':
-        notificationMessage = 'Your appointment has been marked complete.';
+        notificationMessage = `Your appointment${childLabel} on ${dateStr} at ${timeStr} has been completed. Thank you for attending!`;
         break;
       case 'no_show':
-        notificationMessage = 'Your appointment has been marked as missed.';
+        notificationMessage = `Your appointment${childLabel} on ${dateStr} at ${timeStr} was marked as missed. Please contact the health center to reschedule.`;
         break;
       default:
-        notificationMessage = `Your appointment status has been updated to ${status}.`;
+        notificationMessage = `Your appointment${childLabel} status has been updated to ${status}.`;
     }
 
     if (notes && notes.trim() !== '') {

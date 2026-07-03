@@ -129,10 +129,10 @@ class _LoginScreenState extends State<LoginScreen>
           debugPrint("サービスタイプ: $serviceType");
           
           if (patientInfo != null) {
-            // Store patient data if available
+            // Store patient data (primary child — backward compat)
             UserSession.instance.setPatientData(patientInfo);
           } else {
-            // Create a new patient record if none exists
+            // Fallback minimal patient record when none exists
             final newPatientData = {
               'id': userInfo['id'],
               'user_id': userInfo['id'],
@@ -143,6 +143,13 @@ class _LoginScreenState extends State<LoginScreen>
               'status': "active"
             };
             UserSession.instance.setPatientData(newPatientData);
+          }
+
+          // Load the full children list so the child switcher works immediately.
+          // `children` is returned by the updated /auth/login endpoint.
+          final rawChildren = userData['children'];
+          if (rawChildren is List && rawChildren.isNotEmpty) {
+            UserSession.instance.setChildren(rawChildren);
           }
         } else {
           throw Exception("Invalid user data from server");

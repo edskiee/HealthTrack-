@@ -20,9 +20,20 @@ exports.getHealthRecords = async (req, res) => {
     const params       = [];
 
     if (searchQ) {
-      whereClauses.push('(p.child_fullname LIKE ? OR p.mother_fullname LIKE ? OR hr.title LIKE ?)');
+      // Match on child name, mother name, OR any child belonging to a parent whose
+      // other children also match — so searching "Prince Malunoc" finds the parent card
+      // even if the health record row was for a sibling named "Baby Cruz".
+      whereClauses.push(`(
+        p.child_fullname  LIKE ? OR
+        p.mother_fullname LIKE ? OR
+        hr.title          LIKE ? OR
+        p.user_id IN (
+          SELECT DISTINCT user_id FROM patients
+          WHERE user_id IS NOT NULL AND child_fullname LIKE ?
+        )
+      )`);
       const term = `%${searchQ}%`;
-      params.push(term, term, term);
+      params.push(term, term, term, term);
     }
     if (serviceType && serviceType !== 'All') {
       whereClauses.push('p.service_type = ?');
@@ -107,7 +118,8 @@ exports.getHealthRecords = async (req, res) => {
         p.education,
         p.occupation,
         p.birth_attendant,
-        p.facility_type
+        p.facility_type,
+        (SELECT COUNT(*) FROM patients pc WHERE pc.user_id = p.user_id) AS child_count
       FROM health_records hr
       LEFT JOIN patients p ON hr.patient_id = p.id
       ${whereSQL}
@@ -166,6 +178,7 @@ exports.getHealthRecords = async (req, res) => {
       occupation:               record.occupation || "",
       birth_attendant:          record.birth_attendant || "",
       facility_type:            record.facility_type || "",
+      child_count:              Number(record.child_count) || 1,
       // Legacy aliases
       status:                   "Active",
       age:                      record.patient_age || 0,

@@ -1734,10 +1734,10 @@ exports.completeAppointmentWithDose = async (req, res) => {
           scheduled_date)
        VALUES (?, ?, ?, ?, ?, ?) AS new_row
        ON DUPLICATE KEY UPDATE
-         given_at       = COALESCE(given_at, new_row.given_at),
-         given_by       = COALESCE(new_row.given_by, given_by),
-         notes          = COALESCE(new_row.notes, notes),
-         scheduled_date = COALESCE(new_row.scheduled_date, scheduled_date),
+         given_at       = COALESCE(child_vaccine_records.given_at, new_row.given_at),
+         given_by       = COALESCE(new_row.given_by, child_vaccine_records.given_by),
+         notes          = COALESCE(new_row.notes, child_vaccine_records.notes),
+         scheduled_date = COALESCE(new_row.scheduled_date, child_vaccine_records.scheduled_date),
          updated_at     = CURRENT_TIMESTAMP`,
       [
         patient_id,

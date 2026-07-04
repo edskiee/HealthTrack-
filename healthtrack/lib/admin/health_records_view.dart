@@ -2327,7 +2327,21 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
   }
 
   // ── 3c Completed dose row ─────────────────────────────────────────────────
+  // Shows actual given date as primary, and "Was scheduled for [theoretical]"
+  // when the dose was given on a different date than originally planned.
   Widget _buildCompletedDoseRow(String vaccineName, VaccineDose dose) {
+    final actualDateStr = dose.givenAt != null
+        ? _formatDateDisplay(dose.givenAt!.substring(0, 10))
+        : null;
+    final theoDateStr = dose.theoreticalDueDate != null
+        ? _formatDateDisplay(dose.theoreticalDueDate!)
+        : null;
+
+    // Highlight late/early administration
+    final bool wasOffSchedule = actualDateStr != null &&
+        theoDateStr != null &&
+        actualDateStr != theoDateStr;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -2345,14 +2359,24 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
             style: const TextStyle(
                 fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF14532D)),
           ),
-          if (dose.givenAt != null)
-            Text('Given: ${_formatDateDisplay(dose.givenAt?.substring(0, 10))}',
+          // Actual date given (record-based ground truth)
+          if (actualDateStr != null)
+            Text('Given: $actualDateStr',
                 style: const TextStyle(fontSize: 11, color: Color(0xFF16A34A))),
+          // Theoretical date — shown only when it differs from actual
+          if (wasOffSchedule)
+            Text('Was scheduled for: $theoDateStr',
+                style: const TextStyle(
+                    fontSize: 11, color: Color(0xFFD97706), fontStyle: FontStyle.italic)),
           if (dose.givenBy != null && dose.givenBy!.isNotEmpty)
             Text('By: ${dose.givenBy}',
                 style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
           if (dose.notes != null && dose.notes!.isNotEmpty)
             Text('Note: ${dose.notes}',
+                style: const TextStyle(
+                    fontSize: 11, color: Color(0xFF64748B), fontStyle: FontStyle.italic)),
+          if (dose.remarks != null && dose.remarks!.isNotEmpty)
+            Text('Remarks: ${dose.remarks}',
                 style: const TextStyle(
                     fontSize: 11, color: Color(0xFF64748B), fontStyle: FontStyle.italic)),
         ])),
@@ -2361,46 +2385,77 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
   }
 
   // ── 3d Pending dose row ───────────────────────────────────────────────────
+  // Uses record-based due_date_estimate as primary date.
+  // Locked doses show "Due date will be computed after [X] is given" — no date.
+  // When record-based date differs from theoretical, shows original schedule as note.
   Widget _buildPendingDoseRow(PendingDose dose) {
     final Color bg, border, iconColor, labelColor;
     final IconData icon;
-    String subtitle;
 
     switch (dose.status) {
       case VaccineDoseStatus.overdue:
-        bg         = const Color(0xFFFEF2F2);
-        border     = const Color(0xFFFCA5A5);
-        iconColor  = const Color(0xFFDC2626);
-        labelColor = const Color(0xFF991B1B);
-        icon       = Icons.warning_rounded;
-        subtitle   = 'Was due ${_formatDateDisplay(dose.dueDateEstimate)}'
-            '${dose.daysOverdue != null ? ', ${dose.daysOverdue} day${dose.daysOverdue == 1 ? '' : 's'} overdue' : ''}';
+        bg = const Color(0xFFFEF2F2); border    = const Color(0xFFFCA5A5);
+        iconColor = const Color(0xFFDC2626);  labelColor = const Color(0xFF991B1B);
+        icon = Icons.warning_rounded;
         break;
       case VaccineDoseStatus.dueSoon:
-        bg         = const Color(0xFFFFFBEB);
-        border     = const Color(0xFFFDE68A);
-        iconColor  = const Color(0xFFD97706);
-        labelColor = const Color(0xFF92400E);
-        icon       = Icons.access_time_rounded;
-        subtitle   = 'Due ${_formatDateDisplay(dose.dueDateEstimate)}';
+        bg = const Color(0xFFFFFBEB); border    = const Color(0xFFFDE68A);
+        iconColor = const Color(0xFFD97706);  labelColor = const Color(0xFF92400E);
+        icon = Icons.access_time_rounded;
         break;
       case VaccineDoseStatus.locked:
-        bg         = const Color(0xFFF8FAFC);
-        border     = const Color(0xFFE2E8F0);
-        iconColor  = const Color(0xFF94A3B8);
-        labelColor = const Color(0xFF64748B);
-        icon       = Icons.lock_outline_rounded;
-        subtitle   = dose.waitingFor != null
-            ? 'Waiting for ${dose.waitingFor} to be completed first'
-            : 'Locked until prior dose is completed';
+        bg = const Color(0xFFF8FAFC); border    = const Color(0xFFE2E8F0);
+        iconColor = const Color(0xFF94A3B8);  labelColor = const Color(0xFF64748B);
+        icon = Icons.lock_outline_rounded;
         break;
       default: // not_yet_due
-        bg         = const Color(0xFFF8FAFC);
-        border     = const Color(0xFFE2E8F0);
-        iconColor  = const Color(0xFF94A3B8);
-        labelColor = const Color(0xFF475569);
-        icon       = Icons.lock_clock_outlined;
-        subtitle   = 'Due at ${dose.scheduleLabel}, est. ${_formatDateDisplay(dose.dueDateEstimate)}';
+        bg = const Color(0xFFF8FAFC); border    = const Color(0xFFE2E8F0);
+        iconColor = const Color(0xFF94A3B8);  labelColor = const Color(0xFF475569);
+        icon = Icons.lock_clock_outlined;
+    }
+
+    // Build subtitle lines
+    final List<String> lines = [];
+    final List<Color> lineColors = [];
+
+    switch (dose.status) {
+      case VaccineDoseStatus.overdue:
+        lines.add('Was due ${_formatDateDisplay(dose.dueDateEstimate)}'
+            '${dose.daysOverdue != null ? ', ${dose.daysOverdue} day${dose.daysOverdue == 1 ? '' : 's'} overdue' : ''}');
+        lineColors.add(iconColor);
+        if (_scheduleShifted(dose)) {
+          lines.add('Original schedule: ${_formatDateDisplay(dose.theoreticalDueDate)}');
+          lineColors.add(const Color(0xFFD97706));
+        }
+        break;
+      case VaccineDoseStatus.dueSoon:
+        // Record-based date is the primary due date
+        lines.add('Due on ${_formatDateDisplay(dose.dueDateEstimate)}');
+        lineColors.add(iconColor);
+        if (_scheduleShifted(dose)) {
+          lines.add('Original schedule: ${_formatDateDisplay(dose.theoreticalDueDate)}');
+          lineColors.add(const Color(0xFFD97706));
+        }
+        break;
+      case VaccineDoseStatus.locked:
+        // Previous dose not yet given — cannot show any date
+        lines.add(dose.waitingFor != null
+            ? 'Due date will be computed after ${dose.waitingFor} is given'
+            : 'Due date will be computed after the previous dose is given');
+        lineColors.add(iconColor);
+        break;
+      default: // not_yet_due
+        if (dose.dueDateEstimate != null && dose.dueDateEstimate!.isNotEmpty) {
+          lines.add('Due on ${_formatDateDisplay(dose.dueDateEstimate)} (${dose.scheduleLabel})');
+          lineColors.add(iconColor);
+          if (_scheduleShifted(dose)) {
+            lines.add('Original schedule: ${_formatDateDisplay(dose.theoreticalDueDate)}');
+            lineColors.add(const Color(0xFFD97706));
+          }
+        } else {
+          lines.add('Due at ${dose.scheduleLabel}');
+          lineColors.add(iconColor);
+        }
     }
 
     return Container(
@@ -2417,14 +2472,22 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(
             '${dose.vaccineName} — ${dose.doseLabel}',
-            style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w600, color: labelColor),
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: labelColor),
           ),
-          Text(subtitle,
-              style: TextStyle(fontSize: 11, color: iconColor, height: 1.4)),
+          for (int i = 0; i < lines.length; i++)
+            Text(lines[i],
+                style: TextStyle(fontSize: 11, color: lineColors[i], height: 1.4)),
         ])),
       ]),
     );
+  }
+
+  /// Returns true when the record-based due date differs from the theoretical DOB-based date.
+  bool _scheduleShifted(PendingDose dose) {
+    final rec  = dose.dueDateEstimate;
+    final theo = dose.theoreticalDueDate;
+    if (rec == null || rec.isEmpty || theo == null || theo.isEmpty) return false;
+    return rec.substring(0, 10) != theo.substring(0, 10);
   }
 
   // ── 3e Bottom summary banner ───────────────────────────────────────────────
@@ -2447,8 +2510,11 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
       bg        = const Color(0xFFFFFBEB);
       border    = const Color(0xFFFDE68A);
       textColor = const Color(0xFF92400E);
-      message   = 'Next: ${nextDueSoon.vaccineName} ${nextDueSoon.doseLabel}, '
-                  'due ${_formatDateDisplay(nextDueSoon.dueDateEstimate)}.';
+      // Use record-based due date for the banner text
+      final duePart = (nextDueSoon.dueDateEstimate != null && nextDueSoon.dueDateEstimate!.isNotEmpty)
+          ? ', due ${_formatDateDisplay(nextDueSoon.dueDateEstimate)}'
+          : '';
+      message = 'Next: ${nextDueSoon.vaccineName} ${nextDueSoon.doseLabel}$duePart.';
     } else {
       bg        = const Color(0xFFDCFCE7);
       border    = const Color(0xFFBBF7D0);

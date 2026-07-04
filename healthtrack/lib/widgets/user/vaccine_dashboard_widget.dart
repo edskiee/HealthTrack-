@@ -529,36 +529,45 @@ class _LastCompletedCard extends StatelessWidget {
 }
 
 /// "Next up" banner showing the next due vaccine dose.
+/// Uses the record-based due_date_estimate as the primary date.
+/// When that date differs from the DOB-based theoretical_date, shows
+/// "Original schedule: [theoretical_date]" as a secondary note.
 class _NextUpBanner extends StatelessWidget {
   final Map<String, dynamic> nextDue;
 
   const _NextUpBanner({required this.nextDue});
 
-  String _formatDueDate(String? raw) {
+  String _fmt(String? raw) {
     if (raw == null || raw.isEmpty) return '';
-    try {
-      final dt = DateTime.parse(raw);
-      return DateFormat('MMM d, yyyy').format(dt);
-    } catch (_) {
-      return raw;
-    }
+    try { return DateFormat('MMM d, yyyy').format(DateTime.parse(raw)); }
+    catch (_) { return raw; }
   }
 
   @override
   Widget build(BuildContext context) {
-    final vaccineName   = nextDue['vaccine_name']?.toString() ?? '';
-    final scheduleLabel = nextDue['schedule_label']?.toString() ?? '';
-    final dueDateRaw    = nextDue['due_date_estimate']?.toString();
-    final status        = nextDue['status']?.toString() ?? '';
+    final vaccineName    = nextDue['vaccine_name']?.toString() ?? '';
+    final scheduleLabel  = nextDue['schedule_label']?.toString() ?? '';
+    // Record-based due date (primary)
+    final dueDateRaw     = nextDue['due_date_estimate']?.toString();
+    // DOB-based theoretical date (secondary, shown only when different)
+    final theoDateRaw    = nextDue['theoretical_date']?.toString();
+    final status         = nextDue['status']?.toString() ?? '';
 
-    final duePart = dueDateRaw != null && dueDateRaw.isNotEmpty
-        ? ', due ${_formatDueDate(dueDateRaw)}'
-        : '';
+    final formattedDue   = _fmt(dueDateRaw);
+    final formattedTheo  = _fmt(theoDateRaw);
+
+    final duePart = formattedDue.isNotEmpty ? ', due $formattedDue' : '';
+
+    // Show original schedule note if record-based date differs from theoretical
+    final showTheoNote = formattedTheo.isNotEmpty &&
+        formattedDue.isNotEmpty &&
+        formattedDue != formattedTheo;
 
     final isOverdue = status == 'overdue';
-    final bg = isOverdue ? Colors.red.shade50   : Colors.amber.shade50;
-    final fg = isOverdue ? Colors.red.shade700  : Colors.orange.shade800;
-    final border = isOverdue ? Colors.red.shade200 : Colors.amber.shade200;
+    final bg     = isOverdue ? Colors.red.shade50   : Colors.amber.shade50;
+    final fg     = isOverdue ? Colors.red.shade700  : Colors.orange.shade800;
+    final border = isOverdue ? Colors.red.shade200  : Colors.amber.shade200;
+    final noteFg = isOverdue ? Colors.red.shade400  : Colors.orange.shade600;
 
     return Semantics(
       label: isOverdue
@@ -577,20 +586,27 @@ class _NextUpBanner extends StatelessWidget {
           children: [
             Icon(
               isOverdue ? Icons.warning_amber_rounded : Icons.notifications_outlined,
-              color: fg,
-              size: 18,
+              color: fg, size: 18,
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                isOverdue
-                    ? '$vaccineName ($scheduleLabel) is overdue. Visit the clinic as soon as possible.'
-                    : 'Next up: $vaccineName$duePart. Watch for the reminder closer to the date.',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: fg,
-                  height: 1.4,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isOverdue
+                        ? '$vaccineName ($scheduleLabel) is overdue. Visit the clinic as soon as possible.'
+                        : 'Next up: $vaccineName$duePart. Watch for the reminder closer to the date.',
+                    style: TextStyle(fontSize: 13, color: fg, height: 1.4),
+                  ),
+                  if (showTheoNote) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      'Original schedule: $formattedTheo',
+                      style: TextStyle(fontSize: 11, color: noteFg, height: 1.3),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],

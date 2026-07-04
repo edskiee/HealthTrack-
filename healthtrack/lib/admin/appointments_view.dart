@@ -586,15 +586,33 @@ class _AppointmentsViewState extends State<AppointmentsView> {
             _categorizeAppointments();
           });
         }
-        _showSuccessMessage('Appointment completed and vaccine dose recorded.');
-        _showAppointmentUpdateBanner(
-            'Dose Recorded', 'Vaccine dose marked as given. Card updated.');
+
+        // ── Rich success toast: use the ready-made message from backend ──────
+        // Falls back to a generic message for older backend versions.
+        final toastMsg = result['message']?.toString().isNotEmpty == true
+            ? result['message'].toString()
+            : 'Appointment completed and vaccine dose recorded.';
+
+        // Also build a banner subtitle from the structured data if present
+        final data = result['data'] as Map<String, dynamic>? ?? {};
+        final vRecord = data['vaccineRecord'] as Map<String, dynamic>? ?? {};
+        final nextDate = vRecord['next_dose_due_date_formatted']?.toString();
+        final bannerSub = nextDate != null
+            ? 'Vaccine card updated. Next dose due $nextDate.'
+            : 'Vaccine card updated in real-time.';
+
+        _showSuccessMessage(toastMsg);
+        _showAppointmentUpdateBanner('✅ Dose Recorded', bannerSub);
         await _loadAppointments(silent: true);
       } else {
-        _showErrorMessage(result['message'] ?? 'Failed to complete appointment');
+        // ── Explicit error — never silently fail ──────────────────────────────
+        final errMsg = result['message']?.toString().isNotEmpty == true
+            ? result['message'].toString()
+            : 'Unable to complete appointment. Please try again.';
+        _showErrorMessage('❌ $errMsg');
       }
     } catch (e) {
-      _showErrorMessage(ConnectionStatusService.friendlyError(e));
+      _showErrorMessage('❌ Unable to complete appointment: ${ConnectionStatusService.friendlyError(e)}');
     } finally {
       if (mounted) setState(() => _updatingAppointmentIds.remove(numericId));
     }
@@ -1613,6 +1631,39 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+
+              // Vaccine context chip — shown when appointment is linked to a dose
+              Builder(builder: (context) {
+                final vaccineCtx = appointment['vaccine_context']?.toString()
+                    ?? (appointment['linked_vaccine_name'] != null
+                        ? '${appointment['linked_vaccine_name']}${appointment['linked_dose_label'] != null ? ' · ${appointment['linked_dose_label']}' : ''}'
+                        : null);
+                if (vaccineCtx == null || vaccineCtx.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      Icon(Icons.vaccines_outlined,
+                          size: 12, color: Colors.teal.shade600),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          vaccineCtx,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.teal.shade700,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
               
               const SizedBox(height: 8),
               
@@ -1759,7 +1810,40 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                       margin: const EdgeInsets.symmetric(vertical: 4),
                       child: ListTile(
                         title: Text(patientName),
-                        subtitle: Text('${apt['appointment_type'] ?? 'General'}'),
+                        subtitle: Builder(builder: (ctx) {
+                          final vaccineCtx = apt['vaccine_context']?.toString()
+                              ?? (apt['linked_vaccine_name'] != null
+                                  ? '${apt['linked_vaccine_name']}${apt['linked_dose_label'] != null ? ' · ${apt['linked_dose_label']}' : ''}'
+                                  : null);
+                          final typeLine = '${apt['appointment_type'] ?? 'General'}';
+                          if (vaccineCtx != null && vaccineCtx.isNotEmpty) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(typeLine),
+                                Row(children: [
+                                  Icon(Icons.vaccines_outlined,
+                                      size: 12,
+                                      color: Colors.teal.shade600),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      vaccineCtx,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.teal.shade700,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ]),
+                              ],
+                            );
+                          }
+                          return Text(typeLine);
+                        }),
                         trailing: PopupMenuButton<String>(
                           tooltip: busy ? 'Updating appointment…' : 'Patient appointment actions',
                           enabled: !busy,

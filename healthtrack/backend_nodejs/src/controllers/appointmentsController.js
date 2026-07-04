@@ -108,6 +108,7 @@ const fetchUpdatedAppointmentByIdSql = `
         a.linked_dose_number,
         a.linked_vaccine_name,
         a.linked_dose_label,
+        a.vaccine_context,
         u.full_name as user_name,
         p.child_fullname as patient_name
       FROM appointments a
@@ -139,6 +140,7 @@ exports.getAllAppointments = async (req, res) => {
         a.linked_dose_number,
         a.linked_vaccine_name,
         a.linked_dose_label,
+        a.vaccine_context,
         u.full_name as user_full_name,
         u.email as user_email,
         p.child_fullname as patient_full_name
@@ -321,6 +323,7 @@ exports.getUserAppointments = async (req, res) => {
         a.linked_dose_number,
         a.linked_vaccine_name,
         a.linked_dose_label,
+        a.vaccine_context,
         p.child_fullname as patient_full_name
       FROM appointments a
       LEFT JOIN patients p ON a.patient_id = p.id
@@ -379,6 +382,7 @@ exports.getCurrentUserAppointments = async (req, res) => {
         a.linked_dose_number,
         a.linked_vaccine_name,
         a.linked_dose_label,
+        a.vaccine_context,
         p.child_fullname as patient_full_name
       FROM appointments a
       LEFT JOIN patients p ON a.patient_id = p.id
@@ -484,6 +488,8 @@ exports.addAppointment = async (req, res) => {
       linked_vaccine_name,
       linkedDoseLabel,
       linked_dose_label,
+      vaccineContext,
+      vaccine_context,
     } = req.body;
 
     // Normalise vaccine linkage (accept either camelCase or snake_case)
@@ -491,6 +497,11 @@ exports.addAppointment = async (req, res) => {
     const normalizedLinkedDoseNumber  = linkedDoseNumber          || linked_dose_number          || null;
     const normalizedLinkedVaccineName = linkedVaccineName         || linked_vaccine_name         || null;
     const normalizedLinkedDoseLabel   = linkedDoseLabel           || linked_dose_label           || null;
+    // vaccine_context: accept from frontend, or auto-build from name + label if not supplied
+    const normalizedVaccineContext = vaccineContext || vaccine_context ||
+      (normalizedLinkedVaccineName
+        ? [normalizedLinkedVaccineName, normalizedLinkedDoseLabel].filter(Boolean).join(' · ')
+        : null);
 
     // Normalize field names
     const normalizedUserId = userId || user_id;
@@ -649,8 +660,8 @@ exports.addAppointment = async (req, res) => {
         user_id, patient_id, doctor_name, clinic_hospital, appointment_date, 
         appointment_time, appointment_type, notes, status,
         linked_vaccine_schedule_id, linked_dose_number,
-        linked_vaccine_name, linked_dose_label
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        linked_vaccine_name, linked_dose_label, vaccine_context
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
@@ -667,6 +678,7 @@ exports.addAppointment = async (req, res) => {
       normalizedLinkedDoseNumber  || null,
       normalizedLinkedVaccineName || null,
       normalizedLinkedDoseLabel   || null,
+      normalizedVaccineContext    || null,
     ];
 
     const [result] = await db.execute(sql, values);
@@ -1897,18 +1909,39 @@ exports.completeAppointmentWithDose = async (req, res) => {
     // Fetch final appointment row for response
     const [finalRows] = await db.execute(fetchUpdatedAppointmentByIdSql, [id]);
 
+    const childName       = appt.patient_name || null;
+    const vaccineContext  = `${sched.vaccine_name} (${sched.dose_label})`;
+    const nextDueDateFmt  = nextDueDateComputed
+      ? (() => {
+          try {
+            const d = new Date(nextDueDateComputed);
+            return d.toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" });
+          } catch { return nextDueDateComputed; }
+        })()
+      : null;
+
+    // Build a human-readable admin toast message
+    const adminToastMsg = childName
+      ? `✅ ${vaccineContext} marked as given for ${childName}.${nextDueDateFmt ? ` Next dose due ${nextDueDateFmt}.` : ""}`
+      : `✅ ${vaccineContext} recorded and appointment completed.${nextDueDateFmt ? ` Next dose due ${nextDueDateFmt}.` : ""}`;
+
     return res.status(200).json({
       success: true,
-      message: `${sched.vaccine_name} (${sched.dose_label}) recorded and appointment completed.`,
+      message: adminToastMsg,
       data: {
-        appointment:         finalRows[0] || null,
+        appointment:      finalRows[0] || null,
+        childName,
+        vaccineContext,
         vaccineRecord: {
-          record_id:            record ? record.record_id : null,
-          vaccine_schedule_id:  vaccine_schedule_id,
-          given_at:             record ? record.given_at : givenAtDate,
-          given_by:             given_by || null,
-          scheduled_date:       record ? record.scheduled_date : theorDate,
-          next_dose_due_date:   nextDueDateComputed,
+          record_id:           record ? record.record_id : null,
+          vaccine_schedule_id: vaccine_schedule_id,
+          vaccine_name:        sched.vaccine_name,
+          dose_label:          sched.dose_label,
+          given_at:            record ? record.given_at : givenAtDate,
+          given_by:            given_by || null,
+          scheduled_date:      record ? record.scheduled_date : theorDate,
+          next_dose_due_date:  nextDueDateComputed,
+          next_dose_due_date_formatted: nextDueDateFmt,
         },
       },
     });

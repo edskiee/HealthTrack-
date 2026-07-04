@@ -38,6 +38,12 @@ async function migrateVaccineAppointmentLink() {
       name: "linked_dose_label",
       ddl:  "ALTER TABLE appointments ADD COLUMN linked_dose_label VARCHAR(60) NULL DEFAULT NULL",
     },
+    {
+      // Human-readable combined string e.g. "BCG · Dose 1 of 1"
+      // Stored at booking time so admin sees it without joining vaccine_schedules.
+      name: "vaccine_context",
+      ddl:  "ALTER TABLE appointments ADD COLUMN vaccine_context VARCHAR(200) NULL DEFAULT NULL",
+    },
   ];
 
   for (const col of columns) {

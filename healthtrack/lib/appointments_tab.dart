@@ -1023,6 +1023,9 @@ class _AppointmentTabState extends State<AppointmentTab> {
           'linkedVaccineName': _linkedVaccineName,
         if (_linkedDoseLabel != null)
           'linkedDoseLabel': _linkedDoseLabel,
+        // vaccine_context: human-readable combined string e.g. "BCG · Dose 1 of 1"
+        if (_linkedVaccineName != null)
+          'vaccineContext': [_linkedVaccineName!, if (_linkedDoseLabel != null) _linkedDoseLabel!].join(' · '),
       };
 
       final result = await AppointmentService.addAppointment(appointmentData);

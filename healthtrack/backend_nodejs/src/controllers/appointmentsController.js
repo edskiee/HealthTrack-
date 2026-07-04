@@ -1706,8 +1706,8 @@ exports.completeAppointmentWithDose = async (req, res) => {
         ? new Date(appt.appointment_date)
         : new Date();
     }
-    const givenAtISO  = givenAtValue.toISOString();
-    const givenAtDate = givenAtISO.split("T")[0];
+    const givenAtISO  = givenAtValue.toISOString();   // kept for internal use only
+    const givenAtDate = givenAtISO.split("T")[0];     // "YYYY-MM-DD" — used for DB inserts
 
     // ── 5. Fetch patient DOB for theoretical date ─────────────────────────────
     const [pts] = await connection.execute(
@@ -1742,7 +1742,7 @@ exports.completeAppointmentWithDose = async (req, res) => {
       [
         patient_id,
         vaccine_schedule_id,
-        givenAtISO,
+        givenAtDate,     // "YYYY-MM-DD" — matches the DATE column type
         given_by || null,
         notes    || null,
         theorDate || null,
@@ -1833,7 +1833,7 @@ exports.completeAppointmentWithDose = async (req, res) => {
         vaccine_schedule_id: vaccine_schedule_id,
         vaccine_name:        sched.vaccine_name,
         dose_label:          sched.dose_label,
-        given_at:            record ? record.given_at : givenAtISO,
+        given_at:            record ? record.given_at : givenAtDate,
         given_by:            given_by || null,
         next_dose_due_date:  nextDueDateComputed,
         message: `${sched.vaccine_name} (${sched.dose_label}) has been marked as completed.`,
@@ -1905,7 +1905,7 @@ exports.completeAppointmentWithDose = async (req, res) => {
         vaccineRecord: {
           record_id:            record ? record.record_id : null,
           vaccine_schedule_id:  vaccine_schedule_id,
-          given_at:             record ? record.given_at : givenAtISO,
+          given_at:             record ? record.given_at : givenAtDate,
           given_by:             given_by || null,
           scheduled_date:       record ? record.scheduled_date : theorDate,
           next_dose_due_date:   nextDueDateComputed,

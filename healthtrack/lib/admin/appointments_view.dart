@@ -5,6 +5,7 @@ import 'package:overlay_support/overlay_support.dart';
 import '../utils/message_utils.dart';
 import '../utils/time_utils.dart';
 import '../services/appointment_service.dart';
+import '../services/vaccine_service.dart';
 import '../services/connection_status_service.dart';
 import 'widgets/admin_header.dart';
 
@@ -175,15 +176,427 @@ class _AppointmentsViewState extends State<AppointmentsView> {
         appointment["patient_name"] ??
         appointment["user_full_name"] ??
         "this patient";
+
+    if (status == 'completed') {
+      // For Immunization appointments, require a vaccine/dose selection.
+      final isImmunization = (appointment['appointment_type'] ?? '')
+          .toString()
+          .toLowerCase()
+          .contains('immunization');
+      if (isImmunization) {
+        await _showCompleteImmunizationDialog(appointment);
+        return;
+      }
+    }
+
+    // Non-immunization complete, or any no-show — standard confirmation.
     final isComplete = status == 'completed';
     final title = isComplete ? 'Mark visit complete' : 'Mark visit as missed';
     final message = isComplete
         ? 'Mark $patientName\'s appointment as complete? The patient will see this in Health Tracking right away.'
-        : 'Mark $patientName\'s appointment as missed? The patient will see this in Health Tracking right away.';
+        : 'Mark $patientName\'s appointment as missed (no-show)? The slot will be released and the vaccine card status will revert.';
 
     final confirmed = await _showConfirmDialog(title, message);
     if (confirmed) {
       await _updateAppointmentStatus(appointment['id'], status);
+    }
+  }
+
+  /// Shows the immunization-specific "Mark Complete" dialog.
+  ///
+  /// - When the appointment is pre-linked (linked_vaccine_schedule_id present),
+  ///   auto-selects that dose but leaves it editable.
+  /// - When it's a walk-in (no link), shows a required dropdown of the
+  ///   patient's incomplete doses.
+  /// - Blocks confirmation if no dose is selected.
+  Future<void> _showCompleteImmunizationDialog(
+      Map<String, dynamic> appointment) async {
+    final patientName = appointment["patient_full_name"] ??
+        appointment["patient_name"] ??
+        appointment["user_full_name"] ??
+        "this patient";
+
+    // Resolve patient id
+    final rawPatientId = appointment['patient_id'];
+    final patientId = rawPatientId is int
+        ? rawPatientId
+        : int.tryParse('$rawPatientId') ?? 0;
+
+    // Pre-linked dose from the booking
+    final linkedScheduleId = () {
+      final v = appointment['linked_vaccine_schedule_id'];
+      if (v == null) return null;
+      return v is int ? v : int.tryParse('$v');
+    }();
+    final linkedVaccineName =
+        appointment['linked_vaccine_name']?.toString();
+    final linkedDoseLabel =
+        appointment['linked_dose_label']?.toString();
+
+    // Appointment date used as default given_at
+    final appointmentDateRaw =
+        (appointment['appointment_date'] ?? '').toString();
+    final String defaultGivenAt = appointmentDateRaw.length >= 10
+        ? appointmentDateRaw.substring(0, 10)
+        : DateTime.now().toIso8601String().substring(0, 10);
+
+    // We'll load patient's pending doses for the walk-in dropdown.
+    List<Map<String, dynamic>> pendingDoses = [];
+    bool loadingDoses = false;
+    String? loadError;
+
+    // Selected state inside the dialog
+    int? selectedScheduleId = linkedScheduleId;
+    String? selectedVaccineName = linkedVaccineName;
+    String? selectedDoseLabel = linkedDoseLabel;
+    String givenAtDate = defaultGivenAt;
+    final notesController = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(builder: (_, dialogSetState) {
+          // Load doses once when dialog opens (walk-in only)
+          if (linkedScheduleId == null &&
+              pendingDoses.isEmpty &&
+              !loadingDoses &&
+              loadError == null &&
+              patientId > 0) {
+            loadingDoses = true;
+            VaccineService.getPatientPendingDoses(patientId).then((doses) {
+              if (dialogContext.mounted) {
+                dialogSetState(() {
+                  pendingDoses = doses;
+                  loadingDoses = false;
+                });
+              }
+            }).catchError((e) {
+              if (dialogContext.mounted) {
+                dialogSetState(() {
+                  loadError = 'Could not load doses: $e';
+                  loadingDoses = false;
+                });
+              }
+            });
+          }
+
+          final bool canConfirm = selectedScheduleId != null;
+
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(children: [
+              Icon(Icons.vaccines, color: Colors.teal.shade700, size: 22),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('Mark Immunization Complete',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Patient name
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.teal.shade200),
+                    ),
+                    child: Row(children: [
+                      Icon(Icons.person_outline,
+                          size: 16, color: Colors.teal.shade700),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(patientName,
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.teal.shade800)),
+                      ),
+                    ]),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // ── Dose selector ──────────────────────────────────────
+                  if (linkedScheduleId != null) ...[
+                    // Pre-linked: show the auto-selected dose but allow change
+                    const Text('Vaccine dose given',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    // Show linked dose and a "change" option if pending doses loaded
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.green.shade200),
+                      ),
+                      child: Row(children: [
+                        Icon(Icons.check_circle_outline,
+                            size: 16, color: Colors.green.shade700),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            '${selectedVaccineName ?? linkedVaccineName ?? "Vaccine"}'
+                            ' · ${selectedDoseLabel ?? linkedDoseLabel ?? ""}',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green.shade800),
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ] else ...[
+                    // Walk-in: require dropdown
+                    Row(children: [
+                      const Text('Which vaccine/dose was given?',
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.w600)),
+                      const Text(' *',
+                          style: TextStyle(
+                              color: Colors.red,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold)),
+                    ]),
+                    const SizedBox(height: 6),
+                    if (loadingDoses)
+                      const Center(
+                          child: Padding(
+                        padding: EdgeInsets.all(8),
+                        child:
+                            CircularProgressIndicator(strokeWidth: 2),
+                      ))
+                    else if (loadError != null)
+                      Text(loadError!,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 12))
+                    else if (pendingDoses.isEmpty)
+                      Text(
+                          patientId <= 0
+                              ? 'Patient ID not found — cannot load doses.'
+                              : 'No pending doses found for this patient.',
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 12))
+                    else
+                      DropdownButtonFormField<int>(
+                        value: selectedScheduleId,
+                        hint: const Text('Select vaccine · dose'),
+                        decoration: InputDecoration(
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          isDense: true,
+                        ),
+                        items: pendingDoses.map((d) {
+                          final sid = d['schedule_id'] is int
+                              ? d['schedule_id'] as int
+                              : int.tryParse(
+                                      '${d['schedule_id']}') ??
+                                  0;
+                          final vName =
+                              d['vaccine_name']?.toString() ?? '';
+                          final dLabel =
+                              d['dose_label']?.toString() ?? '';
+                          return DropdownMenuItem<int>(
+                            value: sid,
+                            child: Text('$vName · $dLabel',
+                                overflow: TextOverflow.ellipsis),
+                          );
+                        }).toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          final d = pendingDoses.firstWhere(
+                            (d) =>
+                                (d['schedule_id'] is int
+                                    ? d['schedule_id'] as int
+                                    : int.tryParse(
+                                            '${d['schedule_id']}') ??
+                                        0) ==
+                                v,
+                            orElse: () => {},
+                          );
+                          dialogSetState(() {
+                            selectedScheduleId = v;
+                            selectedVaccineName =
+                                d['vaccine_name']?.toString();
+                            selectedDoseLabel =
+                                d['dose_label']?.toString();
+                          });
+                        },
+                      ),
+                  ],
+
+                  const SizedBox(height: 14),
+
+                  // ── Date given ────────────────────────────────────────
+                  const Text('Date given',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  InkWell(
+                    onTap: () async {
+                      DateTime initial;
+                      try {
+                        initial = DateTime.parse(givenAtDate);
+                      } catch (_) {
+                        initial = DateTime.now();
+                      }
+                      final picked = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: initial,
+                        firstDate:
+                            DateTime.now().subtract(const Duration(days: 365)),
+                        lastDate: DateTime.now(),
+                      );
+                      if (picked != null) {
+                        dialogSetState(() => givenAtDate =
+                            picked.toIso8601String().substring(0, 10));
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade400),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(children: [
+                        Icon(Icons.calendar_today,
+                            size: 16, color: Colors.grey.shade600),
+                        const SizedBox(width: 8),
+                        Text(givenAtDate,
+                            style: const TextStyle(fontSize: 13)),
+                      ]),
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  // ── Notes (optional) ──────────────────────────────────
+                  TextField(
+                    controller: notesController,
+                    maxLines: 2,
+                    style: const TextStyle(fontSize: 13),
+                    decoration: InputDecoration(
+                      labelText: 'Notes (optional)',
+                      hintText: 'e.g. no adverse reaction',
+                      isDense: true,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                    ),
+                  ),
+
+                  if (!canConfirm && !loadingDoses) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'Please select the vaccine dose before confirming.',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.red.shade700),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                onPressed: canConfirm
+                    ? () async {
+                        Navigator.pop(dialogContext);
+                        await _completeImmunizationAppointment(
+                          appointment: appointment,
+                          patientId: patientId,
+                          scheduleId: selectedScheduleId!,
+                          givenAt: givenAtDate,
+                          notes: notesController.text.trim().isEmpty
+                              ? null
+                              : notesController.text.trim(),
+                        );
+                      }
+                    : null,
+                icon: const Icon(Icons.check_circle, size: 16),
+                label: const Text('Mark Complete'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.teal.shade700,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ],
+          );
+        });
+      },
+    );
+
+    notesController.dispose();
+  }
+
+  /// Executes the actual complete-with-dose API call after the dialog confirms.
+  Future<void> _completeImmunizationAppointment({
+    required Map<String, dynamic> appointment,
+    required int patientId,
+    required int scheduleId,
+    required String givenAt,
+    String? notes,
+  }) async {
+    final appointmentId = appointment['id'];
+    final numericId = appointmentId is int
+        ? appointmentId
+        : int.tryParse('$appointmentId') ?? -1;
+    if (numericId < 0) {
+      _showErrorMessage('Invalid appointment ID');
+      return;
+    }
+    if (_updatingAppointmentIds.contains(numericId)) return;
+    setState(() => _updatingAppointmentIds.add(numericId));
+
+    try {
+      final result = await AppointmentService.completeAppointmentWithDose(
+        appointmentId: appointmentId.toString(),
+        patientId: patientId,
+        scheduleId: scheduleId,
+        givenAtOverride: givenAt,
+        notes: notes,
+      );
+
+      bool isSuccess = result['success'] == true ||
+          result['success'] == 1 ||
+          result['success']?.toString().toLowerCase() == 'true';
+
+      if (isSuccess) {
+        if (mounted) {
+          setState(() {
+            final idx =
+                _appointments.indexWhere((a) => a['id'] == appointmentId);
+            if (idx != -1) _appointments[idx]['status'] = 'completed';
+            _categorizeAppointments();
+          });
+        }
+        _showSuccessMessage('Appointment completed and vaccine dose recorded.');
+        _showAppointmentUpdateBanner(
+            'Dose Recorded', 'Vaccine dose marked as given. Card updated.');
+        await _loadAppointments(silent: true);
+      } else {
+        _showErrorMessage(result['message'] ?? 'Failed to complete appointment');
+      }
+    } catch (e) {
+      _showErrorMessage(ConnectionStatusService.friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _updatingAppointmentIds.remove(numericId));
     }
   }
 
@@ -213,7 +626,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     } else if (action == 'cancel') {
       final confirmed = await _showConfirmDialog(
         'Cancel Appointment',
-        'Are you sure you want to cancel $patientName\'s appointment?',
+        'Are you sure you want to cancel $patientName\'s appointment? The slot will be released and the vaccine card status will revert to "Due soon".',
       );
       if (confirmed) {
         await _updateAppointmentStatus(appointment['id'], 'cancelled');
@@ -294,7 +707,11 @@ class _AppointmentsViewState extends State<AppointmentsView> {
 
         final msg = ((result['message']?.toString().toLowerCase().contains('already') ?? false))
             ? 'Appointment status unchanged (already up to date).'
-            : 'Appointment ${status.toLowerCase()} successfully';
+            : status == 'cancelled'
+                ? 'Appointment cancelled. Slot released and vaccine card reverted.'
+                : status == 'no_show'
+                    ? 'Marked as no-show. Slot released and vaccine card reverted.'
+                    : 'Appointment ${status.toLowerCase()} successfully';
         _showSuccessMessage(msg);
         _showAppointmentUpdateBanner('Appointment Updated', msg);
         await _loadAppointments(silent: true);

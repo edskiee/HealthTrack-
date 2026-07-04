@@ -104,6 +104,10 @@ const fetchUpdatedAppointmentByIdSql = `
         a.reminder_set,
         a.created_at,
         a.updated_at,
+        a.linked_vaccine_schedule_id,
+        a.linked_dose_number,
+        a.linked_vaccine_name,
+        a.linked_dose_label,
         u.full_name as user_name,
         p.child_fullname as patient_name
       FROM appointments a
@@ -131,6 +135,10 @@ exports.getAllAppointments = async (req, res) => {
         a.notes,
         a.created_at,
         a.updated_at,
+        a.linked_vaccine_schedule_id,
+        a.linked_dose_number,
+        a.linked_vaccine_name,
+        a.linked_dose_label,
         u.full_name as user_full_name,
         u.email as user_email,
         p.child_fullname as patient_full_name
@@ -309,6 +317,10 @@ exports.getUserAppointments = async (req, res) => {
         a.notes,
         a.created_at,
         a.updated_at,
+        a.linked_vaccine_schedule_id,
+        a.linked_dose_number,
+        a.linked_vaccine_name,
+        a.linked_dose_label,
         p.child_fullname as patient_full_name
       FROM appointments a
       LEFT JOIN patients p ON a.patient_id = p.id
@@ -363,6 +375,10 @@ exports.getCurrentUserAppointments = async (req, res) => {
         a.notes,
         a.created_at,
         a.updated_at,
+        a.linked_vaccine_schedule_id,
+        a.linked_dose_number,
+        a.linked_vaccine_name,
+        a.linked_dose_label,
         p.child_fullname as patient_full_name
       FROM appointments a
       LEFT JOIN patients p ON a.patient_id = p.id
@@ -458,8 +474,23 @@ exports.addAppointment = async (req, res) => {
       appointment_type,
       notes,
       status, // Accept status field but ignore it
-      slotId // New field for slot ID
+      slotId, // New field for slot ID
+      // ── Vaccine linkage (from Vaccine Card "Book Appointment") ──────────────
+      linkedVaccineScheduleId,
+      linked_vaccine_schedule_id,
+      linkedDoseNumber,
+      linked_dose_number,
+      linkedVaccineName,
+      linked_vaccine_name,
+      linkedDoseLabel,
+      linked_dose_label,
     } = req.body;
+
+    // Normalise vaccine linkage (accept either camelCase or snake_case)
+    const normalizedLinkedScheduleId  = linkedVaccineScheduleId  || linked_vaccine_schedule_id  || null;
+    const normalizedLinkedDoseNumber  = linkedDoseNumber          || linked_dose_number          || null;
+    const normalizedLinkedVaccineName = linkedVaccineName         || linked_vaccine_name         || null;
+    const normalizedLinkedDoseLabel   = linkedDoseLabel           || linked_dose_label           || null;
 
     // Normalize field names
     const normalizedUserId = userId || user_id;
@@ -616,8 +647,10 @@ exports.addAppointment = async (req, res) => {
     const sql = `
       INSERT INTO appointments (
         user_id, patient_id, doctor_name, clinic_hospital, appointment_date, 
-        appointment_time, appointment_type, notes, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        appointment_time, appointment_type, notes, status,
+        linked_vaccine_schedule_id, linked_dose_number,
+        linked_vaccine_name, linked_dose_label
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
@@ -629,7 +662,11 @@ exports.addAppointment = async (req, res) => {
       normalizedAppointmentTime,
       normalizedAppointmentType,
       notes || '',
-      initialStatus
+      initialStatus,
+      normalizedLinkedScheduleId  || null,
+      normalizedLinkedDoseNumber  || null,
+      normalizedLinkedVaccineName || null,
+      normalizedLinkedDoseLabel   || null,
     ];
 
     const [result] = await db.execute(sql, values);
@@ -1565,5 +1602,324 @@ exports.getUpcomingAppointments = async (req, res) => {
       success: false,
       message: "Failed to fetch upcoming appointments",
     });
+  }
+};
+
+// ─── PUT /appointments/complete-with-dose/:id ─────────────────────────────────
+/**
+ * Atomically:
+ *   1. Sets appointments.status = 'completed', completed_at = NOW()
+ *   2. Inserts / upserts a child_vaccine_records row (marks the dose as given)
+ *   3. Recomputes the NEXT dose scheduled_date (same logic as POST /vaccines/record)
+ *   4. Releases the slot (decrements booked_count) if a slot_id exists
+ *   5. Emits vaccineRecordUpdated + appointmentUpdated WebSocket events
+ *   6. Cancels reminders and sends FCM push notification
+ *
+ * Body: {
+ *   patient_id           : number   (required)
+ *   vaccine_schedule_id  : number   (required)
+ *   given_by?            : string
+ *   notes?               : string
+ *   given_at_override?   : string   "YYYY-MM-DD" — defaults to appointment_date
+ * }
+ */
+exports.completeAppointmentWithDose = async (req, res) => {
+  const { id } = req.params;
+  const {
+    patient_id,
+    vaccine_schedule_id,
+    given_by,
+    notes,
+    given_at_override,
+  } = req.body;
+
+  if (!id) {
+    return res.status(400).json({ success: false, message: "Appointment ID is required" });
+  }
+  if (!patient_id || !vaccine_schedule_id) {
+    return res.status(400).json({
+      success: false,
+      message: "patient_id and vaccine_schedule_id are required",
+    });
+  }
+
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // ── 1. Lock + fetch appointment ───────────────────────────────────────────
+    const [apptRows] = await connection.execute(
+      `SELECT a.id, a.user_id, a.patient_id, a.appointment_date, a.appointment_time,
+              a.appointment_type, a.status, a.slot_id,
+              p.child_fullname AS patient_name
+       FROM appointments a
+       LEFT JOIN patients p ON p.id = a.patient_id
+       WHERE a.id = ? FOR UPDATE`,
+      [id]
+    );
+    if (!apptRows.length) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+    const appt = apptRows[0];
+
+    if (appt.status === "completed") {
+      await connection.rollback();
+      return res.status(200).json({
+        success: true,
+        message: "Appointment already completed",
+        data: appt,
+      });
+    }
+
+    // ── 2. Mark appointment completed ─────────────────────────────────────────
+    await connection.execute(
+      `UPDATE appointments
+          SET status       = 'completed',
+              completed_at = UTC_TIMESTAMP(),
+              updated_at   = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+      [id]
+    );
+
+    // ── 3. Fetch vaccine schedule ─────────────────────────────────────────────
+    const [scheds] = await connection.execute(
+      `SELECT id, vaccine_key, dose_number, vaccine_name, dose_label,
+              schedule_from, interval_days, due_days_from_birth
+       FROM vaccine_schedules WHERE id = ? LIMIT 1`,
+      [vaccine_schedule_id]
+    );
+    if (!scheds.length) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: "Vaccine schedule not found" });
+    }
+    const sched = scheds[0];
+
+    // ── 4. Resolve given_at date ──────────────────────────────────────────────
+    let givenAtValue;
+    if (given_at_override) {
+      const parsed = new Date(given_at_override);
+      givenAtValue = isNaN(parsed.getTime()) ? new Date(appt.appointment_date) : parsed;
+    } else {
+      // Default to appointment date
+      givenAtValue = appt.appointment_date
+        ? new Date(appt.appointment_date)
+        : new Date();
+    }
+    const givenAtISO  = givenAtValue.toISOString();
+    const givenAtDate = givenAtISO.split("T")[0];
+
+    // ── 5. Fetch patient DOB for theoretical date ─────────────────────────────
+    const [pts] = await connection.execute(
+      "SELECT dob FROM patients WHERE id = ? LIMIT 1",
+      [patient_id]
+    );
+    const dob = pts.length ? pts[0].dob : null;
+
+    function addDays(base, days) {
+      if (!base) return null;
+      try {
+        const d = new Date(base);
+        if (isNaN(d.getTime())) return null;
+        d.setDate(d.getDate() + days);
+        return d.toISOString().split("T")[0];
+      } catch { return null; }
+    }
+    const theorDate = addDays(dob, sched.due_days_from_birth);
+
+    // ── 6. Upsert child_vaccine_records ──────────────────────────────────────
+    await connection.execute(
+      `INSERT INTO child_vaccine_records
+         (patient_id, vaccine_schedule_id, given_at, given_by, notes,
+          scheduled_date)
+       VALUES (?, ?, ?, ?, ?, ?) AS new_row
+       ON DUPLICATE KEY UPDATE
+         given_at       = COALESCE(given_at, new_row.given_at),
+         given_by       = COALESCE(new_row.given_by, given_by),
+         notes          = COALESCE(new_row.notes, notes),
+         scheduled_date = COALESCE(new_row.scheduled_date, scheduled_date),
+         updated_at     = CURRENT_TIMESTAMP`,
+      [
+        patient_id,
+        vaccine_schedule_id,
+        givenAtISO,
+        given_by || null,
+        notes    || null,
+        theorDate || null,
+      ]
+    );
+
+    // Fetch back the saved record for the response
+    const [saved] = await connection.execute(
+      `SELECT id AS record_id, given_at, given_by, scheduled_date
+       FROM child_vaccine_records
+       WHERE patient_id = ? AND vaccine_schedule_id = ? LIMIT 1`,
+      [patient_id, vaccine_schedule_id]
+    );
+    const record = saved[0] || null;
+
+    // ── 7. Recompute next dose scheduled_date ────────────────────────────────
+    const [nextScheds] = await connection.execute(
+      `SELECT id, interval_days, schedule_from, due_days_from_birth
+       FROM vaccine_schedules
+       WHERE vaccine_key = ? AND dose_number = ? LIMIT 1`,
+      [sched.vaccine_key, sched.dose_number + 1]
+    );
+    let nextDueDateComputed = null;
+    if (nextScheds.length) {
+      const ns = nextScheds[0];
+      nextDueDateComputed = ns.schedule_from === "previous_dose"
+        ? addDays(givenAtDate, ns.interval_days)
+        : addDays(dob, ns.interval_days);
+
+      if (nextDueDateComputed) {
+        await connection.execute(
+          `INSERT INTO child_vaccine_records (patient_id, vaccine_schedule_id, scheduled_date)
+           VALUES (?, ?, ?) AS new_row
+           ON DUPLICATE KEY UPDATE
+             scheduled_date = new_row.scheduled_date,
+             updated_at     = CURRENT_TIMESTAMP`,
+          [patient_id, ns.id, nextDueDateComputed]
+        );
+      }
+    }
+
+    // ── 8. Release slot (decrement booked_count) ─────────────────────────────
+    if (appt.slot_id) {
+      try {
+        await connection.execute(
+          `UPDATE appointment_slots
+              SET booked_patients = GREATEST(0, booked_patients - 1),
+                  updated_at      = CURRENT_TIMESTAMP
+            WHERE id = ?`,
+          [appt.slot_id]
+        );
+      } catch (slotErr) {
+        console.warn("⚠️ completeWithDose: slot release failed (non-fatal):", slotErr.message);
+      }
+    }
+
+    // ── 9. Write completion notification row ─────────────────────────────────
+    const childLabel = appt.patient_name ? ` for ${appt.patient_name}` : "";
+    const { dateStr, timeStr } = formatNotificationDateTimeParts(
+      appt.appointment_date,
+      appt.appointment_time
+    );
+    const completionMsg =
+      `Your ${appt.appointment_type || "Immunization"} appointment${childLabel} ` +
+      `on ${dateStr} at ${timeStr} has been completed. ` +
+      `${sched.vaccine_name} (${sched.dose_label}) has been recorded.`;
+
+    try {
+      await connection.execute(
+        `INSERT INTO notifications
+           (user_id, appointment_id, notification_type, title, message, is_read)
+         VALUES (?, ?, 'appointment_completed', 'Appointment Completed', ?, 0)`,
+        [appt.user_id, id, completionMsg]
+      );
+    } catch (notifErr) {
+      console.warn("⚠️ completeWithDose: notification insert failed:", notifErr.message);
+    }
+
+    await connection.commit();
+
+    // ── 10. Post-commit: WebSocket + FCM + reminders ─────────────────────────
+    const io = req.app.locals.io;
+    if (io) {
+      // Tell the patient their vaccine card has changed
+      io.to(`user_${appt.user_id}`).emit("vaccineRecordUpdated", {
+        type:                "vaccine_record_updated",
+        patient_id:          patient_id,
+        vaccine_schedule_id: vaccine_schedule_id,
+        vaccine_name:        sched.vaccine_name,
+        dose_label:          sched.dose_label,
+        given_at:            record ? record.given_at : givenAtISO,
+        given_by:            given_by || null,
+        next_dose_due_date:  nextDueDateComputed,
+        message: `${sched.vaccine_name} (${sched.dose_label}) has been marked as completed.`,
+      });
+
+      // Tell the admin appointment list to refresh
+      io.emit("appointmentUpdated", {
+        appointment_id: id,
+        status: "completed",
+      });
+
+      // Send in-app notification to user
+      io.to(`user_${appt.user_id}`).emit("appointmentNotification", {
+        appointment_id:    id,
+        user_id:           appt.user_id,
+        notification_type: "appointment_completed",
+        title:             "Appointment Completed",
+        message:           completionMsg,
+        is_read:           false,
+        created_at:        new Date().toISOString().slice(0, 19).replace("T", " "),
+        status:            "completed",
+      });
+    }
+
+    // Cancel pending reminders (non-fatal)
+    try {
+      await cancelAppointmentReminders(id, "Appointment completed");
+    } catch (_) {}
+
+    // FCM push notification (non-fatal)
+    try {
+      const manilaSchedule = toManilaAppointmentDateTime(
+        appt.appointment_date,
+        appt.appointment_time
+      );
+      await sendToUserDevices(
+        appt.user_id,
+        "appointment_completed",
+        "Appointment Completed",
+        completionMsg,
+        {
+          type:                  "appointment_completed",
+          appointmentId:         id,
+          status:                "completed",
+          appointmentDate:       appt.appointment_date,
+          appointmentTime:       appt.appointment_time,
+          appointmentTimestampUtc: manilaSchedule.utcIso || "",
+          appointmentTimeDisplay:  manilaSchedule.display,
+          appointmentTimezone:     MANILA_TZ,
+          vaccineScheduleId:     String(vaccine_schedule_id),
+          vaccineName:           sched.vaccine_name,
+          doseLabel:             sched.dose_label,
+          nextDoseDueDate:       nextDueDateComputed || "",
+        },
+        `appointment_completed:${id}`
+      );
+    } catch (fcmErr) {
+      console.warn("⚠️ completeWithDose: FCM push failed (non-fatal):", fcmErr.message);
+    }
+
+    // Fetch final appointment row for response
+    const [finalRows] = await db.execute(fetchUpdatedAppointmentByIdSql, [id]);
+
+    return res.status(200).json({
+      success: true,
+      message: `${sched.vaccine_name} (${sched.dose_label}) recorded and appointment completed.`,
+      data: {
+        appointment:         finalRows[0] || null,
+        vaccineRecord: {
+          record_id:            record ? record.record_id : null,
+          vaccine_schedule_id:  vaccine_schedule_id,
+          given_at:             record ? record.given_at : givenAtISO,
+          given_by:             given_by || null,
+          scheduled_date:       record ? record.scheduled_date : theorDate,
+          next_dose_due_date:   nextDueDateComputed,
+        },
+      },
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error("❌ completeAppointmentWithDose error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to complete appointment with dose: " + (err.message || err),
+    });
+  } finally {
+    connection.release();
   }
 };

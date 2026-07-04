@@ -197,6 +197,8 @@ class VaccineGroup {
 class VaccinePendingDose {
   final String vaccineName;
   final String vaccineKey;
+  /// The vaccine_schedule_id used to link a booking to this specific dose.
+  final int scheduleId;
   final int doseNumber;
   final String doseLabel;
   final String scheduleLabel;
@@ -216,6 +218,7 @@ class VaccinePendingDose {
   const VaccinePendingDose({
     required this.vaccineName,
     required this.vaccineKey,
+    required this.scheduleId,
     required this.doseNumber,
     required this.doseLabel,
     required this.scheduleLabel,
@@ -230,6 +233,7 @@ class VaccinePendingDose {
     return VaccinePendingDose(
       vaccineName:         json['vaccine_name']?.toString() ?? '',
       vaccineKey:          json['vaccine_key']?.toString() ?? '',
+      scheduleId:          _parseInt(json['schedule_id']),
       doseNumber:          _parseInt(json['dose_number']),
       doseLabel:           json['dose_label']?.toString() ?? '',
       scheduleLabel:       json['schedule_label']?.toString() ?? '',
@@ -458,6 +462,45 @@ class VaccineService {
       'success': false,
       'message': last?.toString() ?? 'Failed to mark dose as given',
     };
+  }
+
+  // ── GET /vaccines/card/:patientId  (pending doses only, for admin) ────────
+
+  /// Returns the patient's pending (incomplete) vaccine doses for admin use
+  /// when selecting which vaccine dose was given at a walk-in appointment.
+  static Future<List<Map<String, dynamic>>> getPatientPendingDoses(int patientId) async {
+    Exception? last;
+    for (final base in _urls) {
+      try {
+        final response = await http.get(
+          Uri.parse('$base/vaccines/card/$patientId'),
+          headers: await _headers(),
+        ).timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 200) {
+          final body = json.decode(response.body) as Map<String, dynamic>;
+          if (_isOk(body)) {
+            final data = body['data'] as Map<String, dynamic>? ?? {};
+            final rawPending = data['pending_doses'];
+            if (rawPending is List) {
+              return rawPending
+                  .whereType<Map<String, dynamic>>()
+                  .where((d) =>
+                      d['status'] == 'due_soon' ||
+                      d['status'] == 'overdue' ||
+                      d['status'] == 'not_yet_due')
+                  .toList();
+            }
+          }
+          last = Exception(body['message'] ?? 'Failed to load pending doses');
+        } else {
+          last = Exception('HTTP ${response.statusCode}: pending doses');
+        }
+      } catch (e) {
+        last = Exception('Pending doses request failed: $e');
+      }
+    }
+    throw last ?? Exception('Failed to load pending doses');
   }
 
   // ── DELETE /vaccines/record/:recordId ────────────────────────────────────

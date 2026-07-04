@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/user_session.dart';
 import '../services/vaccine_service.dart';
+import '../services/appointment_service.dart';
 import '../services/vaccine_card_pdf.dart';
 import '../services/websocket_service.dart';
+import '../appointments_tab.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VaccineRecordTab — embedded in HealthCardTab as "Vaccine Record" tab.
@@ -36,14 +38,21 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
   bool _generatingPdf = false;
   Timer? _pollTimer;
   late final void Function(Map<String, dynamic>) _wsListener;
+  late final void Function(Map<String, dynamic>) _apptWsListener;
+
+  /// Maps vaccine_schedule_id → active appointment (approved/rescheduled).
+  /// Used so pending dose cards can show "Appointment Scheduled" status.
+  Map<int, Map<String, dynamic>> _scheduledAppointments = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _wsListener = (_) { if (mounted) _fetchCard(silent: true); };
+    _apptWsListener = (_) { if (mounted) _fetchScheduledAppointments(silent: true); };
     _initRealtime();
     _fetchCard();
+    _fetchScheduledAppointments();
     _startPollTimer();
   }
 
@@ -52,12 +61,16 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
     WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     WebSocketService.instance.removeVaccineRecordUpdatedListener(_wsListener);
+    WebSocketService.instance.removeAppointmentUpdatedListener(_apptWsListener);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _fetchCard(silent: true);
+    if (state == AppLifecycleState.resumed) {
+      _fetchCard(silent: true);
+      _fetchScheduledAppointments(silent: true);
+    }
   }
 
   void _initRealtime() {
@@ -67,6 +80,7 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
         final uid = int.tryParse(UserSession.instance.userId) ?? 0;
         if (uid > 0) WebSocketService.instance.joinUserRoom(uid);
         WebSocketService.instance.addVaccineRecordUpdatedListener(_wsListener);
+        WebSocketService.instance.addAppointmentUpdatedListener(_apptWsListener);
       } catch (e) {
         debugPrint('[VaccineRecordTab] WS init error: $e');
       }
@@ -75,8 +89,42 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
 
   void _startPollTimer() {
     _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) _fetchCard(silent: true);
+      if (mounted) {
+        _fetchCard(silent: true);
+        _fetchScheduledAppointments(silent: true);
+      }
     });
+  }
+
+  /// Loads the patient's active (approved/rescheduled) immunization appointments
+  /// and builds a map of vaccine_schedule_id → appointment so that each
+  /// pending dose card can show "Appointment Scheduled — {date}".
+  Future<void> _fetchScheduledAppointments({bool silent = false}) async {
+    final session = UserSession.instance;
+    if (!session.isLoggedIn) return;
+    try {
+      final all = await AppointmentService.getUserAppointments(session.userId);
+      // Only immunization appointments that are still active
+      final active = all.where((a) {
+        final status = (a['status'] ?? '').toString().toLowerCase();
+        final type   = (a['appointment_type'] ?? '').toString().toLowerCase();
+        return (status == 'approved' || status == 'rescheduled') &&
+               type.contains('immunization');
+      }).toList();
+
+      final map = <int, Map<String, dynamic>>{};
+      for (final appt in active) {
+        final scheduleId = appt['linked_vaccine_schedule_id'];
+        if (scheduleId != null) {
+          final sid = scheduleId is int ? scheduleId : int.tryParse('$scheduleId');
+          if (sid != null && sid > 0) map[sid] = appt;
+        }
+      }
+
+      if (mounted) setState(() => _scheduledAppointments = map);
+    } catch (e) {
+      debugPrint('[VaccineRecordTab] appt fetch error: $e');
+    }
   }
 
 
@@ -230,7 +278,14 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
                 count: _card!.pendingDoses.length,
               ),
               const SizedBox(height: 8),
-              ..._card!.pendingDoses.map((d) => _PendingDoseCard(dose: d)),
+              ..._card!.pendingDoses.map((d) {
+                final scheduledAppt = _scheduledAppointments[d.scheduleId];
+                return _PendingDoseCard(
+                  dose: d,
+                  scheduledAppointment: scheduledAppt,
+                  onBookAppointment: (dose) => _navigateToBooking(dose),
+                );
+              }),
               const SizedBox(height: 16),
             ],
             if (_card!.completedDoses.isEmpty && _card!.pendingDoses.isEmpty)
@@ -243,6 +298,41 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
     );
   }
 
+
+  /// Opens the Appointment Booking screen pre-loaded with Immunization service
+  /// and the vaccine/dose linkage from the tapped pending dose card.
+  void _navigateToBooking(VaccinePendingDose dose) {
+    final patientId = widget.patientIdOverride != null && widget.patientIdOverride! > 0
+        ? widget.patientIdOverride!
+        : (int.tryParse(UserSession.instance.patientId) ?? 0);
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(
+            title: const Text('Book Appointment'),
+            backgroundColor: Colors.blueAccent,
+            foregroundColor: Colors.white,
+          ),
+          body: AppointmentTab(
+            initialServiceName:        'Immunization',
+            linkedVaccineScheduleId:   dose.scheduleId,
+            linkedDoseNumber:          dose.doseNumber,
+            linkedVaccineName:         dose.vaccineName,
+            linkedDoseLabel:           dose.doseLabel,
+            patientIdOverride:         patientId > 0 ? patientId : null,
+          ),
+        ),
+      ),
+    ).then((_) {
+      // Refresh both the vaccine card and scheduled appointments when
+      // the user returns (they may have just booked or cancelled).
+      if (mounted) {
+        _fetchCard(silent: true);
+        _fetchScheduledAppointments(silent: true);
+      }
+    });
+  }
 
   Widget _buildNoPatient(BuildContext context) {
     return Center(
@@ -497,13 +587,60 @@ class _CompletedDoseCard extends StatelessWidget {
 
 class _PendingDoseCard extends StatelessWidget {
   final VaccinePendingDose dose;
-  const _PendingDoseCard({required this.dose});
+
+  /// When non-null an active (approved/rescheduled) immunization appointment
+  /// is already linked to this dose — show "Appointment Scheduled" status and
+  /// disable the "Book Appointment" button to prevent double-booking.
+  final Map<String, dynamic>? scheduledAppointment;
+
+  /// Called when the patient taps "Book Appointment".
+  final void Function(VaccinePendingDose dose)? onBookAppointment;
+
+  const _PendingDoseCard({
+    required this.dose,
+    this.scheduledAppointment,
+    this.onBookAppointment,
+  });
 
   @override
   Widget build(BuildContext context) {
+    // Determine whether an appointment is already booked for this dose.
+    final bool hasScheduled = scheduledAppointment != null;
+    final bool canBook = (dose.status == VaccineDoseStatus.dueSoon ||
+                          dose.status == VaccineDoseStatus.overdue) &&
+                         !hasScheduled;
+
     final Color borderColor, badgeBg, badgeFg;
     final IconData leadIcon;
     final String badgeLabel;
+
+    if (hasScheduled) {
+      // Override visual status with the scheduled appointment date
+      final rawDate = scheduledAppointment!['appointment_date']?.toString() ?? '';
+      String displayDate = rawDate;
+      try {
+        if (rawDate.length >= 10) {
+          displayDate = DateFormat('MMM d, yyyy').format(DateTime.parse(rawDate));
+        }
+      } catch (_) {}
+      borderColor = Colors.teal.shade200;
+      badgeBg     = Colors.teal.shade50;
+      badgeFg     = Colors.teal.shade700;
+      badgeLabel  = '📅 Scheduled';
+      leadIcon    = Icons.event_available_outlined;
+      // We compute these inside build but need them only for the badge — pass
+      // displayDate to _buildSubDetail via a closure below.
+      return _buildCard(
+        context,
+        borderColor: borderColor,
+        badgeBg: badgeBg,
+        badgeFg: badgeFg,
+        badgeLabel: badgeLabel,
+        leadIcon: leadIcon,
+        canBook: canBook,
+        scheduledDateDisplay: displayDate,
+      );
+    }
 
     switch (dose.status) {
       case VaccineDoseStatus.overdue:
@@ -527,8 +664,29 @@ class _PendingDoseCard extends StatelessWidget {
         leadIcon    = Icons.radio_button_unchecked;
     }
 
+    return _buildCard(
+      context,
+      borderColor: borderColor,
+      badgeBg: badgeBg,
+      badgeFg: badgeFg,
+      badgeLabel: badgeLabel,
+      leadIcon: leadIcon,
+      canBook: canBook,
+    );
+  }
+
+  Widget _buildCard(
+    BuildContext context, {
+    required Color borderColor,
+    required Color badgeBg,
+    required Color badgeFg,
+    required String badgeLabel,
+    required IconData leadIcon,
+    required bool canBook,
+    String? scheduledDateDisplay,
+  }) {
     return Semantics(
-      label: _semanticLabel(),
+      label: _semanticLabel(scheduledDateDisplay),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -538,39 +696,131 @@ class _PendingDoseCard extends StatelessWidget {
           border: Border.all(color: borderColor),
           boxShadow: [BoxShadow(color: Colors.grey.shade50, blurRadius: 4, offset: const Offset(0, 2))],
         ),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 1),
-            child: Icon(leadIcon, size: 20, color: badgeFg),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                '${dose.vaccineName} · ${dose.doseLabel}',
-                style: TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w600,
-                  color: dose.status == VaccineDoseStatus.locked
-                      ? Colors.grey.shade500
-                      : const Color(0xFF0F172A),
-                ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(leadIcon, size: 20, color: badgeFg),
               ),
-              const SizedBox(height: 3),
-              _buildSubDetail(),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(
+                    '${dose.vaccineName} · ${dose.doseLabel}',
+                    style: TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w600,
+                      color: dose.status == VaccineDoseStatus.locked
+                          ? Colors.grey.shade500
+                          : const Color(0xFF0F172A),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  _buildSubDetail(scheduledDateDisplay),
+                ]),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: badgeBg, borderRadius: BorderRadius.circular(20)),
+                child: Text(badgeLabel,
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: badgeFg)),
+              ),
             ]),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(color: badgeBg, borderRadius: BorderRadius.circular(20)),
-            child: Text(badgeLabel,
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: badgeFg)),
-          ),
-        ]),
+
+            // ── "Book Appointment" / "Appointment Scheduled" button row ──────
+            if (dose.status == VaccineDoseStatus.dueSoon ||
+                dose.status == VaccineDoseStatus.overdue ||
+                scheduledAppointment != null) ...[
+              const SizedBox(height: 10),
+              _buildBookingRow(context, canBook, scheduledDateDisplay, badgeFg),
+            ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildSubDetail() {
+  Widget _buildBookingRow(
+    BuildContext context,
+    bool canBook,
+    String? scheduledDateDisplay,
+    Color scheduledFg,
+  ) {
+    if (scheduledAppointment != null) {
+      // Show the scheduled date and a subtle "already booked" indicator
+      final rawTime = scheduledAppointment!['appointment_time']?.toString() ?? '';
+      String timeDisplay = '';
+      try {
+        if (rawTime.length >= 5) {
+          final parts = rawTime.split(':');
+          int hour = int.parse(parts[0]);
+          final min  = parts[1];
+          final ampm = hour >= 12 ? 'PM' : 'AM';
+          if (hour > 12) hour -= 12;
+          if (hour == 0) hour = 12;
+          timeDisplay = ' at $hour:$min $ampm';
+        }
+      } catch (_) {}
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.teal.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.teal.shade200),
+        ),
+        child: Row(children: [
+          Icon(Icons.event_available_outlined, size: 14, color: Colors.teal.shade700),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Appointment Scheduled — ${scheduledDateDisplay ?? ''}$timeDisplay',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.teal.shade800,
+              ),
+            ),
+          ),
+        ]),
+      );
+    }
+
+    // Actionable "Book Appointment" button for due-soon / overdue doses
+    return SizedBox(
+      width: double.infinity,
+      child: Semantics(
+        button: true,
+        label: 'Book appointment for ${dose.vaccineName} ${dose.doseLabel}',
+        child: OutlinedButton.icon(
+          onPressed: canBook && onBookAppointment != null
+              ? () => onBookAppointment!(dose)
+              : null,
+          icon: const Icon(Icons.calendar_month_outlined, size: 14),
+          label: const Text('Book Appointment',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF0F766E),
+            side: const BorderSide(color: Color(0xFF0F766E)),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubDetail(String? scheduledDateDisplay) {
+    if (scheduledAppointment != null) {
+      // Show the original due-date info even when scheduled
+      return _buildDueDateDetail();
+    }
+    return _buildDueDateDetail();
+  }
+
+  Widget _buildDueDateDetail() {
     switch (dose.status) {
       case VaccineDoseStatus.overdue:
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -584,20 +834,18 @@ class _PendingDoseCard extends StatelessWidget {
 
       case VaccineDoseStatus.dueSoon:
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Record-based due date is the primary date shown
           _sub('Due on ${_fmt(dose.dueDateEstimate)}', Colors.orange.shade700),
           if (_showTheoNote())
             _sub('Original schedule: ${_fmt(dose.theoreticalDueDate)}', Colors.grey.shade500),
         ]);
 
       case VaccineDoseStatus.locked:
-        // Previous dose not yet completed — cannot show any date
         final msg = dose.waitingFor != null
             ? 'Date will be set after ${dose.waitingFor} is completed'
             : 'Date will be set after the previous dose is completed';
         return _sub(msg, Colors.grey.shade500);
 
-      default: // not_yet_due — dueDateEstimate may be record-based or DOB-based
+      default: // not_yet_due
         if (dose.dueDateEstimate != null) {
           return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             _sub('Due on ${_fmt(dose.dueDateEstimate)} (${dose.scheduleLabel})',
@@ -610,13 +858,11 @@ class _PendingDoseCard extends StatelessWidget {
     }
   }
 
-  /// Show "Original schedule" note only when record-based date differs from theoretical.
   bool _showTheoNote() {
     if (dose.theoreticalDueDate == null || dose.theoreticalDueDate!.isEmpty) return false;
     if (dose.dueDateEstimate == null || dose.dueDateEstimate!.isEmpty) return false;
-    // Compare date-only portions
-    final rec   = dose.dueDateEstimate!.substring(0, 10);
-    final theo  = dose.theoreticalDueDate!.substring(0, 10);
+    final rec  = dose.dueDateEstimate!.substring(0, 10);
+    final theo = dose.theoreticalDueDate!.substring(0, 10);
     return rec != theo;
   }
 
@@ -633,7 +879,11 @@ class _PendingDoseCard extends StatelessWidget {
     catch (_) { return raw; }
   }
 
-  String _semanticLabel() {
+  String _semanticLabel([String? scheduledDate]) {
+    if (scheduledAppointment != null) {
+      return '${dose.vaccineName} ${dose.doseLabel} has appointment scheduled'
+          '${scheduledDate != null ? " on $scheduledDate" : ""}.';
+    }
     switch (dose.status) {
       case VaccineDoseStatus.overdue:
         return '${dose.vaccineName} ${dose.doseLabel} overdue.'

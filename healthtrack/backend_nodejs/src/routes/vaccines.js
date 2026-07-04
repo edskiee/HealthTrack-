@@ -418,6 +418,7 @@ async function buildVaccineCard(patientId, isAdmin) {
     pendingDoses.push({
       vaccine_name:         d.vaccine_name,
       vaccine_key:          d.vaccine_key,
+      schedule_id:          d.schedule_id,   // ← needed by Flutter for appointment linkage
       dose_number:          d.dose_number,
       dose_label:           d.dose_label,
       schedule_label:       d.schedule_label,

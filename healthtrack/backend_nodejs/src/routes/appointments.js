@@ -17,10 +17,11 @@ router.get("/notifications/:userId/unread-count", authenticateUser, appointments
 router.put("/notifications/:id/read",  authenticateUser, appointmentsController.markNotificationAsRead);
 
 // ─── Admin-authenticated routes ──────────────────────────────────────────────
-router.get("/",                authenticateAdmin, appointmentsController.getAllAppointments);
-router.get("/pending-count",   authenticateAdmin, appointmentsController.getPendingAppointmentsCount);
-router.get("/upcoming",        authenticateAdmin, appointmentsController.getUpcomingAppointments);
-router.put("/status/:id",      authenticateAdmin, appointmentsController.updateAppointmentStatus);
-router.delete("/:id",          authenticateAdmin, appointmentsController.deleteAppointment);
+router.get("/",                        authenticateAdmin, appointmentsController.getAllAppointments);
+router.get("/pending-count",           authenticateAdmin, appointmentsController.getPendingAppointmentsCount);
+router.get("/upcoming",                authenticateAdmin, appointmentsController.getUpcomingAppointments);
+router.put("/status/:id",              authenticateAdmin, appointmentsController.updateAppointmentStatus);
+router.put("/complete-with-dose/:id",  authenticateAdmin, appointmentsController.completeAppointmentWithDose);
+router.delete("/:id",                  authenticateAdmin, appointmentsController.deleteAppointment);
 
 module.exports = router;

@@ -13,7 +13,26 @@ import 'utils/time_utils.dart';
 import 'models/service_model.dart';
 
 class AppointmentTab extends StatefulWidget {
-  const AppointmentTab({super.key});
+  /// When navigating here from a Vaccine Card "Book Appointment" button,
+  /// these fields pre-select Immunization and carry the dose linkage.
+  final String? initialServiceName;          // e.g. "Immunization"
+  final int?    linkedVaccineScheduleId;     // vaccine_schedule_id
+  final int?    linkedDoseNumber;
+  final String? linkedVaccineName;
+  final String? linkedDoseLabel;
+  /// When the booking originates from a specific child's vaccine card,
+  /// pre-select that child so the parent doesn't have to pick again.
+  final int?    patientIdOverride;
+
+  const AppointmentTab({
+    super.key,
+    this.initialServiceName,
+    this.linkedVaccineScheduleId,
+    this.linkedDoseNumber,
+    this.linkedVaccineName,
+    this.linkedDoseLabel,
+    this.patientIdOverride,
+  });
 
   @override
   State<AppointmentTab> createState() => _AppointmentTabState();
@@ -27,6 +46,15 @@ class _AppointmentTabState extends State<AppointmentTab> {
   // Service selection state
   List<ServiceModel> _services = [];
   int? _selectedServiceId;
+
+  // ── Vaccine booking context (set when navigating from Vaccine Card) ──────
+  int?    _linkedVaccineScheduleId;
+  int?    _linkedDoseNumber;
+  String? _linkedVaccineName;
+  String? _linkedDoseLabel;
+  /// When true, the service chip is locked so the user cannot switch away
+  /// from Immunization while a vaccine-linked booking is in progress.
+  bool    _serviceLocked = false;
   
   // Time slot booking state
   Map<String, List<Map<String, dynamic>>> _groupedSlots = {};
@@ -48,10 +76,20 @@ class _AppointmentTabState extends State<AppointmentTab> {
   @override
   void initState() {
     super.initState();
+
+    // ── Stash vaccine linkage from widget params ─────────────────────────
+    _linkedVaccineScheduleId = widget.linkedVaccineScheduleId;
+    _linkedDoseNumber        = widget.linkedDoseNumber;
+    _linkedVaccineName       = widget.linkedVaccineName;
+    _linkedDoseLabel         = widget.linkedDoseLabel;
+    _serviceLocked           = widget.linkedVaccineScheduleId != null;
     
-    // Auto-select child when only one exists; require explicit selection for 2+
+    // Auto-select child — prefer patientIdOverride (from vaccine card), then
+    // the session's active child when only one exists.
     final session = UserSession.instance;
-    if (!session.hasMultipleChildren && session.activeChild != null) {
+    if (widget.patientIdOverride != null && widget.patientIdOverride! > 0) {
+      _selectedChildId = widget.patientIdOverride;
+    } else if (!session.hasMultipleChildren && session.activeChild != null) {
       _selectedChildId = session.activeChild!.id;
     }
 
@@ -190,12 +228,25 @@ class _AppointmentTabState extends State<AppointmentTab> {
         _services = filteredServices;
         _isLoadingServices = false;
         
-        // Auto-select first service if none selected
-        if (_selectedServiceId == null && _services.isNotEmpty) {
+        // If a specific service was requested (e.g. Immunization from Vaccine Card),
+        // select it and lock the picker so the user cannot switch away.
+        if (widget.initialServiceName != null) {
+          final target = filteredServices.firstWhere(
+            (s) => s.serviceName.toLowerCase() ==
+                widget.initialServiceName!.toLowerCase(),
+            orElse: () => filteredServices.isNotEmpty ? filteredServices.first : ServiceModel(id: null, serviceName: '', serviceType: ''),
+          );
+          if (target.id != null) {
+            _selectedServiceId = target.id;
+          } else if (filteredServices.isNotEmpty) {
+            _selectedServiceId = filteredServices.first.id;
+          }
+        } else if (_selectedServiceId == null && _services.isNotEmpty) {
+          // Auto-select first service if none selected
           _selectedServiceId = _services.first.id;
-          // Reload slots for the selected service
-          _loadAvailableSlots();
         }
+        // Reload slots for the selected service
+        _loadAvailableSlots();
       });
     } catch (e) {
       if (mounted) {
@@ -958,9 +1009,20 @@ class _AppointmentTabState extends State<AppointmentTab> {
         'appointmentDate': dateString,
         'appointmentTime': startTime,
         'appointmentType': _getSelectedServiceName(),
-        'notes':           '',
+        'notes':           _linkedVaccineName != null
+            ? '${_linkedVaccineName!}${_linkedDoseLabel != null ? " · $_linkedDoseLabel" : ""}'
+            : '',
         'slotId':          slotId,
         'status':          'approved',
+        // ── Vaccine linkage (null when not a vaccine booking) ──
+        if (_linkedVaccineScheduleId != null)
+          'linkedVaccineScheduleId': _linkedVaccineScheduleId,
+        if (_linkedDoseNumber != null)
+          'linkedDoseNumber': _linkedDoseNumber,
+        if (_linkedVaccineName != null)
+          'linkedVaccineName': _linkedVaccineName,
+        if (_linkedDoseLabel != null)
+          'linkedDoseLabel': _linkedDoseLabel,
       };
 
       final result = await AppointmentService.addAppointment(appointmentData);
@@ -968,9 +1030,12 @@ class _AppointmentTabState extends State<AppointmentTab> {
       if (!mounted) return;
 
       if (result['success'] == true) {
+        final vaccineMsg = _linkedVaccineName != null
+            ? ' for ${_linkedVaccineName!}${_linkedDoseLabel != null ? " · $_linkedDoseLabel" : ""}'
+            : '';
         MessageUtils.showSuccessMessage(
           context, 
-          "Appointment booked successfully and automatically approved!",
+          "Appointment booked successfully$vaccineMsg!",
           title: "Appointment Confirmed",
         );
         
@@ -1126,6 +1191,45 @@ class _AppointmentTabState extends State<AppointmentTab> {
   Widget _buildNewAppointmentTab() {
     return Column(
       children: [
+        // ── Vaccine context banner (shown when launched from Vaccine Card) ──
+        if (_linkedVaccineScheduleId != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: Colors.teal.shade50,
+            child: Row(
+              children: [
+                Icon(Icons.vaccines, size: 18, color: Colors.teal.shade700),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Booking for: ${_linkedVaccineName ?? "Vaccine"}'
+                    '${_linkedDoseLabel != null ? " · $_linkedDoseLabel" : ""}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.teal.shade800,
+                    ),
+                  ),
+                ),
+                // Allow clearing the vaccine context if user wants a general booking
+                IconButton(
+                  icon: Icon(Icons.close, size: 16, color: Colors.teal.shade600),
+                  tooltip: 'Book without vaccine link',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  onPressed: () => setState(() {
+                    _linkedVaccineScheduleId = null;
+                    _linkedDoseNumber        = null;
+                    _linkedVaccineName       = null;
+                    _linkedDoseLabel         = null;
+                    _serviceLocked           = false;
+                  }),
+                ),
+              ],
+            ),
+          ),
+
         // Service Selection Header
         _buildServiceSelectionHeader(),
         
@@ -1216,9 +1320,13 @@ class _AppointmentTabState extends State<AppointmentTab> {
       icon = Icons.medical_services;
       description = 'Healthcare services';
     }
+
+    // When a vaccine booking context is active, lock the service picker so
+    // the user cannot accidentally switch away from Immunization.
+    final locked = _serviceLocked && isSelected;
     
     return GestureDetector(
-      onTap: () {
+      onTap: locked ? null : () {
         setState(() {
           _selectedServiceId = service.id;
           _selectedSlot = null; // Reset selection when service changes

@@ -54,6 +54,7 @@ const { setupVaccineTables } = require("./setup/vaccineTableSetup");
 const { migrateDobVerification } = require("./setup/migrateDobVerification");
 const { migrateChildSortOrder } = require("./setup/migrateChildSortOrder");
 const { backfillVaccineRecords } = require("./setup/backfillVaccineRecords");
+const { migrateVaccineAppointmentLink } = require("./setup/migrateVaccineAppointmentLink");
 
 /**
  * Update reminder system_settings to include same-day reminders (days_before=0).
@@ -416,6 +417,7 @@ async function bootstrap() {
   await setupVaccineTables();
   await migrateDobVerification();
   await migrateChildSortOrder();
+  await migrateVaccineAppointmentLink();  // adds linked_vaccine_* columns to appointments
   // ⚠️ backfillVaccineRecords is intentionally NOT awaited here.
   // It runs after the server is already listening so it never blocks port binding.
 

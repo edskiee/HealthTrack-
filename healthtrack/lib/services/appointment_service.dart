@@ -187,6 +187,20 @@ class AppointmentService {
         backendData['slot_id'] = appointmentData['slotId'];
       }
 
+      // Include vaccine linkage fields when booking from the Vaccine Card
+      if (appointmentData.containsKey('linkedVaccineScheduleId')) {
+        backendData['linked_vaccine_schedule_id'] = appointmentData['linkedVaccineScheduleId'];
+      }
+      if (appointmentData.containsKey('linkedDoseNumber')) {
+        backendData['linked_dose_number'] = appointmentData['linkedDoseNumber'];
+      }
+      if (appointmentData.containsKey('linkedVaccineName')) {
+        backendData['linked_vaccine_name'] = appointmentData['linkedVaccineName'];
+      }
+      if (appointmentData.containsKey('linkedDoseLabel')) {
+        backendData['linked_dose_label'] = appointmentData['linkedDoseLabel'];
+      }
+
       // Validate appointment data
       final validationError = ValidationService.validateAppointmentData(appointmentData);
       if (validationError != null) {
@@ -636,5 +650,67 @@ class AppointmentService {
     // If all URLs failed, log the error and throw the exception
     ErrorHandlerService.handleError(lastException ?? Exception('Failed to delete appointment'), context: 'delete_appointment');
     throw lastException ?? Exception("Failed to delete appointment");
+  }
+
+  /// Mark an Immunization appointment as completed AND record the vaccine dose
+  /// in one atomic call.  The backend endpoint PUT /appointments/complete-with-dose
+  /// sets appointment status = 'completed' AND creates a vaccine record row.
+  ///
+  /// [appointmentId]  — the appointment to complete.
+  /// [patientId]      — numeric patient ID (for the vaccine record).
+  /// [scheduleId]     — vaccine_schedule_id of the dose that was given.
+  /// [givenBy]        — optional name of the administering staff.
+  /// [notes]          — optional notes.
+  /// [givenAtOverride] — optional "YYYY-MM-DD" if the actual date differs from
+  ///                     the appointment date (retroactive entry).
+  static Future<Map<String, dynamic>> completeAppointmentWithDose({
+    required String appointmentId,
+    required int patientId,
+    required int scheduleId,
+    String? givenBy,
+    String? notes,
+    String? givenAtOverride,
+  }) async {
+    Exception? lastException;
+    for (final url in fallbackBaseUrls) {
+      try {
+        final response = await http.put(
+          Uri.parse('$url/appointments/complete-with-dose/$appointmentId'),
+          headers: await _adminHeaders(),
+          body: json.encode({
+            'patient_id':           patientId,
+            'vaccine_schedule_id':  scheduleId,
+            if (givenBy != null)          'given_by':           givenBy,
+            if (notes != null)            'notes':              notes,
+            if (givenAtOverride != null)  'given_at_override':  givenAtOverride,
+          }),
+        ).timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body) as Map<String, dynamic>;
+          return {
+            'success': data['success'] ?? false,
+            'message': data['message'] ?? 'Completed successfully',
+            'data':    data['data'] ?? {},
+          };
+        } else {
+          final data = json.decode(response.body) as Map<String, dynamic>;
+          lastException = Exception(data['message'] ?? 'Failed to complete appointment with dose');
+        }
+      } on SocketException {
+        lastException = Exception("No internet connection. Please check your network and try again.");
+      } on TimeoutException {
+        lastException = Exception("Request timeout. Please try again.");
+      } catch (e) {
+        lastException = Exception("Failed to complete appointment with dose: $e");
+      }
+    }
+    ErrorHandlerService.handleError(
+        lastException ?? Exception('Failed to complete appointment with dose'),
+        context: 'complete_appointment_with_dose');
+    return {
+      'success': false,
+      'message': lastException?.toString() ?? 'Failed to complete appointment with dose',
+    };
   }
 }

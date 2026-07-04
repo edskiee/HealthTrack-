@@ -3,6 +3,35 @@ const db = require('../config/db');
 const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
+
+// ─── Public endpoint: clinic info for PDF generation ─────────────────────────
+// No auth required — only exposes safe, non-sensitive clinic display fields.
+// GET /system-settings/public/clinic
+router.get('/public/clinic', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT setting_key, setting_value
+       FROM system_settings
+       WHERE setting_key IN ('clinic_name', 'clinic_address', 'app_name')
+         AND is_active = 1`
+    );
+    const map = {};
+    for (const r of rows) map[r.setting_key] = r.setting_value || '';
+    return res.json({
+      success: true,
+      data: {
+        clinic_name:    map['clinic_name']    || map['app_name'] || 'HealthTrack Clinic',
+        clinic_address: map['clinic_address'] || '',
+        app_name:       map['app_name']       || 'HealthTrack',
+      },
+    });
+  } catch (err) {
+    console.error('[GET /system-settings/public/clinic]', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// All routes below require admin authentication
 router.use(authMiddleware.authenticateAdmin);
 
 /**

@@ -335,7 +335,45 @@ async function initializeScheduledNotifications() {
   }
 }
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────────
+/**
+ * Seed clinic_name and clinic_address into system_settings if not yet present.
+ * These are used by the Flutter PDF vaccine card generator.
+ */
+async function seedClinicSettings() {
+  try {
+    const seeds = [
+      {
+        key: 'clinic_name',
+        value: 'HealthTrack Health Center',
+        type: 'string',
+        desc: 'Clinic or health facility name shown on the vaccine card PDF',
+      },
+      {
+        key: 'clinic_address',
+        value: 'Pagadian City, Zamboanga del Sur',
+        type: 'string',
+        desc: 'Clinic address shown on the vaccine card PDF',
+      },
+    ];
+    for (const s of seeds) {
+      const [rows] = await dbPool.execute(
+        'SELECT id FROM system_settings WHERE setting_key = ?', [s.key]
+      );
+      if (rows.length === 0) {
+        await dbPool.execute(
+          `INSERT INTO system_settings (setting_key, setting_value, setting_type, description, is_active)
+           VALUES (?, ?, ?, ?, 1)`,
+          [s.key, s.value, s.type, s.desc]
+        );
+        console.log(`✅ system_settings seeded: ${s.key}`);
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ seedClinicSettings (non-fatal):', err.message);
+  }
+}
+
+
 async function bootstrap() {
   // ── Firebase credential check ────────────────────────────────────────────────
   const fbProjectId   = process.env.FIREBASE_PROJECT_ID;
@@ -374,6 +412,7 @@ async function bootstrap() {
   await migrateNotificationsTable();
   await migrateAppointmentSlotsCapacity();
   await migrateReminderSettings();
+  await seedClinicSettings();
   await setupVaccineTables();
   await migrateDobVerification();
   await migrateChildSortOrder();

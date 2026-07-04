@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/user_session.dart';
 import '../services/vaccine_service.dart';
+import '../services/vaccine_card_pdf.dart';
 import '../services/websocket_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
   VaccineCardData? _card;
   bool _loading = true;
   String? _error;
+  bool _generatingPdf = false;
   Timer? _pollTimer;
   late final void Function(Map<String, dynamic>) _wsListener;
 
@@ -78,6 +80,65 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
   }
 
 
+  Future<void> _downloadVaccineCard() async {
+    final patientId = widget.patientIdOverride != null && widget.patientIdOverride! > 0
+        ? widget.patientIdOverride!
+        : (int.tryParse(UserSession.instance.patientId) ?? 0);
+    if (patientId <= 0) return;
+
+    if (mounted) setState(() => _generatingPdf = true);
+
+    // Show a non-dismissible "generating" indicator
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(children: [
+            SizedBox(
+              width: 16, height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Generating your vaccine card…'),
+          ]),
+          duration: Duration(seconds: 30),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    try {
+      final success = await VaccineCardPdfService.generateAndPrint(
+        fetchData: () => VaccineCardPdfService.fetchForPatient(patientId),
+        context: context,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        if (!success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Unable to generate vaccine card. Please try again.'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Unable to generate vaccine card. Please try again.'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
   Future<void> _fetchCard({bool silent = false}) async {
     final patientId = widget.patientIdOverride != null && widget.patientIdOverride! > 0
         ? widget.patientIdOverride!
@@ -120,6 +181,34 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
             const SizedBox(height: 12),
           ],
           if (_card != null) ...[
+            // ── Download button row ──────────────────────────────────────
+            Align(
+              alignment: Alignment.centerRight,
+              child: Semantics(
+                button: true,
+                label: 'Download vaccine card as PDF',
+                child: OutlinedButton.icon(
+                  onPressed: _generatingPdf ? null : _downloadVaccineCard,
+                  icon: _generatingPdf
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_outlined, size: 16),
+                  label: Text(
+                    _generatingPdf ? 'Generating…' : 'Download Card',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF0F766E),
+                    side: const BorderSide(color: Color(0xFF0F766E)),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
             _HeaderSummaryCard(card: _card!),
             const SizedBox(height: 16),
             if (_card!.completedDoses.isNotEmpty) ...[

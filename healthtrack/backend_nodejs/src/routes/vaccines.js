@@ -296,9 +296,13 @@ router.get("/dashboard/:patientId", authenticateUser, async (req, res) => {
  * Returns a fully enriched card object or throws.
  */
 async function buildVaccineCard(patientId, isAdmin) {
+  // Always fetch the full demographic block — needed for the PDF vaccine card
   const selectCols = isAdmin
-    ? `id, dob, sex, service_type, dob_needs_verification, child_fullname, mother_fullname`
-    : `id, dob, sex, child_fullname, mother_fullname`;
+    ? `id, dob, sex, service_type, dob_needs_verification,
+       child_fullname, mother_fullname, father_fullname,
+       place_of_birth, address, health_center, barangay`
+    : `id, dob, sex, child_fullname, mother_fullname, father_fullname,
+       place_of_birth, address, dob_needs_verification, health_center`;
 
   const [patients] = await db.execute(
     `SELECT ${selectCols} FROM patients WHERE id = ? LIMIT 1`,
@@ -442,12 +446,19 @@ async function buildVaccineCard(patientId, isAdmin) {
   const hasOverdue  = pendingDoses.some(d => d.status === "overdue");
   const hasDueSoon  = pendingDoses.some(d => d.status === "due_soon");
   const dobStr      = patient.dob ? new Date(patient.dob).toISOString().split("T")[0] : null;
+  const dobFlagged  = patient.dob_needs_verification === 1 || patient.dob_needs_verification === true;
 
   return {
     child_name:             patient.child_fullname || patient.mother_fullname || "Unknown",
     dob:                    dobStr,
     sex:                    patient.sex || null,
-    ...(isAdmin ? { service_type: patient.service_type, dob_needs_verification: false, not_immunization: false } : {}),
+    mother_name:            patient.mother_fullname || null,
+    father_name:            patient.father_fullname || null,
+    place_of_birth:         patient.place_of_birth || null,
+    address:                patient.address || null,
+    health_center:          patient.health_center || null,
+    dob_needs_verification: dobFlagged,
+    ...(isAdmin ? { service_type: patient.service_type, not_immunization: false } : {}),
     age_in_days:            age,
     total_doses_required:   schedules.length,
     total_doses_completed:  totalDosesCompleted,

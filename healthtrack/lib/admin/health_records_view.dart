@@ -14,6 +14,7 @@ import '../utils/time_utils.dart';
 import '../services/dashboard_service.dart';
 import '../services/connection_status_service.dart';
 import '../services/api_config.dart';
+import '../services/vaccine_card_pdf.dart';
 import 'widgets/admin_header.dart';
 import 'widgets/referral_modal.dart';
 
@@ -246,6 +247,50 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
       ),
     );
     await Printing.layoutPdf(onLayout: (format) async => pdf.save());
+  }
+
+  // 🪪 PRINT VACCINE CARD (DOH format) — called from grid card print icon
+  // and from within the vaccine tracking modal.
+  Future<void> _printVaccineCard(BuildContext ctx, int patientId) async {
+    // Show generating snackbar
+    if (ctx.mounted) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(
+          content: Row(children: [
+            SizedBox(
+              width: 16, height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Generating vaccine card…'),
+          ]),
+          duration: Duration(seconds: 30),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    try {
+      await VaccineCardPdfService.generateAndPrint(
+        fetchData: () => VaccineCardPdfService.fetchForAdmin(
+          patientId: patientId,
+          getAdminToken: AdminSessionStorage.getToken,
+        ),
+        context: ctx,
+      );
+      if (ctx.mounted) ScaffoldMessenger.of(ctx).hideCurrentSnackBar();
+    } catch (e) {
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).hideCurrentSnackBar();
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(
+            content: Text('Unable to generate vaccine card. Please try again.'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   // 🔎 VIEW RECORD with improved layout
@@ -1409,6 +1454,21 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
                   tooltip: 'Print record',
                 ),
                 const SizedBox(width: 4),
+                // ── Vaccine card print icon (immunization only) ────────────
+                if (serviceType.contains('immun')) ...[
+                  _gridActionIcon(
+                    icon: Icons.badge_outlined,
+                    backgroundColor: const Color(0xFFEFF6FF),
+                    iconColor: const Color(0xFF2563EB),
+                    borderColor: const Color(0xFFBFDBFE),
+                    onPressed: () {
+                      final pid = int.tryParse(patientId) ?? 0;
+                      if (pid > 0) _printVaccineCard(context, pid);
+                    },
+                    tooltip: 'Print vaccine card (DOH format)',
+                  ),
+                  const SizedBox(width: 4),
+                ],
                 // ── Vaccine Tracking icon (replaces delete) ────────────────
                 _gridActionIcon(
                   icon: Icons.vaccines_outlined,
@@ -1680,6 +1740,7 @@ class _HealthRecordsViewState extends State<HealthRecordsView> {
           });
           await _loadHealthRecords();
         },
+        onPrintVaccineCard: (pid) => _printVaccineCard(context, pid),
       ),
     );
   }
@@ -1729,6 +1790,7 @@ class _VaccineTrackingModal extends StatefulWidget {
     required this.storedDob,
     required this.serviceType,
     required this.onDobCorrected,
+    required this.onPrintVaccineCard,
   });
 
   final int patientId;
@@ -1738,6 +1800,8 @@ class _VaccineTrackingModal extends StatefulWidget {
   final String storedDob;
   final String serviceType;
   final VoidCallback onDobCorrected;
+  /// Called with the active child's patientId when admin taps "Print Vaccine Card".
+  final void Function(int patientId) onPrintVaccineCard;
 
   @override
   State<_VaccineTrackingModal> createState() => _VaccineTrackingModalState();
@@ -2102,6 +2166,30 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
           ]),
         ),
         const SizedBox(width: 8),
+        // ── Print Vaccine Card button (only when viewing a specific child) ──
+        if (_activeChildId != null || widget.childCount < 2)
+          Tooltip(
+            message: 'Print Vaccine Card (DOH format)',
+            child: SizedBox(
+              width: 32, height: 32,
+              child: IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.white.withValues(alpha: 0.15),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                icon: const Icon(Icons.badge_outlined, size: 18, color: Colors.white),
+                onPressed: () {
+                  final pid = _activeChildId ?? widget.patientId;
+                  Navigator.pop(context); // close modal first
+                  widget.onPrintVaccineCard(pid);
+                },
+              ),
+            ),
+          ),
+        const SizedBox(width: 4),
         IconButton(
           icon: const Icon(Icons.close, color: Colors.white, size: 20),
           onPressed: () => Navigator.pop(context),
@@ -2192,6 +2280,31 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
 
           // ── 3e Bottom summary banner ─────────────────────────────────────
           _buildSummaryBanner(data),
+          const SizedBox(height: 16),
+
+          // ── Print Vaccine Card button (secondary access point in modal) ──
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                final pid = _activeChildId ?? widget.patientId;
+                Navigator.pop(context);
+                widget.onPrintVaccineCard(pid);
+              },
+              icon: const Icon(Icons.badge_outlined, size: 16),
+              label: const Text(
+                'Print Vaccine Card (DOH Format)',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF2563EB),
+                side: const BorderSide(color: Color(0xFF2563EB)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ),
         ],
       ]),
     );

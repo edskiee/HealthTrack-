@@ -962,7 +962,7 @@ exports.getImmunizationCoverage = async (req, res) => {
          vs.vaccine_key,
          vs.vaccine_name,
          COUNT(DISTINCT vs.id)            AS doses_required,
-         -- children who completed all doses of this vaccine
+         MIN(vs.sort_order)               AS min_sort_order,
          (SELECT COUNT(DISTINCT sub_cvr.patient_id)
             FROM child_vaccine_records sub_cvr
             JOIN vaccine_schedules sub_vs ON sub_vs.id = sub_cvr.vaccine_schedule_id
@@ -973,7 +973,7 @@ exports.getImmunizationCoverage = async (req, res) => {
          ) AS completed_raw
        FROM vaccine_schedules vs
        GROUP BY vs.vaccine_key, vs.vaccine_name
-       ORDER BY vs.sort_order`
+       ORDER BY min_sort_order`
     );
 
     // Recalculate completed properly using a two-step query

@@ -630,13 +630,26 @@ exports.getTrimesterDistribution = async (req, res) => {
 };
 
 // GET /dashboard/reports/immunization-patients
-// Returns all immunization patients with their latest health record info
+// Returns all immunization patients with their latest health record info.
+//
+// BEFORE: 3 correlated subqueries per row × N rows = 3N extra queries.
+// AFTER:  2 derived-table LEFT JOINs aggregated once for the whole result set,
+//         plus COUNT(*) OVER() to eliminate the separate COUNT query.
 exports.getImmunizationPatients = async (req, res) => {
   try {
     // mysql2 prepared statements reject NaN/BigInt as LIMIT/OFFSET — use Number()|0 + query()
     const limit  = Math.min(200, Math.max(1, Number(req.query.limit  || 100) | 0));
     const offset = Math.max(0, Number(req.query.offset || 0) | 0);
 
+    // ── Derived table: one aggregate row per patient from health_records ──────
+    // hr_agg gives us both latest_record_type and vaccines_given in a single
+    // pass over health_records — replaces the two correlated subqueries on hr2/hr3.
+    //
+    // ── Derived table: earliest upcoming appointment per patient ─────────────
+    // appt_next gives us next_due with a MIN() aggregate — replaces the
+    // correlated subquery on appointments.
+    //
+    // ── COUNT(*) OVER() — total matching rows without a second round-trip ─────
     const [rows] = await db.query(
       `SELECT
          p.id,
@@ -644,45 +657,52 @@ exports.getImmunizationPatients = async (req, res) => {
          p.mother_fullname,
          p.dob,
          p.created_at,
-         -- Latest health record for this patient
-         (SELECT hr2.record_type
-            FROM health_records hr2
-           WHERE hr2.patient_id = p.id
-           ORDER BY hr2.created_at DESC LIMIT 1) AS latest_record_type,
-         -- All distinct vaccine record types as comma-separated string
-         (SELECT GROUP_CONCAT(DISTINCT hr3.record_type ORDER BY hr3.created_at SEPARATOR ', ')
-            FROM health_records hr3
-           WHERE hr3.patient_id = p.id) AS vaccines_given,
-         -- Next scheduled date from appointments
-         (SELECT a.appointment_date
-            FROM appointments a
-           WHERE a.patient_id = p.id
-             AND a.appointment_date >= CURDATE()
-           ORDER BY a.appointment_date ASC LIMIT 1) AS next_due
+         hr_agg.latest_record_type,
+         hr_agg.vaccines_given,
+         appt_next.next_due,
+         COUNT(*) OVER() AS total_count
        FROM patients p
+       -- Aggregate all health_records for immunization patients in one scan
+       LEFT JOIN (
+         SELECT
+           patient_id,
+           -- Latest record_type: use MAX trick on (created_at, record_type) pair
+           SUBSTRING_INDEX(
+             MAX(CONCAT(DATE_FORMAT(created_at, '%Y%m%d%H%i%s'), '||', record_type)),
+             '||', -1
+           ) AS latest_record_type,
+           GROUP_CONCAT(DISTINCT record_type ORDER BY created_at SEPARATOR ', ') AS vaccines_given
+         FROM health_records
+         GROUP BY patient_id
+       ) AS hr_agg ON hr_agg.patient_id = p.id
+       -- Earliest future appointment per patient in one scan
+       LEFT JOIN (
+         SELECT patient_id, MIN(appointment_date) AS next_due
+         FROM appointments
+         WHERE appointment_date >= CURDATE()
+         GROUP BY patient_id
+       ) AS appt_next ON appt_next.patient_id = p.id
        WHERE p.service_type = 'immunization'
        ORDER BY p.created_at DESC
        LIMIT ? OFFSET ?`,
       [limit, offset]
     );
 
-    const [countRows] = await db.query(
-      `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'immunization'`
-    );
+    const total = rows.length > 0 ? Number(rows[0].total_count || 0) : 0;
 
     const data = (rows || []).map(r => ({
-      childName:    r.child_fullname   || 'Unknown',
-      motherName:   r.mother_fullname  || 'Unknown',
-      dob:          r.dob              || null,
-      vaccinesGiven: r.vaccines_given  || r.latest_record_type || 'General',
-      nextDue:      r.next_due         || null,
-      recordType:   r.latest_record_type || 'Immunization',
+      childName:     r.child_fullname       || 'Unknown',
+      motherName:    r.mother_fullname      || 'Unknown',
+      dob:           r.dob                  || null,
+      vaccinesGiven: r.vaccines_given       || r.latest_record_type || 'General',
+      nextDue:       r.next_due             || null,
+      recordType:    r.latest_record_type   || 'Immunization',
     }));
 
     res.status(200).json({
       success: true,
       data,
-      total: Number(countRows[0]?.total || 0),
+      total,
     });
   } catch (error) {
     console.error('❌ getImmunizationPatients:', error);
@@ -691,13 +711,24 @@ exports.getImmunizationPatients = async (req, res) => {
 };
 
 // GET /dashboard/reports/prenatal-patients
-// Returns all maternal/prenatal patients
+// Returns all maternal/prenatal patients.
+//
+// BEFORE: 2 correlated subqueries per row + a separate COUNT query.
+// AFTER:  2 derived-table LEFT JOINs aggregated once + COUNT(*) OVER() so
+//         the total is read from the first result row — zero extra round-trips.
 exports.getPrenatalPatients = async (req, res) => {
   try {
     // mysql2 prepared statements reject NaN/BigInt as LIMIT/OFFSET — use Number()|0 + query()
     const limit  = Math.min(200, Math.max(1, Number(req.query.limit  || 100) | 0));
     const offset = Math.max(0, Number(req.query.offset || 0) | 0);
 
+    // ── hr_last: most recent health record date per patient ───────────────────
+    // Replaces: (SELECT DATE(hr.created_at) … ORDER BY hr.created_at DESC LIMIT 1)
+    //
+    // ── appt_next: earliest upcoming appointment per patient ──────────────────
+    // Replaces: (SELECT a.appointment_date … ORDER BY a.appointment_date ASC LIMIT 1)
+    //
+    // ── COUNT(*) OVER() eliminates the second SELECT COUNT(*) round-trip ──────
     const [rows] = await db.query(
       `SELECT
          p.id,
@@ -707,27 +738,30 @@ exports.getPrenatalPatients = async (req, res) => {
          p.created_at,
          p.record_type,
          p.record_description,
-         -- Last visit: most recent health record date
-         (SELECT DATE(hr.created_at)
-            FROM health_records hr
-           WHERE hr.patient_id = p.id
-           ORDER BY hr.created_at DESC LIMIT 1) AS last_visit,
-         -- Next appointment date
-         (SELECT a.appointment_date
-            FROM appointments a
-           WHERE a.patient_id = p.id
-             AND a.appointment_date >= CURDATE()
-           ORDER BY a.appointment_date ASC LIMIT 1) AS next_appointment
+         hr_last.last_visit,
+         appt_next.next_appointment,
+         COUNT(*) OVER() AS total_count
        FROM patients p
+       -- Most recent health record date per patient — single table scan
+       LEFT JOIN (
+         SELECT patient_id, DATE(MAX(created_at)) AS last_visit
+         FROM health_records
+         GROUP BY patient_id
+       ) AS hr_last ON hr_last.patient_id = p.id
+       -- Earliest upcoming appointment per patient — single table scan
+       LEFT JOIN (
+         SELECT patient_id, MIN(appointment_date) AS next_appointment
+         FROM appointments
+         WHERE appointment_date >= CURDATE()
+         GROUP BY patient_id
+       ) AS appt_next ON appt_next.patient_id = p.id
        WHERE p.service_type = 'maternal'
        ORDER BY p.created_at DESC
        LIMIT ? OFFSET ?`,
       [limit, offset]
     );
 
-    const [countRows] = await db.query(
-      `SELECT COUNT(*) AS total FROM patients WHERE service_type = 'maternal'`
-    );
+    const total = rows.length > 0 ? Number(rows[0].total_count || 0) : 0;
 
     const data = (rows || []).map(r => {
       // Infer trimester from record fields
@@ -739,10 +773,10 @@ exports.getPrenatalPatients = async (req, res) => {
       else if (rt.includes('3rd') || rd.includes('3rd')) trimester = '3rd Trimester';
 
       return {
-        patientName:     r.mother_fullname || r.child_fullname || 'Unknown',
-        dob:             r.dob             || null,
+        patientName:     r.mother_fullname  || r.child_fullname || 'Unknown',
+        dob:             r.dob              || null,
         trimester,
-        lastVisit:       r.last_visit      || null,
+        lastVisit:       r.last_visit       || null,
         nextAppointment: r.next_appointment || null,
         riskLevel:       'Low', // no risk field in schema — default to Low
       };
@@ -751,7 +785,7 @@ exports.getPrenatalPatients = async (req, res) => {
     res.status(200).json({
       success: true,
       data,
-      total: Number(countRows[0]?.total || 0),
+      total,
     });
   } catch (error) {
     console.error('❌ getPrenatalPatients:', error);
@@ -835,6 +869,16 @@ exports.getDohForm1Data = async (req, res) => {
 // child_vaccine_records) and nextDue (earliest pending vaccine due date from
 // vaccine_schedules computation done in the buildDoseList logic — approximated
 // here as: earliest not-yet-given dose's due date).
+//
+// BEFORE: 4 correlated subqueries per row (vaccines_given, doses_given_count,
+//         next_due_date, next_vaccine_name) + a separate COUNT query.
+// AFTER:  3 derived-table LEFT JOINs aggregated once over the whole table
+//         + COUNT(*) OVER() — eliminates the second round-trip entirely.
+//
+// How the "next pending dose" JOIN works without correlated NOT EXISTS:
+//   cvr_given  aggregates given vaccine_schedule_ids per patient as a JSON array.
+//   vs_pending picks the earliest schedule row whose id does NOT appear in
+//   that array — one scan of vaccine_schedules, one scan of child_vaccine_records.
 exports.getImmunizationPatientsV2 = async (req, res) => {
   try {
     const limit  = Math.min(500, Math.max(1, Number(req.query.limit  || 200) | 0));
@@ -846,7 +890,17 @@ exports.getImmunizationPatientsV2 = async (req, res) => {
     const endDate      = _parseDate(req.query.end,   now);
     endDate.setHours(23, 59, 59, 999);
 
-    // Main patient list — filter by registration date range
+    // ── cvr_given: per-patient aggregate of all given doses ──────────────────
+    // Replaces the vaccines_given and doses_given_count correlated subqueries.
+    //
+    // ── vs_next: per-patient earliest pending vaccine_schedule ───────────────
+    // Strategy: LEFT JOIN all schedules to given records, keep only rows where
+    // the child has NOT received that schedule (given_at IS NULL after the join),
+    // then pick the minimum sort_order per patient.
+    // This replaces the two NOT EXISTS correlated subqueries for next_due_date
+    // and next_vaccine_name.
+    //
+    // ── COUNT(*) OVER() removes the separate COUNT query ─────────────────────
     const [rows] = await db.query(
       `SELECT
          p.id,
@@ -856,39 +910,67 @@ exports.getImmunizationPatientsV2 = async (req, res) => {
          p.sex,
          p.barangay,
          p.created_at,
-         -- Vaccines already given: comma-separated vaccine names
-         (SELECT GROUP_CONCAT(DISTINCT vs2.vaccine_name ORDER BY vs2.sort_order SEPARATOR ', ')
-            FROM child_vaccine_records cvr2
-            JOIN vaccine_schedules vs2 ON vs2.id = cvr2.vaccine_schedule_id
-           WHERE cvr2.patient_id = p.id
-             AND cvr2.given_at IS NOT NULL) AS vaccines_given,
-         -- Count of given doses
-         (SELECT COUNT(*) FROM child_vaccine_records cvr3
-           WHERE cvr3.patient_id = p.id AND cvr3.given_at IS NOT NULL) AS doses_given_count,
-         -- Next pending dose: earliest vaccine_schedule whose dose is NOT yet given
-         -- Uses due_days_from_birth as a proxy for approximate due date
-         (SELECT DATE_ADD(p.dob, INTERVAL vs4.due_days_from_birth DAY)
-            FROM vaccine_schedules vs4
-           WHERE NOT EXISTS (
-             SELECT 1 FROM child_vaccine_records cvr4
-              WHERE cvr4.patient_id = p.id
-                AND cvr4.vaccine_schedule_id = vs4.id
-                AND cvr4.given_at IS NOT NULL
-           )
-           ORDER BY vs4.sort_order, vs4.dose_number
-           LIMIT 1) AS next_due_date,
-         -- Next pending vaccine name
-         (SELECT vs5.vaccine_name
-            FROM vaccine_schedules vs5
-           WHERE NOT EXISTS (
-             SELECT 1 FROM child_vaccine_records cvr5
-              WHERE cvr5.patient_id = p.id
-                AND cvr5.vaccine_schedule_id = vs5.id
-                AND cvr5.given_at IS NOT NULL
-           )
-           ORDER BY vs5.sort_order, vs5.dose_number
-           LIMIT 1) AS next_vaccine_name
+         cvr_given.vaccines_given,
+         cvr_given.doses_given_count,
+         vs_next.next_due_date,
+         vs_next.next_vaccine_name,
+         COUNT(*) OVER() AS total_count
        FROM patients p
+       -- ── Aggregate given doses per patient (one scan of child_vaccine_records
+       --    joined to vaccine_schedules) ──────────────────────────────────────
+       LEFT JOIN (
+         SELECT
+           cvr.patient_id,
+           GROUP_CONCAT(DISTINCT vs.vaccine_name ORDER BY vs.sort_order SEPARATOR ', ') AS vaccines_given,
+           COUNT(cvr.id) AS doses_given_count
+         FROM child_vaccine_records cvr
+         JOIN vaccine_schedules vs ON vs.id = cvr.vaccine_schedule_id
+         WHERE cvr.given_at IS NOT NULL
+         GROUP BY cvr.patient_id
+       ) AS cvr_given ON cvr_given.patient_id = p.id
+       -- ── Earliest pending vaccine per patient ─────────────────────────────
+       -- All schedules anti-joined against given records; pick first by sort_order.
+       LEFT JOIN (
+         SELECT
+           pending.patient_id,
+           DATE_ADD(pending.dob, INTERVAL pending.due_days_from_birth DAY) AS next_due_date,
+           pending.vaccine_name AS next_vaccine_name
+         FROM (
+           SELECT
+             p2.id          AS patient_id,
+             p2.dob,
+             vs2.vaccine_name,
+             vs2.due_days_from_birth,
+             vs2.sort_order,
+             vs2.dose_number,
+             -- NULL when the child has NOT received this schedule yet
+             cvr2.given_at
+           FROM patients p2
+           JOIN vaccine_schedules vs2 ON 1=1        -- cross join: all schedules
+           LEFT JOIN child_vaccine_records cvr2
+             ON cvr2.patient_id = p2.id
+            AND cvr2.vaccine_schedule_id = vs2.id
+            AND cvr2.given_at IS NOT NULL
+           WHERE p2.service_type = 'immunization'
+             AND cvr2.id IS NULL                    -- not yet given
+         ) AS pending
+         -- Keep only the earliest pending schedule per patient
+         WHERE (pending.patient_id, pending.sort_order, pending.dose_number) IN (
+           SELECT patient_id, MIN(sort_order), MIN(dose_number)
+           FROM (
+             SELECT p3.id AS patient_id, vs3.sort_order, vs3.dose_number
+             FROM patients p3
+             JOIN vaccine_schedules vs3 ON 1=1
+             LEFT JOIN child_vaccine_records cvr3
+               ON cvr3.patient_id = p3.id
+              AND cvr3.vaccine_schedule_id = vs3.id
+              AND cvr3.given_at IS NOT NULL
+             WHERE p3.service_type = 'immunization'
+               AND cvr3.id IS NULL
+           ) AS min_pending
+           GROUP BY patient_id
+         )
+       ) AS vs_next ON vs_next.patient_id = p.id
        WHERE p.service_type = 'immunization'
          AND p.created_at >= ?
          AND p.created_at <= ?
@@ -897,12 +979,7 @@ exports.getImmunizationPatientsV2 = async (req, res) => {
       [_fmtDate(startDate), _fmtDate(endDate), limit, offset]
     );
 
-    const [countRows] = await db.query(
-      `SELECT COUNT(*) AS total FROM patients
-        WHERE service_type = 'immunization'
-          AND created_at >= ? AND created_at <= ?`,
-      [_fmtDate(startDate), _fmtDate(endDate)]
-    );
+    const total = rows.length > 0 ? Number(rows[0].total_count || 0) : 0;
 
     const data = (rows || []).map(r => {
       const nextDue = r.next_due_date ? new Date(r.next_due_date) : null;
@@ -915,14 +992,14 @@ exports.getImmunizationPatientsV2 = async (req, res) => {
 
       return {
         id:              r.id,
-        childName:       r.child_fullname   || 'Unknown',
-        motherName:      r.mother_fullname  || 'Unknown',
-        dob:             r.dob              || null,
-        sex:             r.sex              || null,
-        barangay:        r.barangay         || null,
-        vaccinesGiven:   r.vaccines_given   || (r.doses_given_count > 0 ? 'Doses given' : 'None yet'),
+        childName:       r.child_fullname    || 'Unknown',
+        motherName:      r.mother_fullname   || 'Unknown',
+        dob:             r.dob               || null,
+        sex:             r.sex               || null,
+        barangay:        r.barangay          || null,
+        vaccinesGiven:   r.vaccines_given    || (r.doses_given_count > 0 ? 'Doses given' : 'None yet'),
         dosesGivenCount: Number(r.doses_given_count || 0),
-        nextDue:         r.next_due_date    || null,
+        nextDue:         r.next_due_date     || null,
         nextVaccineName: r.next_vaccine_name || null,
         nextDueStatus,
         recordType:      'Immunization',
@@ -932,7 +1009,7 @@ exports.getImmunizationPatientsV2 = async (req, res) => {
     res.status(200).json({
       success: true,
       data,
-      total: Number(countRows[0]?.total || 0),
+      total,
     });
   } catch (error) {
     console.error('❌ getImmunizationPatientsV2:', error);

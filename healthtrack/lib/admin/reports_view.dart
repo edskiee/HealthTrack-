@@ -838,32 +838,39 @@ class _ReportsViewState extends State<ReportsView>
       return const Center(child: Padding(padding: EdgeInsets.all(24),
         child: Text("No overdue records found", style: TextStyle(color: Colors.grey))));
     }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.orange.shade50),
-        columnSpacing: 32, horizontalMargin: 16,
-        columns: const [
-          DataColumn(label: Text("Barangay", style: TextStyle(fontWeight: FontWeight.w600))),
-          DataColumn(label: Text("Overdue Children", style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-          DataColumn(label: Text("Most Common Overdue Vaccine", style: TextStyle(fontWeight: FontWeight.w600))),
-        ],
-        rows: overdueByBarangayData.map((row) {
-          final count = row['overdue_children'] is int
-              ? row['overdue_children'] as int
-              : int.tryParse('${row['overdue_children']}') ?? 0;
-          return DataRow(cells: [
-            DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
-            DataCell(Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12)),
-              child: Text('$count', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
-            )),
-            DataCell(Text(row['most_common_overdue_vaccine']?.toString() ?? '—',
-                style: TextStyle(color: Colors.grey.shade700))),
-          ]);
-        }).toList(),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: DataTable(
+              headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.orange.shade50),
+              columnSpacing: 32, horizontalMargin: 16,
+              columns: const [
+                DataColumn(label: Text("Barangay", style: TextStyle(fontWeight: FontWeight.w600))),
+                DataColumn(label: Text("Overdue Children", style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+                DataColumn(label: Text("Most Common Overdue Vaccine", style: TextStyle(fontWeight: FontWeight.w600))),
+              ],
+              rows: overdueByBarangayData.map((row) {
+                final count = row['overdue_children'] is int
+                    ? row['overdue_children'] as int
+                    : int.tryParse('${row['overdue_children']}') ?? 0;
+                return DataRow(cells: [
+                  DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
+                  DataCell(Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12)),
+                    child: Text('$count', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
+                  )),
+                  DataCell(Text(row['most_common_overdue_vaccine']?.toString() ?? '—',
+                      style: TextStyle(color: Colors.grey.shade700))),
+                ]);
+              }).toList(),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -873,36 +880,43 @@ class _ReportsViewState extends State<ReportsView>
       return const Center(child: Padding(padding: EdgeInsets.all(24),
         child: Text("No barangay data yet", style: TextStyle(color: Colors.grey))));
     }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.deepPurple.shade50),
-        columnSpacing: 24, horizontalMargin: 16,
-        columns: const [
-          DataColumn(label: Text("Barangay",              style: TextStyle(fontWeight: FontWeight.w600))),
-          DataColumn(label: Text("Total",                 style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-          DataColumn(label: Text("Fully Vaccinated",      style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-          DataColumn(label: Text("Partially Vaccinated",  style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-          DataColumn(label: Text("Not Started",           style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-          DataColumn(label: Text("Overdue",               style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
-        ],
-        rows: barangayBreakdownData.map((row) {
-          int _n(String k) => row[k] is int ? row[k] as int : int.tryParse('${row[k]}') ?? 0;
-          final total   = _n('totalChildren');
-          final fully   = _n('fullyVaccinated');
-          final partial = _n('partiallyVaccinated');
-          final none    = _n('notStarted');
-          final overdue = _n('overdueCount');
-          return DataRow(cells: [
-            DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
-            DataCell(Text('$total')),
-            DataCell(_countBadge(fully,   Colors.green)),
-            DataCell(_countBadge(partial, Colors.orange)),
-            DataCell(_countBadge(none,    Colors.grey)),
-            DataCell(_countBadge(overdue, Colors.red)),
-          ]);
-        }).toList(),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: DataTable(
+              headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.deepPurple.shade50),
+              columnSpacing: 24, horizontalMargin: 16,
+              columns: const [
+                DataColumn(label: Text("Barangay",              style: TextStyle(fontWeight: FontWeight.w600))),
+                DataColumn(label: Text("Total",                 style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+                DataColumn(label: Text("Fully Vaccinated",      style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+                DataColumn(label: Text("Partially Vaccinated",  style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+                DataColumn(label: Text("Not Started",           style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+                DataColumn(label: Text("Overdue",               style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+              ],
+              rows: barangayBreakdownData.map((row) {
+                int n(String k) => row[k] is int ? row[k] as int : int.tryParse('${row[k]}') ?? 0;
+                final total   = n('totalChildren');
+                final fully   = n('fullyVaccinated');
+                final partial = n('partiallyVaccinated');
+                final none    = n('notStarted');
+                final overdue = n('overdueCount');
+                return DataRow(cells: [
+                  DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
+                  DataCell(Text('$total')),
+                  DataCell(_countBadge(fully,   Colors.green)),
+                  DataCell(_countBadge(partial, Colors.orange)),
+                  DataCell(_countBadge(none,    Colors.grey)),
+                  DataCell(_countBadge(overdue, Colors.red)),
+                ]);
+              }).toList(),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1110,19 +1124,22 @@ class _ReportsViewState extends State<ReportsView>
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            headingRowColor: WidgetStateProperty.resolveWith((states) => Colors.grey.shade50),
-            dataRowMaxHeight: 65,
-            dataRowMinHeight: 60,
-            horizontalMargin: 24,
-            columnSpacing: 32,
-            columns: const [
-              DataColumn(label: Text("Child Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Mother Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Date of Birth", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Vaccines Given", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: constraints.maxWidth),
+              child: DataTable(
+                headingRowColor: WidgetStateProperty.resolveWith((states) => Colors.grey.shade50),
+                dataRowMaxHeight: 65,
+                dataRowMinHeight: 60,
+                horizontalMargin: 24,
+                columnSpacing: 32,
+                columns: const [
+                  DataColumn(label: Text("Child Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Mother Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Date of Birth", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Vaccines Given", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
               DataColumn(label: Text("Next Due", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
               DataColumn(label: Text("Record Type", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
             ],
@@ -1171,10 +1188,12 @@ class _ReportsViewState extends State<ReportsView>
                 DataCell(Text(data['recordType']?.toString() ?? '', style: TextStyle(color: Colors.grey.shade700))),
               ]);
             }).toList(),
-          ),
-        ),
-      ),
-    );
+          ),     // DataTable
+        ),       // ConstrainedBox
+      ),         // SingleChildScrollView
+    ),           // LayoutBuilder
+  ),             // ClipRRect
+  );             // Container
   }
 
   // Build prenatal data table
@@ -1204,22 +1223,25 @@ class _ReportsViewState extends State<ReportsView>
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            headingRowColor: WidgetStateProperty.resolveWith((states) => Colors.grey.shade50),
-            dataRowMaxHeight: 65,
-            dataRowMinHeight: 60,
-            horizontalMargin: 24,
-            columnSpacing: 32,
-            columns: const [
-              DataColumn(label: Text("Patient Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("DOB", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Trimester", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Last Visit", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Next Appt", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-              DataColumn(label: Text("Risk Level", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
-            ],
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: constraints.maxWidth),
+              child: DataTable(
+                headingRowColor: WidgetStateProperty.resolveWith((states) => Colors.grey.shade50),
+                dataRowMaxHeight: 65,
+                dataRowMinHeight: 60,
+                horizontalMargin: 24,
+                columnSpacing: 32,
+                columns: const [
+                  DataColumn(label: Text("Patient Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("DOB", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Trimester", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Last Visit", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Next Appt", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                  DataColumn(label: Text("Risk Level", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
+                ],
             rows: prenatalTableData.map((data) {
               final riskLevel = data['riskLevel']?.toString() ?? 'Low';
               final riskColor = riskLevel.toLowerCase().contains('high') ? Colors.red : 
@@ -1240,10 +1262,12 @@ class _ReportsViewState extends State<ReportsView>
                 ),
               ]);
             }).toList(),
-          ),
-        ),
-      ),
-    );
+          ),     // DataTable
+        ),       // ConstrainedBox
+      ),         // SingleChildScrollView
+    ),           // LayoutBuilder
+  ),             // ClipRRect
+  );             // Container
   }
 
   // Select date range
@@ -2156,13 +2180,158 @@ class _ReportsViewState extends State<ReportsView>
         );
       }
 
+      // ── Page: Vaccination Coverage Rate ─────────────────────────────────
+      if (isImmunization && coverageData.isNotEmpty) {
+        pdf.addPage(pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(24),
+          build: (ctx) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('Vaccination Coverage Rate per Vaccine',
+                  style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800)),
+              pw.Text('Period: ${DateFormat('MMM d, yyyy').format(_startDate)} – ${DateFormat('MMM d, yyyy').format(_endDate)}',
+                  style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+              pw.SizedBox(height: 14),
+              pw.TableHelper.fromTextArray(
+                headers: ['Vaccine', 'Completed', 'Total Registered', 'Coverage %'],
+                data: coverageData.map((r) => [
+                  r['vaccineName']?.toString() ?? '',
+                  '${r['completed'] ?? 0}',
+                  '${r['totalRegistered'] ?? 0}',
+                  '${r['coveragePct'] ?? 0}%',
+                ]).toList(),
+                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9, color: PdfColors.white),
+                headerDecoration: const pw.BoxDecoration(color: PdfColors.teal700),
+                cellStyle: const pw.TextStyle(fontSize: 9),
+                cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.center, 2: pw.Alignment.center, 3: pw.Alignment.center},
+                border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+              ),
+            ],
+          ),
+        ));
+      }
+
+      // ── Page: Overdue Children per Barangay ──────────────────────────────
+      if (isImmunization && overdueByBarangayData.isNotEmpty) {
+        pdf.addPage(pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(24),
+          build: (ctx) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('Overdue Children per Barangay',
+                  style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.orange800)),
+              pw.Text('Generated: ${DateFormat('MMM d, yyyy').format(DateTime.now())}',
+                  style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+              pw.SizedBox(height: 14),
+              pw.TableHelper.fromTextArray(
+                headers: ['Barangay', 'Overdue Children', 'Most Common Overdue Vaccine'],
+                data: overdueByBarangayData.map((r) => [
+                  r['barangay']?.toString() ?? '',
+                  '${r['overdue_children'] ?? 0}',
+                  r['most_common_overdue_vaccine']?.toString() ?? '—',
+                ]).toList(),
+                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9, color: PdfColors.white),
+                headerDecoration: const pw.BoxDecoration(color: PdfColors.orange800),
+                cellStyle: const pw.TextStyle(fontSize: 9),
+                border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+              ),
+            ],
+          ),
+        ));
+      }
+
+      // ── Page: Barangay-Level Breakdown ───────────────────────────────────
+      if (isImmunization && barangayBreakdownData.isNotEmpty) {
+        pdf.addPage(pw.Page(
+          pageFormat: PdfPageFormat.a4.landscape,
+          margin: const pw.EdgeInsets.all(24),
+          build: (ctx) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('Barangay-Level Vaccination Breakdown',
+                  style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.purple800)),
+              pw.SizedBox(height: 14),
+              pw.TableHelper.fromTextArray(
+                headers: ['Barangay', 'Total', 'Fully Vaccinated', 'Partially Vaccinated', 'Not Started', 'Overdue'],
+                data: barangayBreakdownData.map((r) {
+                  int n(String k) => r[k] is int ? r[k] as int : int.tryParse('${r[k]}') ?? 0;
+                  return [
+                    r['barangay']?.toString() ?? '',
+                    '${n('totalChildren')}',
+                    '${n('fullyVaccinated')}',
+                    '${n('partiallyVaccinated')}',
+                    '${n('notStarted')}',
+                    '${n('overdueCount')}',
+                  ];
+                }).toList(),
+                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9, color: PdfColors.white),
+                headerDecoration: const pw.BoxDecoration(color: PdfColors.purple800),
+                cellStyle: const pw.TextStyle(fontSize: 9),
+                border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+              ),
+            ],
+          ),
+        ));
+      }
+
+      // ── Page: Detailed Records ────────────────────────────────────────────
+      final detailRows = isImmunization ? immunizationTableData : prenatalTableData;
+      if (detailRows.isNotEmpty) {
+        pdf.addPage(pw.MultiPage(
+          pageFormat: PdfPageFormat.a4.landscape,
+          margin: const pw.EdgeInsets.all(20),
+          build: (ctx) => [
+            pw.Text(isImmunization ? 'Detailed Immunization Records' : 'Detailed Prenatal Records',
+                style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+            pw.SizedBox(height: 10),
+            pw.TableHelper.fromTextArray(
+              headers: isImmunization
+                  ? ['Child Name', 'Mother Name', 'DOB', 'Vaccines Given', 'Next Due', 'Status']
+                  : ['Patient Name', 'DOB', 'Trimester', 'Last Visit', 'Next Appt', 'Risk'],
+              data: isImmunization
+                  ? immunizationTableData.map((r) {
+                      String fmtDate(String? d) {
+                        if (d == null || d.isEmpty) return '';
+                        try { return DateFormat('MMM d, yyyy').format(DateTime.parse(d)); } catch (_) { return d; }
+                      }
+                      return [
+                        r['childName']?.toString()   ?? '',
+                        r['motherName']?.toString()  ?? '',
+                        fmtDate(r['dob']?.toString()),
+                        r['vaccinesGiven']?.toString() ?? '',
+                        r['nextDue'] != null ? fmtDate(r['nextDue'].toString()) : 'Up to date',
+                        r['nextDueStatus']?.toString() ?? '',
+                      ];
+                    }).toList()
+                  : prenatalTableData.map((r) {
+                      String fmtDate(String? d) {
+                        if (d == null || d.isEmpty) return '';
+                        try { return DateFormat('MMM d, yyyy').format(DateTime.parse(d)); } catch (_) { return d; }
+                      }
+                      return [
+                        r['patientName']?.toString()     ?? '',
+                        fmtDate(r['dob']?.toString()),
+                        r['trimester']?.toString()        ?? '',
+                        fmtDate(r['lastVisit']?.toString()),
+                        fmtDate(r['nextAppointment']?.toString()),
+                        r['riskLevel']?.toString()        ?? '',
+                      ];
+                    }).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8, color: PdfColors.white),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.blueGrey700),
+              cellStyle: const pw.TextStyle(fontSize: 8),
+              border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+            ),
+          ],
+        ));
+      }
+
       await Printing.layoutPdf(
         onLayout: (PdfPageFormat format) async => pdf.save(),
         name: '${title.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf',
       );
-
-    } catch (e) {
-      if (mounted) MessageUtils.showErrorMessage(context, 'Failed to export PDF: $e');
     } finally {
       if (mounted) setState(() => isExporting = false);
     }
@@ -2618,6 +2787,119 @@ class _ReportsViewState extends State<ReportsView>
           sheetObject.setColumnWidth(col, 12);
         }
         sheetObject.setColumnWidth(0, 18); // Period column wider
+      }
+
+      // ── Sheet: Coverage per Vaccine ─────────────────────────────────────
+      if (isImmunization && coverageData.isNotEmpty) {
+        final coverageSheet = excel['Coverage'];
+        final coverageHeaders = ['Vaccine', 'Doses Required', 'Completed', 'Total Registered', 'Coverage %'];
+        for (int c = 0; c < coverageHeaders.length; c++) {
+          coverageSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = coverageHeaders[c];
+          coverageSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle =
+              CellStyle(bold: true, backgroundColorHex: '#1f497d', fontColorHex: '#FFFFFF');
+        }
+        for (int r = 0; r < coverageData.length; r++) {
+          final row = coverageData[r];
+          final vals = [
+            row['vaccineName']?.toString() ?? '',
+            '${row['dosesRequired'] ?? ''}',
+            '${row['completed'] ?? ''}',
+            '${row['totalRegistered'] ?? ''}',
+            '${row['coveragePct'] ?? ''}%',
+          ];
+          for (int c = 0; c < vals.length; c++) {
+            coverageSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = vals[c];
+          }
+        }
+      }
+
+      // ── Sheet: Overdue per Barangay ─────────────────────────────────────
+      if (isImmunization && overdueByBarangayData.isNotEmpty) {
+        final overdueSheet = excel['Overdue_Barangay'];
+        final overdueHeaders = ['Barangay', 'Overdue Children', 'Most Common Overdue Vaccine'];
+        for (int c = 0; c < overdueHeaders.length; c++) {
+          overdueSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = overdueHeaders[c];
+          overdueSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle =
+              CellStyle(bold: true, backgroundColorHex: '#c55a11', fontColorHex: '#FFFFFF');
+        }
+        for (int r = 0; r < overdueByBarangayData.length; r++) {
+          final row = overdueByBarangayData[r];
+          final vals = [
+            row['barangay']?.toString() ?? '',
+            '${row['overdue_children'] ?? ''}',
+            row['most_common_overdue_vaccine']?.toString() ?? '',
+          ];
+          for (int c = 0; c < vals.length; c++) {
+            overdueSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = vals[c];
+          }
+        }
+      }
+
+      // ── Sheet: Barangay Breakdown ────────────────────────────────────────
+      if (isImmunization && barangayBreakdownData.isNotEmpty) {
+        final barangaySheet = excel['Barangay_Breakdown'];
+        final barangayHeaders = ['Barangay', 'Total', 'Fully Vaccinated', 'Partially Vaccinated', 'Not Started', 'Overdue'];
+        for (int c = 0; c < barangayHeaders.length; c++) {
+          barangaySheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = barangayHeaders[c];
+          barangaySheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle =
+              CellStyle(bold: true, backgroundColorHex: '#7030a0', fontColorHex: '#FFFFFF');
+        }
+        for (int r = 0; r < barangayBreakdownData.length; r++) {
+          final row = barangayBreakdownData[r];
+          int nv(String k) => row[k] is int ? row[k] as int : int.tryParse('${row[k]}') ?? 0;
+          final vals = [
+            row['barangay']?.toString() ?? '',
+            '${nv('totalChildren')}',
+            '${nv('fullyVaccinated')}',
+            '${nv('partiallyVaccinated')}',
+            '${nv('notStarted')}',
+            '${nv('overdueCount')}',
+          ];
+          for (int c = 0; c < vals.length; c++) {
+            barangaySheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = vals[c];
+          }
+        }
+      }
+
+      // ── Sheet: Detailed Records ──────────────────────────────────────────
+      final detailRows = isImmunization ? immunizationTableData : prenatalTableData;
+      if (detailRows.isNotEmpty) {
+        final detailSheet = excel[isImmunization ? 'Detailed_Records' : 'Prenatal_Records'];
+        final detailHeaders = isImmunization
+            ? ['Child Name', 'Mother Name', 'DOB', 'Vaccines Given', 'Next Due', 'Next Due Status']
+            : ['Patient Name', 'DOB', 'Trimester', 'Last Visit', 'Next Appointment', 'Risk Level'];
+        for (int c = 0; c < detailHeaders.length; c++) {
+          detailSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = detailHeaders[c];
+          detailSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle =
+              CellStyle(bold: true, backgroundColorHex: '#17375e', fontColorHex: '#FFFFFF');
+        }
+        String fmtD(String? d) {
+          if (d == null || d.isEmpty) return '';
+          try { return DateFormat('MMM d, yyyy').format(DateTime.parse(d)); } catch (_) { return d; }
+        }
+        for (int r = 0; r < detailRows.length; r++) {
+          final row = detailRows[r];
+          final vals = isImmunization
+              ? [
+                  row['childName']?.toString()   ?? '',
+                  row['motherName']?.toString()  ?? '',
+                  fmtD(row['dob']?.toString()),
+                  row['vaccinesGiven']?.toString() ?? '',
+                  row['nextDue'] != null ? fmtD(row['nextDue'].toString()) : 'Up to date',
+                  row['nextDueStatus']?.toString() ?? '',
+                ]
+              : [
+                  row['patientName']?.toString()      ?? '',
+                  fmtD(row['dob']?.toString()),
+                  row['trimester']?.toString()         ?? '',
+                  fmtD(row['lastVisit']?.toString()),
+                  fmtD(row['nextAppointment']?.toString()),
+                  row['riskLevel']?.toString()         ?? '',
+                ];
+          for (int c = 0; c < vals.length; c++) {
+            detailSheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = vals[c];
+          }
+        }
       }
 
       final fileName = '${title}Report_${DateTime.now().millisecondsSinceEpoch}.xlsx';

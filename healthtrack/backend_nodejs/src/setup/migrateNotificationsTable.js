@@ -82,8 +82,29 @@ async function migrateNotificationsTable() {
       return;
     }
 
-    await Promise.all(migrations);
-    console.log(`✅ notifications table migrated — added ${migrations.length} missing column(s)`);
+    // Run each migration sequentially with a per-DDL timeout rather than
+    // Promise.all — one hung ALTER shouldn't block the others indefinitely.
+    const DDL_TIMEOUT_MS = 8_000;
+    for (const migPromise of migrations) {
+      await Promise.race([
+        migPromise,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`DDL timeout after ${DDL_TIMEOUT_MS}ms on notifications migration`)),
+            DDL_TIMEOUT_MS
+          )
+        ),
+      ]).catch(err => {
+        if (err.message.startsWith("DDL timeout")) {
+          console.warn(`⚠️  ${err.message} — will retry on next restart`);
+        } else if (err.errno === 1060 || err.code === "ER_DUP_FIELDNAME") {
+          // already added — fine
+        } else {
+          console.error("⚠️  notifications migration step error (non-fatal):", err.message);
+        }
+      });
+    }
+    console.log(`✅ notifications table migrated — applied up to ${migrations.length} column change(s)`);
   } catch (err) {
     console.error("❌ migrateNotificationsTable error:", err.message);
   }

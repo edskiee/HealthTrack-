@@ -376,6 +376,34 @@ async function seedClinicSettings() {
 }
 
 
+// ── Per-migration timeout (ms) ─────────────────────────────────────────────
+// Render's port-scan window is 60 s total. We budget 10 s per migration so
+// all migrations combined fit well inside that window. If any individual
+// migration times out its DDL is deferred to the next restart — the column
+// will simply be missing until then, which is fine for optional columns.
+const MIGRATION_TIMEOUT_MS = 10_000;
+
+/**
+ * runMigration — runs `fn` with a timeout. Never throws; always resolves.
+ * Logs a warning if the migration exceeds MIGRATION_TIMEOUT_MS.
+ */
+async function runMigration(name, fn) {
+  try {
+    await Promise.race([
+      fn(),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`startup migration "${name}" timed out after ${MIGRATION_TIMEOUT_MS}ms`)),
+          MIGRATION_TIMEOUT_MS
+        )
+      ),
+    ]);
+  } catch (err) {
+    // All migration errors are non-fatal — log and continue to server.listen()
+    console.warn(`⚠️  ${err.message || err} — server will continue`);
+  }
+}
+
 async function bootstrap() {
   // ── Firebase credential check ────────────────────────────────────────────────
   const fbProjectId   = process.env.FIREBASE_PROJECT_ID;
@@ -410,15 +438,17 @@ async function bootstrap() {
     console.error("⚠️ Admin table init error (continuing):", err.message);
   }
 
-  // Run DB migrations before anything else
-  await migrateNotificationsTable();
-  await migrateAppointmentSlotsCapacity();
-  await migrateReminderSettings();
-  await seedClinicSettings();
-  await setupVaccineTables();
-  await migrateDobVerification();
-  await migrateChildSortOrder();
-  await migrateVaccineAppointmentLink();  // adds linked_vaccine_* columns to appointments
+  // Run DB migrations before anything else.
+  // Each is wrapped in runMigration() so a hung DDL (e.g. table lock under
+  // heavy load) never prevents server.listen() from being reached.
+  await runMigration("migrateNotificationsTable",      () => migrateNotificationsTable());
+  await runMigration("migrateAppointmentSlotsCapacity",() => migrateAppointmentSlotsCapacity());
+  await runMigration("migrateReminderSettings",        () => migrateReminderSettings());
+  await runMigration("seedClinicSettings",             () => seedClinicSettings());
+  await runMigration("setupVaccineTables",             () => setupVaccineTables());
+  await runMigration("migrateDobVerification",         () => migrateDobVerification());
+  await runMigration("migrateChildSortOrder",          () => migrateChildSortOrder());
+  await runMigration("migrateVaccineAppointmentLink",  () => migrateVaccineAppointmentLink());
   // ⚠️ backfillVaccineRecords is intentionally NOT awaited here.
   // It runs after the server is already listening so it never blocks port binding.
 

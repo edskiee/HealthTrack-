@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import '../services/api_config.dart';
 import 'services/admin_session_storage.dart';
 
@@ -291,6 +292,142 @@ class ReportsService {
 
     final stats = await getSummaryStatCounts();
     return stats['maternalPatients'] ?? 0;
+  }
+
+  // ─── DOH Form 1 — real data from child_vaccine_records (Step 1) ──────────
+  /// Returns per-vaccine M/F/T counts for the given date range.
+  /// Each item: { vaccine_key, vaccine_name, dose_number, month_num, year_num,
+  ///              male_count, female_count, total_count }
+  static Future<List<Map<String, dynamic>>> getDohForm1Data(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    try {
+      final start = DateFormat('yyyy-MM-dd').format(startDate);
+      final end   = DateFormat('yyyy-MM-dd').format(endDate);
+      final resp  = await _getWithFallback(
+        '/dashboard/reports/doh-form1?start=$start&end=$end',
+      );
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
+        }
+      }
+      debugPrint('getDohForm1Data HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getDohForm1Data error: $e');
+      return [];
+    }
+  }
+
+  // ─── Immunization patients v2 — real next due dates (Step 2) ─────────────
+  static Future<List<Map<String, dynamic>>> getImmunizationDetailedDataV2(
+    DateTime startDate,
+    DateTime endDate, {
+    int limit = 200,
+  }) async {
+    try {
+      final start = DateFormat('yyyy-MM-dd').format(startDate);
+      final end   = DateFormat('yyyy-MM-dd').format(endDate);
+      final resp = await _getWithFallback(
+        '/dashboard/reports/immunization-patients-v2?limit=$limit&start=$start&end=$end',
+      );
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
+        }
+      }
+      debugPrint('getImmunizationDetailedDataV2 HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getImmunizationDetailedDataV2 error: $e');
+      return [];
+    }
+  }
+
+  // ─── Vaccination coverage rate per vaccine (Step 3) ───────────────────────
+  static Future<List<Map<String, dynamic>>> getImmunizationCoverage() async {
+    try {
+      final resp = await _getWithFallback('/dashboard/reports/immunization-coverage');
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
+        }
+      }
+      debugPrint('getImmunizationCoverage HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getImmunizationCoverage error: $e');
+      return [];
+    }
+  }
+
+  // ─── Overdue children per barangay (Step 4) ───────────────────────────────
+  static Future<List<Map<String, dynamic>>> getOverdueByBarangay() async {
+    try {
+      final resp = await _getWithFallback('/dashboard/reports/overdue-by-barangay');
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
+        }
+      }
+      debugPrint('getOverdueByBarangay HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getOverdueByBarangay error: $e');
+      return [];
+    }
+  }
+
+  // ─── Monthly completed vs missed appointments (Step 5) ────────────────────
+  static Future<Map<String, dynamic>> getMonthlyAppointmentsBreakdown(
+    DateTime startDate,
+    DateTime endDate, {
+    String serviceType = 'immunization',
+  }) async {
+    try {
+      final year = endDate.year;
+      final resp = await _getWithFallback(
+        '/dashboard/reports/monthly-appointments?year=$year&serviceType=$serviceType',
+      );
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is Map) {
+          return {
+            'monthly': data['data'] as Map<String, dynamic>,
+            'summary': data['summary'] as Map<String, dynamic>? ?? {},
+          };
+        }
+      }
+      debugPrint('getMonthlyAppointmentsBreakdown HTTP ${resp.statusCode}');
+      return {'monthly': <String, dynamic>{}, 'summary': <String, dynamic>{}};
+    } catch (e) {
+      debugPrint('getMonthlyAppointmentsBreakdown error: $e');
+      return {'monthly': <String, dynamic>{}, 'summary': <String, dynamic>{}};
+    }
+  }
+
+  // ─── Barangay-level breakdown table (Step 6) ──────────────────────────────
+  static Future<List<Map<String, dynamic>>> getBarangayBreakdown() async {
+    try {
+      final resp = await _getWithFallback('/dashboard/reports/barangay-breakdown');
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (_isSuccess(data) && data['data'] is List) {
+          return (data['data'] as List).whereType<Map<String, dynamic>>().toList();
+        }
+      }
+      debugPrint('getBarangayBreakdown HTTP ${resp.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getBarangayBreakdown error: $e');
+      return [];
+    }
   }
 
   // ─── Kept for backward compat (dashboard_view.dart uses these) ────────────

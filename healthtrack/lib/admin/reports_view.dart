@@ -45,6 +45,18 @@ class _ReportsViewState extends State<ReportsView>
   Map<String, int> prenatalTrimesterDistribution = {};
   List<Map<String, dynamic>> immunizationTableData = [];
   List<Map<String, dynamic>> prenatalTableData = [];
+
+  // ── New analytics sections (Steps 1–6) ────────────────────────────────────
+  List<Map<String, dynamic>> dohForm1RawData        = []; // Step 1: DOH Form 1 raw rows
+  List<Map<String, dynamic>> coverageData           = []; // Step 3: coverage per vaccine
+  List<Map<String, dynamic>> overdueByBarangayData  = []; // Step 4: overdue per barangay
+  // Step 5: monthly completed vs missed
+  Map<String, Map<String, int>> monthlyApptBreakdown = {};
+  Map<String, dynamic>           monthlyApptSummary  = {};
+  // Step 5 prenatal
+  Map<String, Map<String, int>> prenatalMonthlyApptBreakdown = {};
+  Map<String, dynamic>           prenatalMonthlyApptSummary  = {};
+  List<Map<String, dynamic>> barangayBreakdownData  = []; // Step 6
   
   // Socket.IO connection for real-time updates
   late io.Socket socket;
@@ -114,16 +126,28 @@ class _ReportsViewState extends State<ReportsView>
       // [2] prenatalMonthlyCounts
       // [3] immunizationVaccineDistribution
       // [4] prenatalTrimesterDistribution
-      // [5] immunizationTableData
+      // [5] immunizationTableData  (v2 — real next-due dates)
       // [6] prenatalTableData
+      // [7] dohForm1RawData
+      // [8] coverageData
+      // [9] overdueByBarangayData
+      // [10] monthlyApptBreakdown (immunization)
+      // [11] barangayBreakdownData
+      // [12] monthlyApptBreakdown (prenatal)
       final results = await Future.wait([
         _safeCall(() => ReportsService.getSummaryStatCounts()),
         _safeCall(() => ReportsService.getImmunizationMonthlyCounts(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalMonthlyCounts(_startDate, _endDate)),
         _safeCall(() => ReportsService.getImmunizationVaccineDistribution(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalTrimesterDistribution(_startDate, _endDate)),
-        _safeCall(() => ReportsService.getImmunizationDetailedData(_startDate, _endDate)),
+        _safeCall(() => ReportsService.getImmunizationDetailedDataV2(_startDate, _endDate)),
         _safeCall(() => ReportsService.getPrenatalDetailedData(_startDate, _endDate)),
+        _safeCall(() => ReportsService.getDohForm1Data(_startDate, _endDate)),
+        _safeCall(() => ReportsService.getImmunizationCoverage()),
+        _safeCall(() => ReportsService.getOverdueByBarangay()),
+        _safeCall(() => ReportsService.getMonthlyAppointmentsBreakdown(_startDate, _endDate, serviceType: 'immunization')),
+        _safeCall(() => ReportsService.getBarangayBreakdown()),
+        _safeCall(() => ReportsService.getMonthlyAppointmentsBreakdown(_startDate, _endDate, serviceType: 'maternal')),
       ]);
 
       setState(() {
@@ -140,9 +164,26 @@ class _ReportsViewState extends State<ReportsView>
         immunizationVaccineDistribution  = _safeCast<Map<String, int>>(results[3], {});
         prenatalTrimesterDistribution    = _safeCast<Map<String, int>>(results[4], {});
 
-        // Detailed records tables
+        // Detailed records tables (v2 with real next-due dates)
         immunizationTableData = _safeCastList<Map<String, dynamic>>(results[5], []);
         prenatalTableData     = _safeCastList<Map<String, dynamic>>(results[6], []);
+
+        // New analytics
+        dohForm1RawData       = _safeCastList<Map<String, dynamic>>(results[7], []);
+        coverageData          = _safeCastList<Map<String, dynamic>>(results[8], []);
+        overdueByBarangayData = _safeCastList<Map<String, dynamic>>(results[9], []);
+
+        // Monthly appointments breakdown (immunization)
+        final immApptRaw = _safeCast<Map<String, dynamic>>(results[10], {});
+        monthlyApptBreakdown = _parseMonthlyApptBreakdown(immApptRaw['monthly']);
+        monthlyApptSummary   = _safeCast<Map<String, dynamic>>(immApptRaw['summary'], {});
+
+        barangayBreakdownData = _safeCastList<Map<String, dynamic>>(results[11], []);
+
+        // Monthly appointments breakdown (prenatal)
+        final prenApptRaw = _safeCast<Map<String, dynamic>>(results[12], {});
+        prenatalMonthlyApptBreakdown = _parseMonthlyApptBreakdown(prenApptRaw['monthly']);
+        prenatalMonthlyApptSummary   = _safeCast<Map<String, dynamic>>(prenApptRaw['summary'], {});
 
         // Percentages
         if (totalPatients > 0) {
@@ -224,6 +265,27 @@ class _ReportsViewState extends State<ReportsView>
   // Map service type data to monthly format — kept for compatibility, no longer used by _loadReportData
   Map<String, int> _mapServiceData(Map<String, int>? data, String serviceType) {
     return {'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0};
+  }
+
+  /// Converts { "Jan": { "completed": 2, "missed": 1 }, ... } → typed map
+  Map<String, Map<String, int>> _parseMonthlyApptBreakdown(dynamic raw) {
+    if (raw == null || raw is! Map) return {};
+    final result = <String, Map<String, int>>{};
+    (raw as Map).forEach((k, v) {
+      if (v is Map) {
+        result[k.toString()] = {
+          'completed': _parseInt(v['completed']),
+          'missed':    _parseInt(v['missed']),
+        };
+      }
+    });
+    return result;
+  }
+
+  int _parseInt(dynamic v) {
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v?.toString() ?? '') ?? 0;
   }
 
   @override
@@ -476,39 +538,66 @@ class _ReportsViewState extends State<ReportsView>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _buildSectionCard(
-                  title: "Monthly Immunization Counts",
-                  icon: Icons.bar_chart,
-                  iconColor: Colors.blueAccent,
-                  child: SizedBox(
-                    height: 220,
-                    child: _buildBarChart(immunizationMonthlyCounts, chartColor: const Color(0xFF3B82F6)),
-                  ),
+          // ── Step 5: Monthly Completed vs Missed ────────────────────────────
+          _buildSectionCard(
+            title: "Monthly Appointments — Completed vs Missed",
+            icon: Icons.bar_chart,
+            iconColor: Colors.blueAccent,
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 240,
+                  child: _buildGroupedBarChart(monthlyApptBreakdown),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _buildSectionCard(
-                  title: "Vaccine Category Distribution",
-                  icon: Icons.pie_chart,
-                  iconColor: Colors.green,
-                  child: SizedBox(
-                    height: 220,
-                    child: _buildPieChart(immunizationVaccineDistribution),
+                if (monthlyApptSummary.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: _buildApptSummaryRow(monthlyApptSummary),
                   ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 16),
+          // ── Vaccine Category Distribution (existing) ───────────────────────
+          _buildSectionCard(
+            title: "Vaccine Category Distribution",
+            icon: Icons.pie_chart,
+            iconColor: Colors.green,
+            child: SizedBox(
+              height: 220,
+              child: _buildPieChart(immunizationVaccineDistribution),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // ── Step 3: Vaccination Coverage Rate per Vaccine ──────────────────
+          _buildSectionCard(
+            title: "Vaccination Coverage Rate per Vaccine",
+            icon: Icons.vaccines,
+            iconColor: Colors.teal,
+            child: _buildCoverageSection(),
+          ),
+          const SizedBox(height: 16),
+          // ── Step 4: Overdue Children per Barangay ─────────────────────────
+          _buildSectionCard(
+            title: "Overdue Children per Barangay",
+            icon: Icons.warning_amber_rounded,
+            iconColor: Colors.orange,
+            child: _buildOverdueByBarangayTable(),
+          ),
+          const SizedBox(height: 16),
+          // ── Step 6: Barangay-Level Breakdown ──────────────────────────────
+          _buildSectionCard(
+            title: "Barangay-Level Vaccination Breakdown",
+            icon: Icons.location_on_outlined,
+            iconColor: Colors.deepPurple,
+            child: _buildBarangayBreakdownTable(),
+          ),
+          const SizedBox(height: 16),
+          // ── Step 2: Detailed Immunization Records (v2 with Next Due) ──────
           _buildSectionCard(
             title: "Detailed Immunization Records",
             icon: Icons.list_alt_rounded,
-            iconColor: Colors.deepPurple,
+            iconColor: Colors.indigo,
             child: _buildImmunizationDataTable(),
           ),
         ],
@@ -523,13 +612,33 @@ class _ReportsViewState extends State<ReportsView>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Step 5 (prenatal): Monthly Completed vs Missed ────────────────
+          _buildSectionCard(
+            title: "Monthly Prenatal Appointments — Completed vs Missed",
+            icon: Icons.timeline,
+            iconColor: Colors.purple,
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 240,
+                  child: _buildGroupedBarChart(prenatalMonthlyApptBreakdown),
+                ),
+                if (prenatalMonthlyApptSummary.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: _buildApptSummaryRow(prenatalMonthlyApptSummary),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: _buildSectionCard(
-                  title: "Monthly Prenatal Visits",
-                  icon: Icons.timeline,
+                  title: "Monthly Prenatal Visits (Registrations)",
+                  icon: Icons.bar_chart,
                   iconColor: Colors.purple,
                   child: SizedBox(
                     height: 220,
@@ -562,6 +671,246 @@ class _ReportsViewState extends State<ReportsView>
       ),
     );
   }
+
+  // ── Step 5: Grouped bar chart — Completed (green) vs Missed (red) ──────────
+  Widget _buildGroupedBarChart(Map<String, Map<String, int>> data) {
+    if (data.isEmpty || data.values.every((v) => v['completed'] == 0 && v['missed'] == 0)) {
+      return const Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.insert_chart, size: 48, color: Colors.grey),
+          SizedBox(height: 8),
+          Text("No appointment records yet", style: TextStyle(color: Colors.grey)),
+        ]),
+      );
+    }
+
+    final keys = data.keys.toList();
+    final maxY = data.values
+        .map((v) => (v['completed'] ?? 0) + (v['missed'] ?? 0))
+        .fold(0, (a, b) => a > b ? a : b)
+        .toDouble() + 2;
+
+    return Column(
+      children: [
+        Expanded(
+          child: BarChart(
+            BarChartData(
+              alignment: BarChartAlignment.spaceAround,
+              maxY: maxY,
+              groupsSpace: 12,
+              barTouchData: BarTouchData(
+                touchTooltipData: BarTouchTooltipData(
+                  getTooltipColor: (_) => Colors.black87,
+                  getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                    final key = keys[group.x];
+                    final label = rodIndex == 0 ? 'Completed' : 'Missed';
+                    return BarTooltipItem(
+                      '$key\n$label: ${rod.toY.round()}',
+                      const TextStyle(color: Colors.white, fontSize: 12),
+                    );
+                  },
+                ),
+              ),
+              titlesData: FlTitlesData(
+                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles:   const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 30,
+                    getTitlesWidget: (value, meta) {
+                      final i = value.toInt();
+                      if (i >= 0 && i < keys.length) {
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(keys[i], style: const TextStyle(fontSize: 10)),
+                        );
+                      }
+                      return const Text('');
+                    },
+                  ),
+                ),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true, reservedSize: 32,
+                    getTitlesWidget: (v, _) => v % 1 == 0 && v >= 0
+                        ? Text(v.toInt().toString(), style: const TextStyle(fontSize: 10))
+                        : const Text(''),
+                  ),
+                ),
+              ),
+              borderData: FlBorderData(show: false),
+              barGroups: List.generate(keys.length, (i) {
+                final key = keys[i];
+                final completed = (data[key]?['completed'] ?? 0).toDouble();
+                final missed    = (data[key]?['missed']    ?? 0).toDouble();
+                return BarChartGroupData(
+                  x: i,
+                  barRods: [
+                    BarChartRodData(toY: completed, color: Colors.green.shade500, width: 10, borderRadius: BorderRadius.circular(3)),
+                    BarChartRodData(toY: missed,    color: Colors.red.shade400,   width: 10, borderRadius: BorderRadius.circular(3)),
+                  ],
+                );
+              }),
+            ),
+            duration: const Duration(milliseconds: 600),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          _legendDot(Colors.green.shade500, 'Completed'),
+          const SizedBox(width: 20),
+          _legendDot(Colors.red.shade400, 'Missed'),
+        ]),
+      ],
+    );
+  }
+
+  Widget _legendDot(Color color, String label) => Row(mainAxisSize: MainAxisSize.min, children: [
+    Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+    const SizedBox(width: 6),
+    Text(label, style: const TextStyle(fontSize: 12)),
+  ]);
+
+  Widget _buildApptSummaryRow(Map<String, dynamic> summary) {
+    final completed     = summary['totalCompleted']  ?? 0;
+    final missed        = summary['totalMissed']     ?? 0;
+    final attendance    = summary['attendanceRate']  ?? 0;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8)),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+        _summaryPill('Completed', '$completed', Colors.green),
+        _summaryPill('Missed', '$missed', Colors.red),
+        _summaryPill('Attendance Rate', '$attendance%', Colors.blue),
+      ]),
+    );
+  }
+
+  Widget _summaryPill(String label, String value, MaterialColor color) => Column(children: [
+    Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color.shade700)),
+    Text(label, style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+  ]);
+
+  // ── Step 3: Vaccination Coverage Rate per Vaccine ─────────────────────────
+  Widget _buildCoverageSection() {
+    if (coverageData.isEmpty) {
+      return const Center(child: Padding(padding: EdgeInsets.all(24),
+        child: Text("No coverage data yet", style: TextStyle(color: Colors.grey))));
+    }
+    return Column(
+      children: coverageData.map((item) {
+        final name       = item['vaccineName']?.toString() ?? '';
+        final completed  = item['completed']       is int ? item['completed']       as int : int.tryParse('${item['completed']}')       ?? 0;
+        final total      = item['totalRegistered'] is int ? item['totalRegistered'] as int : int.tryParse('${item['totalRegistered']}') ?? 1;
+        final pct        = item['coveragePct']     is int ? item['coveragePct']     as int : int.tryParse('${item['coveragePct']}')     ?? 0;
+        final progress   = total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+        final barColor   = pct >= 90 ? Colors.green.shade600 : pct >= 70 ? Colors.orange.shade600 : Colors.red.shade500;
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(children: [
+            SizedBox(width: 220, child: Text(name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: progress, minHeight: 14,
+                    backgroundColor: Colors.grey.shade200,
+                    valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text('$pct%  ($completed of $total children)',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+              ]),
+            ),
+          ]),
+        );
+      }).toList(),
+    );
+  }
+
+  // ── Step 4: Overdue Children per Barangay ────────────────────────────────
+  Widget _buildOverdueByBarangayTable() {
+    if (overdueByBarangayData.isEmpty) {
+      return const Center(child: Padding(padding: EdgeInsets.all(24),
+        child: Text("No overdue records found", style: TextStyle(color: Colors.grey))));
+    }
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.orange.shade50),
+        columnSpacing: 32, horizontalMargin: 16,
+        columns: const [
+          DataColumn(label: Text("Barangay", style: TextStyle(fontWeight: FontWeight.w600))),
+          DataColumn(label: Text("Overdue Children", style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+          DataColumn(label: Text("Most Common Overdue Vaccine", style: TextStyle(fontWeight: FontWeight.w600))),
+        ],
+        rows: overdueByBarangayData.map((row) {
+          final count = row['overdue_children'] is int
+              ? row['overdue_children'] as int
+              : int.tryParse('${row['overdue_children']}') ?? 0;
+          return DataRow(cells: [
+            DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
+            DataCell(Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12)),
+              child: Text('$count', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
+            )),
+            DataCell(Text(row['most_common_overdue_vaccine']?.toString() ?? '—',
+                style: TextStyle(color: Colors.grey.shade700))),
+          ]);
+        }).toList(),
+      ),
+    );
+  }
+
+  // ── Step 6: Barangay-Level Breakdown Table ────────────────────────────────
+  Widget _buildBarangayBreakdownTable() {
+    if (barangayBreakdownData.isEmpty) {
+      return const Center(child: Padding(padding: EdgeInsets.all(24),
+        child: Text("No barangay data yet", style: TextStyle(color: Colors.grey))));
+    }
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        headingRowColor: WidgetStateProperty.resolveWith((_) => Colors.deepPurple.shade50),
+        columnSpacing: 24, horizontalMargin: 16,
+        columns: const [
+          DataColumn(label: Text("Barangay",              style: TextStyle(fontWeight: FontWeight.w600))),
+          DataColumn(label: Text("Total",                 style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+          DataColumn(label: Text("Fully Vaccinated",      style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+          DataColumn(label: Text("Partially Vaccinated",  style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+          DataColumn(label: Text("Not Started",           style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+          DataColumn(label: Text("Overdue",               style: TextStyle(fontWeight: FontWeight.w600)), numeric: true),
+        ],
+        rows: barangayBreakdownData.map((row) {
+          int _n(String k) => row[k] is int ? row[k] as int : int.tryParse('${row[k]}') ?? 0;
+          final total   = _n('totalChildren');
+          final fully   = _n('fullyVaccinated');
+          final partial = _n('partiallyVaccinated');
+          final none    = _n('notStarted');
+          final overdue = _n('overdueCount');
+          return DataRow(cells: [
+            DataCell(Text(row['barangay']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
+            DataCell(Text('$total')),
+            DataCell(_countBadge(fully,   Colors.green)),
+            DataCell(_countBadge(partial, Colors.orange)),
+            DataCell(_countBadge(none,    Colors.grey)),
+            DataCell(_countBadge(overdue, Colors.red)),
+          ]);
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _countBadge(int n, MaterialColor color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+    decoration: BoxDecoration(color: color.shade50, borderRadius: BorderRadius.circular(12)),
+    child: Text('$n', style: TextStyle(fontWeight: FontWeight.bold, color: color.shade700)),
+  );
 
   // Build bar chart for monthly counts — chartColor sets a single consistent bar color
   Widget _buildBarChart(Map<String, int> data, {Color chartColor = Colors.blueAccent}) {
@@ -778,10 +1127,39 @@ class _ReportsViewState extends State<ReportsView>
               DataColumn(label: Text("Record Type", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.black87))),
             ],
             rows: immunizationTableData.map((data) {
+              // Next Due display — from v2 endpoint
+              Widget nextDueCell;
+              final nextDueRaw    = data['nextDue']?.toString();
+              final nextDueStatus = data['nextDueStatus']?.toString();
+              final nextVacName   = data['nextVaccineName']?.toString();
+              if (nextDueRaw == null || nextDueRaw.isEmpty) {
+                nextDueCell = Row(children: [
+                  Icon(Icons.check_circle, size: 14, color: Colors.green.shade600),
+                  const SizedBox(width: 4),
+                  Text('Up to date ✓', style: TextStyle(color: Colors.green.shade700, fontSize: 12, fontWeight: FontWeight.w500)),
+                ]);
+              } else {
+                final dateStr = () {
+                  try { return DateFormat('MMM dd, yyyy').format(DateTime.parse(nextDueRaw)); }
+                  catch (_) { return nextDueRaw; }
+                }();
+                final isOverdue = nextDueStatus == 'overdue';
+                nextDueCell = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(dateStr, style: TextStyle(
+                    color: isOverdue ? Colors.red.shade700 : Colors.black87,
+                    fontWeight: isOverdue ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 12,
+                  )),
+                  if (isOverdue) Text('Overdue', style: TextStyle(color: Colors.red.shade500, fontSize: 10)),
+                  if (nextVacName != null && nextVacName.isNotEmpty)
+                    Text(nextVacName, style: TextStyle(color: Colors.grey.shade500, fontSize: 10)),
+                ]);
+              }
+
               return DataRow(cells: [
                 DataCell(Text(data['childName']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
                 DataCell(Text(data['motherName']?.toString() ?? '', style: TextStyle(color: Colors.grey.shade700))),
-                DataCell(Text(data['dob'] != null ? DateFormat('MMM dd, yyyy').format(DateTime.parse(data['dob'])) : '', style: TextStyle(color: Colors.grey.shade700))),
+                DataCell(Text(() { try { return DateFormat('MMM dd, yyyy').format(DateTime.parse(data['dob'].toString())); } catch (_) { return data['dob']?.toString() ?? ''; } }(), style: TextStyle(color: Colors.grey.shade700))),
                 DataCell(
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -789,7 +1167,7 @@ class _ReportsViewState extends State<ReportsView>
                     child: Text(data['vaccinesGiven']?.toString() ?? '', style: const TextStyle(color: Colors.blueAccent, fontSize: 12, fontWeight: FontWeight.w500)),
                   ),
                 ),
-                DataCell(Text(data['nextDue'] != null ? DateFormat('MMM dd, yyyy').format(DateTime.parse(data['nextDue'])) : '', style: TextStyle(color: Colors.grey.shade700))),
+                DataCell(nextDueCell),
                 DataCell(Text(data['recordType']?.toString() ?? '', style: TextStyle(color: Colors.grey.shade700))),
               ]);
             }).toList(),
@@ -930,76 +1308,92 @@ class _ReportsViewState extends State<ReportsView>
     );
   }
 
+  /// Builds the 17-row (months + quarters + annual) × N-col DOH Form 1 matrix
+  /// from real `child_vaccine_records` data returned by the backend.
+  ///
+  /// Columns order (3 per vaccine: M, F, T):
+  ///   BCG, Hep B <24h, Pentavalent D1, D2, D3, OPV D1, D2, D3,
+  ///   IPV, PCV D1, D2, D3, MMR D1, MMR D2  → 14 vaccines × 3 = 42 cols
   List<List<dynamic>> _generateForm1Matrix(List<Map<String, dynamic>> rawData) {
-    final vaccines = ['BCG', 'Hepatitis B', 'DPT-HepB-Hib 1', 'DPT-HepB-Hib 2', 'DPT-HepB-Hib 3', 'OPV 1'];
-    List<List<int>> dataMatrix = List.generate(17, (_) => List.generate(18, (_) => 0));
+    // vaccine_key + dose_number → column index (0-based, each occupies 3 cols: M,F,T)
+    const vaccineColMap = {
+      'bcg-1':          0,
+      'hep_b-1':        1,
+      'pentavalent-1':  2,
+      'pentavalent-2':  3,
+      'pentavalent-3':  4,
+      'opv-1':          5,
+      'opv-2':          6,
+      'opv-3':          7,
+      'ipv-1':          8,
+      'pcv-1':          9,
+      'pcv-2':          10,
+      'pcv-3':          11,
+      'mmr-1':          12,
+      'mmr-2':          13,
+    };
+    const totalVaccines = 14;
 
-    for (var item in rawData) {
-      int monthIdx = -1;
-      final dateStr = item['date'] ?? item['createdAt'] ?? item['dob'];
-      if (dateStr != null) {
-        try { monthIdx = DateTime.parse(dateStr.toString()).month - 1; } catch (_) {}
-      }
-      if (monthIdx == -1) monthIdx = DateTime.now().month - 1;
+    // dataMatrix[rowIdx][colIdx]: rowIdx 0-16, colIdx 0..(totalVaccines*3 -1)
+    final dataMatrix = List.generate(17, (_) => List.filled(totalVaccines * 3, 0, growable: false));
 
+    for (final row in dohForm1RawData) {
+      final vaccineKey  = row['vaccine_key']?.toString() ?? '';
+      final doseNumber  = row['dose_number'] is int ? row['dose_number'] as int : int.tryParse('${row['dose_number']}') ?? 1;
+      final monthNum    = row['month_num']   is int ? row['month_num']   as int : int.tryParse('${row['month_num']}')   ?? 0;
+      final male        = row['male_count']  is int ? row['male_count']  as int : int.tryParse('${row['male_count']}')  ?? 0;
+      final female      = row['female_count']is int ? row['female_count']as int : int.tryParse('${row['female_count']}')??0;
+      final total       = row['total_count'] is int ? row['total_count'] as int : int.tryParse('${row['total_count']}') ?? 0;
+
+      if (monthNum < 1 || monthNum > 12) continue;
+
+      final lookupKey = '$vaccineKey-$doseNumber';
+      final vaccineIdx = vaccineColMap[lookupKey];
+      if (vaccineIdx == null) continue;
+
+      final baseCol = vaccineIdx * 3;
+
+      // Month row index (0=Jan,1=Feb,2=Mar, skip 3→quarter, 4=Apr… etc)
       int rowIdx;
-      if (monthIdx < 3) rowIdx = monthIdx;
-      else if (monthIdx < 6) rowIdx = monthIdx + 1;
-      else if (monthIdx < 9) rowIdx = monthIdx + 2;
-      else rowIdx = monthIdx + 3;
+      if (monthNum <= 3)       rowIdx = monthNum - 1;      // 0,1,2
+      else if (monthNum <= 6)  rowIdx = monthNum;           // 4,5,6 (skip 3)
+      else if (monthNum <= 9)  rowIdx = monthNum + 1;       // 8,9,10 (skip 7)
+      else                     rowIdx = monthNum + 2;       // 12,13,14 (skip 11)
 
-      final genderStr = item['gender']?.toString().toLowerCase() ?? item['sex']?.toString().toLowerCase();
-      int genderOffset = 0;
-      if (genderStr != null) {
-        if (genderStr.startsWith('f')) genderOffset = 1;
-      } else {
-        genderOffset = (item.hashCode % 2 == 0) ? 0 : 1; 
-      }
+      // Month row
+      dataMatrix[rowIdx][baseCol]     += male;
+      dataMatrix[rowIdx][baseCol + 1] += female;
+      dataMatrix[rowIdx][baseCol + 2] += total;
 
-      final given = (item['vaccinesGiven']?.toString().toLowerCase() ?? '');
-      
-      for (int i = 0; i < vaccines.length; i++) {
-        final v = vaccines[i].toLowerCase();
-        bool hasVacc = false;
-        if (v.contains('bcg')) hasVacc = given.contains('bcg');
-        else if (v.contains('hepatitis b')) hasVacc = given.contains('hepatitis b') || given.contains('hep b');
-        else if (v.contains('dpt-hepb-hib 1')) hasVacc = given.contains('dpt 1') || given.contains('dpt-hepb-hib 1') || (given.contains('dpt') && !given.contains('2') && !given.contains('3'));
-        else if (v.contains('dpt-hepb-hib 2')) hasVacc = given.contains('dpt 2') || given.contains('dpt-hepb-hib 2');
-        else if (v.contains('dpt-hepb-hib 3')) hasVacc = given.contains('dpt 3') || given.contains('dpt-hepb-hib 3');
-        else if (v.contains('opv 1')) hasVacc = given.contains('opv 1') || given.contains('opv1') || given.contains('polio');
-        
-        if (hasVacc) {
-           int baseCol = i * 3;
-           dataMatrix[rowIdx][baseCol + genderOffset]++; 
-           dataMatrix[rowIdx][baseCol + 2]++; 
-           
-           int qRow = (monthIdx ~/ 3) * 4 + 3;
-           dataMatrix[qRow][baseCol + genderOffset]++;
-           dataMatrix[qRow][baseCol + 2]++;
-           
-           dataMatrix[16][baseCol + genderOffset]++;
-           dataMatrix[16][baseCol + 2]++;
-        }
-      }
+      // Quarter row
+      final qRow = ((monthNum - 1) ~/ 3) * 4 + 3;
+      dataMatrix[qRow][baseCol]     += male;
+      dataMatrix[qRow][baseCol + 1] += female;
+      dataMatrix[qRow][baseCol + 2] += total;
+
+      // Annual total (row 16)
+      dataMatrix[16][baseCol]     += male;
+      dataMatrix[16][baseCol + 1] += female;
+      dataMatrix[16][baseCol + 2] += total;
     }
 
-    final rowLabels = [
-      'January', 'February', 'March', '1ST QUARTER',
-      'April', 'May', 'June', '2ND QUARTER',
-      'July', 'August', 'September', '3RD QUARTER',
-      'October', 'November', 'December', '4TH QUARTER',
-      'ANNUAL TOTAL'
+    const rowLabels = [
+      'January','February','March','1ST QUARTER',
+      'April','May','June','2ND QUARTER',
+      'July','August','September','3RD QUARTER',
+      'October','November','December','4TH QUARTER',
+      'ANNUAL TOTAL',
     ];
+    final isQuarterRow = {3,7,11,15,16};
 
-    List<List<dynamic>> finalMatrix = [];
-    for (int i = 0; i < 17; i++) {
-      List<dynamic> row = [rowLabels[i]];
-      for (int j = 0; j < 18; j++) {
-        row.add(dataMatrix[i][j] == 0 && !rowLabels[i].contains('QUARTER') && !rowLabels[i].contains('TOTAL') ? '' : dataMatrix[i][j]);
+    return List.generate(17, (i) {
+      final row = <dynamic>[rowLabels[i]];
+      for (int j = 0; j < totalVaccines * 3; j++) {
+        final v = dataMatrix[i][j];
+        row.add(isQuarterRow.contains(i) ? v : (v == 0 ? '' : v));
       }
-      finalMatrix.add(row);
-    }
-    return finalMatrix;
+      return row;
+    });
   }
 
   List<List<dynamic>> _generateMaternalFormMatrix(List<Map<String, dynamic>> rawData) {
@@ -1092,7 +1486,7 @@ class _ReportsViewState extends State<ReportsView>
       final pdf = pw.Document();
 
       if (isImmunization) {
-        final matrix = _generateForm1Matrix(data);
+        final matrix = _generateForm1Matrix(dohForm1RawData); // Step 1: real data
         
         pdf.addPage(
           pw.MultiPage(
@@ -1786,7 +2180,7 @@ class _ReportsViewState extends State<ReportsView>
       excel.setDefaultSheet(title);
 
       if (isImmunization) {
-        final matrix = _generateForm1Matrix(data);
+        final matrix = _generateForm1Matrix(dohForm1RawData); // Step 1: real data
         
         // Professional Header Section
         var headerCell = sheetObject.cell(CellIndex.indexByString("A1"));

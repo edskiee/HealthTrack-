@@ -18,6 +18,13 @@ const {
   getTrimesterDistribution,
   getImmunizationPatients,
   getPrenatalPatients,
+  // New reports endpoints (Steps 1–6, 8–9)
+  getDohForm1Data,
+  getImmunizationPatientsV2,
+  getImmunizationCoverage,
+  getOverdueByBarangay,
+  getMonthlyAppointmentsBreakdown,
+  getBarangayBreakdown,
 } = require("../controllers/dashboardController");
 const { authenticateAdmin } = require("../middleware/auth");
 
@@ -42,5 +49,13 @@ router.get("/reports/vaccine-distribution",  getVaccineDistribution);
 router.get("/reports/trimester-distribution",getTrimesterDistribution);
 router.get("/reports/immunization-patients", getImmunizationPatients);
 router.get("/reports/prenatal-patients",     getPrenatalPatients);
+
+// New reports endpoints (Steps 1–6, 8–9)
+router.get("/reports/doh-form1",                   getDohForm1Data);
+router.get("/reports/immunization-patients-v2",    getImmunizationPatientsV2);
+router.get("/reports/immunization-coverage",       getImmunizationCoverage);
+router.get("/reports/overdue-by-barangay",         getOverdueByBarangay);
+router.get("/reports/monthly-appointments",        getMonthlyAppointmentsBreakdown);
+router.get("/reports/barangay-breakdown",          getBarangayBreakdown);
 
 module.exports = router;

@@ -758,3 +758,443 @@ exports.getPrenatalPatients = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch prenatal patients', error: error.message });
   }
 };
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW REPORTS ENDPOINTS — Steps 1–6, 8–9
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Shared helper: parse a YYYY-MM-DD date string from a query param,
+ * falling back to `defaultDate` if missing or invalid.
+ */
+function _parseDate(raw, defaultDate) {
+  if (!raw) return defaultDate;
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? defaultDate : d;
+}
+
+function _fmtDate(d) {
+  return d.toISOString().split('T')[0]; // "YYYY-MM-DD"
+}
+
+// ── Step 1: DOH Form 1 — real data from child_vaccine_records ────────────────
+//
+// GET /dashboard/reports/doh-form1?start=YYYY-MM-DD&end=YYYY-MM-DD
+//
+// Returns per-vaccine M/F/T counts grouped by month+year.
+// Each row: { vaccine_key, vaccine_name, dose_number, month, year, male, female, total }
+// The frontend groups these into the 17-row (months + quarters + annual) matrix.
+exports.getDohForm1Data = async (req, res) => {
+  try {
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), 0, 1); // Jan 1 current year
+    const defaultEnd   = now;
+
+    const startDate = _parseDate(req.query.start, defaultStart);
+    const endDate   = _parseDate(req.query.end,   defaultEnd);
+
+    // Clamp endDate to end of day
+    const endDateEod = new Date(endDate);
+    endDateEod.setHours(23, 59, 59, 999);
+
+    const [rows] = await db.execute(
+      `SELECT
+         vs.vaccine_key,
+         vs.vaccine_name,
+         vs.dose_number,
+         MONTH(cvr.given_at)   AS month_num,
+         YEAR(cvr.given_at)    AS year_num,
+         SUM(CASE WHEN LOWER(TRIM(p.sex)) IN ('male','m')   THEN 1 ELSE 0 END) AS male_count,
+         SUM(CASE WHEN LOWER(TRIM(p.sex)) IN ('female','f') THEN 1 ELSE 0 END) AS female_count,
+         COUNT(*) AS total_count
+       FROM child_vaccine_records cvr
+       JOIN vaccine_schedules vs  ON vs.id  = cvr.vaccine_schedule_id
+       JOIN patients          p   ON p.id   = cvr.patient_id
+       WHERE cvr.given_at IS NOT NULL
+         AND cvr.given_at >= ?
+         AND cvr.given_at <= ?
+         AND p.service_type = 'immunization'
+       GROUP BY vs.vaccine_key, vs.vaccine_name, vs.dose_number, month_num, year_num
+       ORDER BY vs.sort_order, vs.dose_number, year_num, month_num`,
+      [_fmtDate(startDate), _fmtDate(endDateEod)]
+    );
+
+    res.status(200).json({ success: true, data: rows || [], startDate: _fmtDate(startDate), endDate: _fmtDate(endDateEod) });
+  } catch (error) {
+    console.error('❌ getDohForm1Data:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch DOH Form 1 data', error: error.message });
+  }
+};
+
+// ── Step 2: Immunization patients with real next-due dates ───────────────────
+//
+// GET /dashboard/reports/immunization-patients-v2?limit=200&offset=0&start=YYYY-MM-DD&end=YYYY-MM-DD
+//
+// Returns children with vaccinesGiven (comma-separated vaccine names from
+// child_vaccine_records) and nextDue (earliest pending vaccine due date from
+// vaccine_schedules computation done in the buildDoseList logic — approximated
+// here as: earliest not-yet-given dose's due date).
+exports.getImmunizationPatientsV2 = async (req, res) => {
+  try {
+    const limit  = Math.min(500, Math.max(1, Number(req.query.limit  || 200) | 0));
+    const offset = Math.max(0,               Number(req.query.offset || 0)   | 0);
+
+    const now          = new Date();
+    const defaultStart = new Date(2000, 0, 1);
+    const startDate    = _parseDate(req.query.start, defaultStart);
+    const endDate      = _parseDate(req.query.end,   now);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Main patient list — filter by registration date range
+    const [rows] = await db.query(
+      `SELECT
+         p.id,
+         p.child_fullname,
+         p.mother_fullname,
+         p.dob,
+         p.sex,
+         p.barangay,
+         p.created_at,
+         -- Vaccines already given: comma-separated vaccine names
+         (SELECT GROUP_CONCAT(DISTINCT vs2.vaccine_name ORDER BY vs2.sort_order SEPARATOR ', ')
+            FROM child_vaccine_records cvr2
+            JOIN vaccine_schedules vs2 ON vs2.id = cvr2.vaccine_schedule_id
+           WHERE cvr2.patient_id = p.id
+             AND cvr2.given_at IS NOT NULL) AS vaccines_given,
+         -- Count of given doses
+         (SELECT COUNT(*) FROM child_vaccine_records cvr3
+           WHERE cvr3.patient_id = p.id AND cvr3.given_at IS NOT NULL) AS doses_given_count,
+         -- Next pending dose: earliest vaccine_schedule whose dose is NOT yet given
+         -- Uses due_days_from_birth as a proxy for approximate due date
+         (SELECT DATE_ADD(p.dob, INTERVAL vs4.due_days_from_birth DAY)
+            FROM vaccine_schedules vs4
+           WHERE NOT EXISTS (
+             SELECT 1 FROM child_vaccine_records cvr4
+              WHERE cvr4.patient_id = p.id
+                AND cvr4.vaccine_schedule_id = vs4.id
+                AND cvr4.given_at IS NOT NULL
+           )
+           ORDER BY vs4.sort_order, vs4.dose_number
+           LIMIT 1) AS next_due_date,
+         -- Next pending vaccine name
+         (SELECT vs5.vaccine_name
+            FROM vaccine_schedules vs5
+           WHERE NOT EXISTS (
+             SELECT 1 FROM child_vaccine_records cvr5
+              WHERE cvr5.patient_id = p.id
+                AND cvr5.vaccine_schedule_id = vs5.id
+                AND cvr5.given_at IS NOT NULL
+           )
+           ORDER BY vs5.sort_order, vs5.dose_number
+           LIMIT 1) AS next_vaccine_name
+       FROM patients p
+       WHERE p.service_type = 'immunization'
+         AND p.created_at >= ?
+         AND p.created_at <= ?
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [_fmtDate(startDate), _fmtDate(endDate), limit, offset]
+    );
+
+    const [countRows] = await db.query(
+      `SELECT COUNT(*) AS total FROM patients
+        WHERE service_type = 'immunization'
+          AND created_at >= ? AND created_at <= ?`,
+      [_fmtDate(startDate), _fmtDate(endDate)]
+    );
+
+    const data = (rows || []).map(r => {
+      const nextDue = r.next_due_date ? new Date(r.next_due_date) : null;
+      const today   = new Date(); today.setHours(0,0,0,0);
+      let nextDueStatus = null;
+      if (nextDue) {
+        nextDue.setHours(0,0,0,0);
+        nextDueStatus = nextDue < today ? 'overdue' : 'upcoming';
+      }
+
+      return {
+        id:              r.id,
+        childName:       r.child_fullname   || 'Unknown',
+        motherName:      r.mother_fullname  || 'Unknown',
+        dob:             r.dob              || null,
+        sex:             r.sex              || null,
+        barangay:        r.barangay         || null,
+        vaccinesGiven:   r.vaccines_given   || (r.doses_given_count > 0 ? 'Doses given' : 'None yet'),
+        dosesGivenCount: Number(r.doses_given_count || 0),
+        nextDue:         r.next_due_date    || null,
+        nextVaccineName: r.next_vaccine_name || null,
+        nextDueStatus,
+        recordType:      'Immunization',
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data,
+      total: Number(countRows[0]?.total || 0),
+    });
+  } catch (error) {
+    console.error('❌ getImmunizationPatientsV2:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch immunization patients v2', error: error.message });
+  }
+};
+
+// ── Step 3: Vaccination coverage rate per vaccine ────────────────────────────
+//
+// GET /dashboard/reports/immunization-coverage
+//
+// For each vaccine_key, returns:
+//   total_registered (immunization patients),
+//   completed (children who have given_at for ALL doses of this vaccine),
+//   coverage_pct
+exports.getImmunizationCoverage = async (req, res) => {
+  try {
+    // Total immunization patients
+    const [[{ total_registered }]] = await db.execute(
+      `SELECT COUNT(*) AS total_registered FROM patients WHERE service_type = 'immunization'`
+    );
+    const total = Number(total_registered || 0);
+
+    // Per vaccine: doses required + children who completed all doses
+    const [rows] = await db.execute(
+      `SELECT
+         vs.vaccine_key,
+         vs.vaccine_name,
+         COUNT(DISTINCT vs.id)            AS doses_required,
+         -- children who completed all doses of this vaccine
+         (SELECT COUNT(DISTINCT sub_cvr.patient_id)
+            FROM child_vaccine_records sub_cvr
+            JOIN vaccine_schedules sub_vs ON sub_vs.id = sub_cvr.vaccine_schedule_id
+           WHERE sub_vs.vaccine_key = vs.vaccine_key
+             AND sub_cvr.given_at IS NOT NULL
+           GROUP BY sub_cvr.patient_id
+          HAVING COUNT(DISTINCT sub_cvr.vaccine_schedule_id) = COUNT(DISTINCT sub_vs.id)
+         ) AS completed_raw
+       FROM vaccine_schedules vs
+       GROUP BY vs.vaccine_key, vs.vaccine_name
+       ORDER BY vs.sort_order`
+    );
+
+    // Recalculate completed properly using a two-step query
+    const coverage = [];
+    for (const row of rows || []) {
+      const dosesRequired = Number(row.doses_required || 1);
+      const [compRows] = await db.execute(
+        `SELECT COUNT(*) AS completed
+           FROM (
+             SELECT cvr.patient_id
+               FROM child_vaccine_records cvr
+               JOIN vaccine_schedules vs2 ON vs2.id = cvr.vaccine_schedule_id
+              WHERE vs2.vaccine_key = ?
+                AND cvr.given_at IS NOT NULL
+              GROUP BY cvr.patient_id
+             HAVING COUNT(DISTINCT cvr.vaccine_schedule_id) >= ?
+           ) AS completed_patients`,
+        [row.vaccine_key, dosesRequired]
+      );
+      const completed = Number(compRows[0]?.completed || 0);
+      const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+      coverage.push({
+        vaccineKey:    row.vaccine_key,
+        vaccineName:   row.vaccine_name,
+        dosesRequired,
+        completed,
+        totalRegistered: total,
+        coveragePct:   pct,
+      });
+    }
+
+    res.status(200).json({ success: true, data: coverage, totalRegistered: total });
+  } catch (error) {
+    console.error('❌ getImmunizationCoverage:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch immunization coverage', error: error.message });
+  }
+};
+
+// ── Step 4: Overdue children count per barangay ───────────────────────────────
+//
+// GET /dashboard/reports/overdue-by-barangay
+//
+// A child is "overdue" if at least one vaccine has a computed due date in the past
+// and no given_at record exists.
+// Approximation: given DOB + due_days_from_birth < TODAY and not yet given.
+exports.getOverdueByBarangay = async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT
+         COALESCE(NULLIF(TRIM(p.barangay), ''), 'Unspecified') AS barangay,
+         COUNT(DISTINCT p.id)                                   AS overdue_children,
+         -- Most common overdue vaccine
+         (SELECT vs2.vaccine_name
+            FROM vaccine_schedules vs2
+            JOIN patients p2 ON p2.service_type = 'immunization'
+           WHERE COALESCE(NULLIF(TRIM(p2.barangay),''), 'Unspecified')
+                   = COALESCE(NULLIF(TRIM(p.barangay),''), 'Unspecified')
+             AND p2.dob IS NOT NULL
+             AND DATE_ADD(p2.dob, INTERVAL vs2.due_days_from_birth DAY) < CURDATE()
+             AND NOT EXISTS (
+               SELECT 1 FROM child_vaccine_records cvr2
+                WHERE cvr2.patient_id = p2.id
+                  AND cvr2.vaccine_schedule_id = vs2.id
+                  AND cvr2.given_at IS NOT NULL
+             )
+           GROUP BY vs2.vaccine_name
+           ORDER BY COUNT(*) DESC
+           LIMIT 1) AS most_common_overdue_vaccine
+       FROM patients p
+       JOIN vaccine_schedules vs ON 1=1
+       WHERE p.service_type = 'immunization'
+         AND p.dob IS NOT NULL
+         AND DATE_ADD(p.dob, INTERVAL vs.due_days_from_birth DAY) < CURDATE()
+         AND NOT EXISTS (
+           SELECT 1 FROM child_vaccine_records cvr
+            WHERE cvr.patient_id = p.id
+              AND cvr.vaccine_schedule_id = vs.id
+              AND cvr.given_at IS NOT NULL
+         )
+       GROUP BY barangay
+       ORDER BY overdue_children DESC`
+    );
+
+    res.status(200).json({ success: true, data: rows || [] });
+  } catch (error) {
+    console.error('❌ getOverdueByBarangay:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch overdue by barangay', error: error.message });
+  }
+};
+
+// ── Step 5: Monthly completed vs missed appointments breakdown ────────────────
+//
+// GET /dashboard/reports/monthly-appointments?year=YYYY&serviceType=immunization|maternal
+//
+// Returns per-month completed and missed (no_show) appointment counts.
+exports.getMonthlyAppointmentsBreakdown = async (req, res) => {
+  try {
+    const year        = parseInt(req.query.year) || new Date().getFullYear();
+    const serviceType = (req.query.serviceType || 'immunization').toLowerCase();
+
+    // Map serviceType to appointment_type LIKE pattern
+    const typePattern = serviceType === 'maternal' ? '%maternal%' : '%immunization%';
+
+    const [rows] = await db.execute(
+      `SELECT
+         MONTH(a.appointment_date) AS month_num,
+         SUM(CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+         SUM(CASE WHEN a.status = 'no_show'   THEN 1 ELSE 0 END) AS missed
+       FROM appointments a
+       WHERE YEAR(a.appointment_date) = ?
+         AND LOWER(a.appointment_type) LIKE ?
+         AND a.status IN ('completed', 'no_show')
+       GROUP BY month_num
+       ORDER BY month_num`,
+      [year, typePattern]
+    );
+
+    const monthAbbr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const result = {};
+    monthAbbr.forEach(m => { result[m] = { completed: 0, missed: 0 }; });
+    (rows || []).forEach(row => {
+      const abbr = monthAbbr[row.month_num - 1];
+      if (abbr) {
+        result[abbr].completed = Number(row.completed || 0);
+        result[abbr].missed    = Number(row.missed    || 0);
+      }
+    });
+
+    // Totals for the summary line
+    const totalCompleted = Object.values(result).reduce((s, v) => s + v.completed, 0);
+    const totalMissed    = Object.values(result).reduce((s, v) => s + v.missed,    0);
+    const totalAll       = totalCompleted + totalMissed;
+    const attendanceRate = totalAll > 0 ? Math.round((totalCompleted / totalAll) * 100) : 0;
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      year,
+      summary: { totalCompleted, totalMissed, attendanceRate },
+    });
+  } catch (error) {
+    console.error('❌ getMonthlyAppointmentsBreakdown:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch monthly appointments breakdown', error: error.message });
+  }
+};
+
+// ── Step 6: Barangay-level breakdown table ────────────────────────────────────
+//
+// GET /dashboard/reports/barangay-breakdown
+//
+// Returns per-barangay:
+//   total_children, fully_vaccinated, partially_vaccinated, not_started, overdue_count
+//
+// Definitions:
+//   fully_vaccinated    = all 14 vaccine schedule doses given
+//   partially_vaccinated = 1–13 doses given, no overdue dose
+//   not_started         = 0 doses given AND child's age >= 0 days
+//   overdue_count       = children with ≥1 overdue dose
+exports.getBarangayBreakdown = async (req, res) => {
+  try {
+    const TOTAL_DOSES = 14; // all doses in the EPI schedule
+
+    const [rows] = await db.execute(
+      `SELECT
+         COALESCE(NULLIF(TRIM(p.barangay), ''), 'Unspecified') AS barangay,
+         COUNT(DISTINCT p.id) AS total_children,
+         -- Fully vaccinated: all 14 doses given
+         COUNT(DISTINCT CASE
+           WHEN (SELECT COUNT(*) FROM child_vaccine_records cvr_f
+                  WHERE cvr_f.patient_id = p.id AND cvr_f.given_at IS NOT NULL) >= ?
+           THEN p.id END) AS fully_vaccinated,
+         -- Not started: 0 doses given
+         COUNT(DISTINCT CASE
+           WHEN (SELECT COUNT(*) FROM child_vaccine_records cvr_ns
+                  WHERE cvr_ns.patient_id = p.id AND cvr_ns.given_at IS NOT NULL) = 0
+           THEN p.id END) AS not_started,
+         -- Overdue: at least one overdue dose (due_days_from_birth past + not given)
+         COUNT(DISTINCT CASE
+           WHEN EXISTS (
+             SELECT 1 FROM vaccine_schedules vs_ov
+              WHERE p.dob IS NOT NULL
+                AND DATE_ADD(p.dob, INTERVAL vs_ov.due_days_from_birth DAY) < CURDATE()
+                AND NOT EXISTS (
+                  SELECT 1 FROM child_vaccine_records cvr_ov
+                   WHERE cvr_ov.patient_id = p.id
+                     AND cvr_ov.vaccine_schedule_id = vs_ov.id
+                     AND cvr_ov.given_at IS NOT NULL
+                )
+           ) THEN p.id END) AS overdue_count
+       FROM patients p
+       WHERE p.service_type = 'immunization'
+       GROUP BY barangay
+       ORDER BY total_children DESC`,
+      [TOTAL_DOSES]
+    );
+
+    // Compute partially_vaccinated = total - fully - not_started
+    // (children with some doses but not all — may overlap with overdue)
+    const data = (rows || []).map(r => {
+      const total    = Number(r.total_children    || 0);
+      const fully    = Number(r.fully_vaccinated  || 0);
+      const notStart = Number(r.not_started       || 0);
+      const overdue  = Number(r.overdue_count     || 0);
+      const partial  = Math.max(0, total - fully - notStart);
+      return {
+        barangay:           r.barangay,
+        totalChildren:      total,
+        fullyVaccinated:    fully,
+        partiallyVaccinated: partial,
+        notStarted:         notStart,
+        overdueCount:       overdue,
+      };
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('❌ getBarangayBreakdown:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch barangay breakdown', error: error.message });
+  }
+};
+
+// ── Step 8: Prenatal monthly completed vs missed ──────────────────────────────
+// (reuses getMonthlyAppointmentsBreakdown with serviceType=maternal)
+// No separate export needed — the frontend passes serviceType=maternal.

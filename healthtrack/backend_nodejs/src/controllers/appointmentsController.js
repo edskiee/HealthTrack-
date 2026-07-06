@@ -4,6 +4,10 @@ const { sendAppointmentStatusNotification } = require("./adminNotificationContro
 const { sendAppointmentConfirmationNotification, sendCancellationAlert } = require("../services/automatedReminderService");
 const { createAppointmentReminderSchedule, cancelAppointmentReminders } = require("../services/appointmentReminderService");
 const { sendToUserDevices } = require("../services/appointmentPushService");
+const {
+  createVaccineDoseReminders,
+  sendAllDosesCompletedNotification,
+} = require("../services/vaccineDoseReminderService");
 
 const MANILA_TZ = "Asia/Manila";
 const APPOINTMENT_INPUT_FORMATS = [
@@ -1874,6 +1878,55 @@ exports.completeAppointmentWithDose = async (req, res) => {
     try {
       await cancelAppointmentReminders(id, "Appointment completed");
     } catch (_) {}
+
+    // ── Vaccine dose reminders for the next dose (non-fatal) ─────────────────
+    if (nextDueDateComputed) {
+      try {
+        const [nextSched] = await db.execute(
+          `SELECT id, vaccine_name, dose_label
+             FROM vaccine_schedules
+            WHERE vaccine_key = ? AND dose_number = ? LIMIT 1`,
+          [sched.vaccine_key, sched.dose_number + 1]
+        );
+        if (nextSched.length) {
+          const ns = nextSched[0];
+          await createVaccineDoseReminders({
+            patient_id,
+            user_id:             appt.user_id,
+            vaccine_schedule_id: ns.id,
+            vaccine_name:        ns.vaccine_name,
+            dose_label:          ns.dose_label,
+            due_date:            nextDueDateComputed,
+            child_name:          appt.patient_name || null,
+          });
+        }
+      } catch (reminderErr) {
+        console.error("⚠️ completeWithDose: vaccine reminder creation failed (non-fatal):", reminderErr.message);
+      }
+    } else {
+      // No next dose — send congratulations if all done
+      try {
+        const [remaining] = await db.execute(
+          `SELECT COUNT(*) AS cnt
+             FROM vaccine_schedules vs
+             LEFT JOIN child_vaccine_records cvr
+               ON  cvr.vaccine_schedule_id = vs.id
+               AND cvr.patient_id          = ?
+               AND cvr.given_at IS NOT NULL
+            WHERE cvr.id IS NULL`,
+          [patient_id]
+        );
+        if (remaining[0].cnt === 0) {
+          await sendAllDosesCompletedNotification({
+            patient_id,
+            user_id:    appt.user_id,
+            child_name: appt.patient_name || null,
+          });
+        }
+      } catch (congrErr) {
+        console.error("⚠️ completeWithDose: completion notification failed (non-fatal):", congrErr.message);
+      }
+    }
 
     // FCM push notification (non-fatal)
     try {

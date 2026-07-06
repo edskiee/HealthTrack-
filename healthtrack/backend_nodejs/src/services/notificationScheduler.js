@@ -11,6 +11,7 @@ const {
   getSystemSettings 
 } = require('./appointmentReminderService');
 const { markMissedAppointments } = require('./missedAppointmentService');
+const { checkAndSendDueVaccineReminders } = require('./vaccineDoseReminderService');
 
 let schedulerTasks = [];
 let isSchedulerRunning = false;
@@ -46,6 +47,11 @@ async function startNotificationScheduler(io = null) {
         await checkAndSendDueReminders();
       } catch (error) {
         console.error('❌ Error in scheduled reminder check:', error);
+      }
+      try {
+        await checkAndSendDueVaccineReminders();
+      } catch (error) {
+        console.error('❌ Error in scheduled vaccine reminder check:', error);
       }
     }, {
       scheduled: false,
@@ -154,7 +160,8 @@ async function restartNotificationScheduler() {
  */
 async function manualReminderCheck() {
   console.log('🔧 Manual reminder check triggered');
-  return await checkAndSendDueReminders();
+  await checkAndSendDueReminders();
+  await checkAndSendDueVaccineReminders();
 }
 
 /**

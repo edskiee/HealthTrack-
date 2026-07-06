@@ -26,6 +26,10 @@ const express = require("express");
 const router  = express.Router();
 const db      = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/auth");
+const {
+  createVaccineDoseReminders,
+  sendAllDosesCompletedNotification,
+} = require("../services/vaccineDoseReminderService");
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -630,7 +634,8 @@ router.post("/record", authenticateAdmin, async (req, res) => {
     // 6. Recompute the NEXT dose in this vaccine_key if one exists
     //    Update its scheduled_date = givenAtDate + next.interval_days
     const [nextScheds] = await db.execute(
-      `SELECT id, interval_days, schedule_from, due_days_from_birth
+      `SELECT id, interval_days, schedule_from, due_days_from_birth,
+              vaccine_name, dose_label
        FROM vaccine_schedules
        WHERE vaccine_key = ? AND dose_number = ?
        LIMIT 1`,
@@ -655,6 +660,72 @@ router.post("/record", authenticateAdmin, async (req, res) => {
              updated_at     = CURRENT_TIMESTAMP`,
           [patient_id, nextSched.id, nextDueDateComputed]
         );
+      }
+
+      // ── Step 1: Create vaccine dose reminders for the next dose ────────────
+      // Fetch the patient's user_id (parent/guardian who receives notifications)
+      // and child name for the notification message.
+      try {
+        const [patientRows] = await db.execute(
+          `SELECT user_id, child_fullname FROM patients WHERE id = ? LIMIT 1`,
+          [patient_id]
+        );
+        const parentUserId = patientRows.length ? patientRows[0].user_id : null;
+        const childName    = patientRows.length ? patientRows[0].child_fullname : null;
+
+        if (parentUserId) {
+          const reminderResult = await createVaccineDoseReminders({
+            patient_id,
+            user_id:             parentUserId,
+            vaccine_schedule_id: nextSched.id,
+            vaccine_name:        nextSched.vaccine_name,
+            dose_label:          nextSched.dose_label,
+            due_date:            nextDueDateComputed,
+            child_name:          childName,
+          });
+          console.log(
+            `💉 [VaccineReminder] Reminders for patient ${patient_id}: ` +
+            `created=${reminderResult.created}, skipped=${reminderResult.skipped}, ` +
+            `overdue=${reminderResult.overdue}`
+          );
+        } else {
+          console.warn(
+            `⚠️ [VaccineReminder] Patient ${patient_id} has no linked user_id — ` +
+            `cannot create vaccine dose reminders`
+          );
+        }
+      } catch (reminderErr) {
+        // Non-fatal — reminder creation failure should NOT abort the dose record save
+        console.error(`❌ [VaccineReminder] Failed to create reminders for patient ${patient_id}:`, reminderErr);
+      }
+    } else {
+      // No next dose exists — check if this was the LAST dose and congratulate
+      try {
+        const [patientRows] = await db.execute(
+          `SELECT user_id, child_fullname FROM patients WHERE id = ? LIMIT 1`,
+          [patient_id]
+        );
+        const parentUserId = patientRows.length ? patientRows[0].user_id : null;
+        const childName    = patientRows.length ? patientRows[0].child_fullname : null;
+
+        if (parentUserId) {
+          // Count remaining non-completed doses to confirm all are done
+          const [remaining] = await db.execute(
+            `SELECT COUNT(*) AS cnt
+               FROM vaccine_schedules vs
+               LEFT JOIN child_vaccine_records cvr
+                 ON  cvr.vaccine_schedule_id = vs.id
+                 AND cvr.patient_id          = ?
+                 AND cvr.given_at IS NOT NULL
+              WHERE cvr.id IS NULL`,
+            [patient_id]
+          );
+          if (remaining[0].cnt === 0) {
+            await sendAllDosesCompletedNotification({ patient_id, user_id: parentUserId, child_name: childName });
+          }
+        }
+      } catch (congrErr) {
+        console.error(`❌ [VaccineReminder] Failed to send completion notification:`, congrErr);
       }
     }
 

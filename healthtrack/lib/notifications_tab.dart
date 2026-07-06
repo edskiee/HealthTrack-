@@ -29,7 +29,7 @@ class _NotificationsTabState extends State<NotificationsTab>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     _webSocketService = WebSocketService.instance;
     _onAppointmentSocketRefresh = (_) {
       if (mounted) _loadNotifications();
@@ -337,6 +337,9 @@ class _NotificationsTabState extends State<NotificationsTab>
       case 'follow_up_reminder':
       case 'reminder':
         return 'Reminders';
+      case 'vaccine_dose_reminder':
+      case 'vaccine_dose_overdue':
+        return 'Vaccines';
       case 'custom_message':
       case 'system':
       default:
@@ -376,6 +379,10 @@ class _NotificationsTabState extends State<NotificationsTab>
         return 'Follow-up Reminder';
       case 'reminder':
         return 'Reminder';
+      case 'vaccine_dose_reminder':
+        return 'Vaccine Reminder';
+      case 'vaccine_dose_overdue':
+        return 'Overdue Vaccine';
       case 'custom_message':
         return 'Custom Message';
       case 'system':
@@ -415,6 +422,10 @@ class _NotificationsTabState extends State<NotificationsTab>
         return Icons.repeat;
       case 'reminder':
         return Icons.alarm;
+      case 'vaccine_dose_reminder':
+        return Icons.vaccines;
+      case 'vaccine_dose_overdue':
+        return Icons.warning_amber_rounded;
       case 'custom_message':
         return Icons.message;
       case 'system':
@@ -454,6 +465,10 @@ class _NotificationsTabState extends State<NotificationsTab>
         return Colors.deepPurple;
       case 'reminder':
         return Colors.orangeAccent;
+      case 'vaccine_dose_reminder':
+        return const Color(0xFF0891B2); // cyan-600 — distinct from appointment blue
+      case 'vaccine_dose_overdue':
+        return Colors.red.shade600;
       case 'custom_message':
         return Colors.teal;
       case 'system':
@@ -471,8 +486,14 @@ class _NotificationsTabState extends State<NotificationsTab>
     final message = notification["message"] as String? ?? "You have a new notification";
     final icon = notification["icon"] as IconData? ?? Icons.notifications;
     final color = notification["color"] as Color? ?? Colors.blueAccent;
-    final isNewSlots = notification["notification_type"] == 'new_slots_available' ||
+    final rawType = notification["notification_type"] as String? ?? '';
+    final isNewSlots = rawType == 'new_slots_available' ||
         (notification["title"] as String? ?? '').contains('Slots Available');
+    final isVaccineReminder = rawType == 'vaccine_dose_reminder';
+    // Determine CTA for vaccine: 3-day → book, 1-day → view card
+    // The message text is the only reliable signal at this point.
+    final vaccineCtaIsBook = isVaccineReminder &&
+        (message.contains('3 days') || message.contains('book an appointment'));
 
     showOverlayNotification(
       (context) {
@@ -530,6 +551,52 @@ class _NotificationsTabState extends State<NotificationsTab>
                       ),
                       child: const Text(
                         'Book →',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  )
+                else if (isVaccineReminder && vaccineCtaIsBook)
+                  // 3-day vaccine reminder → "Book now"
+                  GestureDetector(
+                    onTap: () {
+                      OverlaySupportEntry.of(context)?.dismiss();
+                      widget.onNotificationTap("appointments");
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Book →',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  )
+                else if (isVaccineReminder && !vaccineCtaIsBook)
+                  // 1-day vaccine reminder → "View card"
+                  GestureDetector(
+                    onTap: () {
+                      OverlaySupportEntry.of(context)?.dismiss();
+                      widget.onNotificationTap("vaccine_card");
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'View →',
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 12,
@@ -736,6 +803,52 @@ class _NotificationsTabState extends State<NotificationsTab>
                   foregroundColor: Colors.white,
                 ),
               ),
+            // Vaccine dose reminder — 3-day: "Book Appointment"
+            if ((notification["notification_type"] as String? ?? '') == 'vaccine_dose_reminder' &&
+                ((notification["message"] as String? ?? '').contains('3 days') ||
+                 (notification["message"] as String? ?? '').contains('book an appointment')))
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onNotificationTap("appointments");
+                },
+                icon: const Icon(Icons.calendar_month, size: 16),
+                label: const Text("Book Appointment"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0891B2),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            // Vaccine dose reminder — 1-day / overdue: "View Vaccine Card"
+            if ((notification["notification_type"] as String? ?? '') == 'vaccine_dose_reminder' &&
+                !((notification["message"] as String? ?? '').contains('3 days') ||
+                  (notification["message"] as String? ?? '').contains('book an appointment')))
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onNotificationTap("vaccine_card");
+                },
+                icon: const Icon(Icons.vaccines, size: 16),
+                label: const Text("View Vaccine Card"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0891B2),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            // Overdue vaccine notification → go to vaccine card
+            if ((notification["notification_type"] as String? ?? '') == 'vaccine_dose_overdue')
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onNotificationTap("vaccine_card");
+                },
+                icon: const Icon(Icons.vaccines, size: 16),
+                label: const Text("View Vaccine Card"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red.shade600,
+                  foregroundColor: Colors.white,
+                ),
+              ),
           ],
         );
       },
@@ -860,9 +973,12 @@ class _NotificationsTabState extends State<NotificationsTab>
             labelColor: Colors.blueAccent,
             unselectedLabelColor: Colors.grey,
             indicatorColor: Colors.blueAccent,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
             tabs: const [
               Tab(text: "All"),
               Tab(text: "Appointments"),
+              Tab(text: "Vaccines"),
               Tab(text: "Reminders"),
               Tab(text: "System"),
             ],
@@ -876,6 +992,8 @@ class _NotificationsTabState extends State<NotificationsTab>
                 _buildList(context, notifications),
                 _buildList(context,
                     notifications.where((n) => n["type"] == "Appointments").toList()),
+                _buildList(context,
+                    notifications.where((n) => n["type"] == "Vaccines").toList()),
                 _buildList(context,
                     notifications.where((n) => n["type"] == "Reminders").toList()),
                 _buildList(context,

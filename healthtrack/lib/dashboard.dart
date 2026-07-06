@@ -54,14 +54,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       const AppointmentTab(),
       NotificationsTab(
-        onNotificationTap: (String msg) {
-          // Check if context is still valid before showing message
-          if (context.mounted) {
-            MessageUtils.showInfoMessage(
-              context,
-              "Notification: $msg",
-              title: "Notification Details",
-            );
+        onNotificationTap: (String action) {
+          if (action == "appointments") {
+            setState(() => _selectedIndex = 1);
+          } else if (action == "vaccine_card") {
+            // Navigate to Health Card tab (index 3) which contains the Vaccine Record
+            setState(() => _selectedIndex = 3);
+          } else {
+            // Default: stay on notifications tab or show message
+            if (context.mounted) {
+              MessageUtils.showInfoMessage(
+                context,
+                "Notification: $action",
+                title: "Notification Details",
+              );
+            }
           }
         },
       ),
@@ -88,6 +95,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         payloadType == 'appointment_missed') {
       if (mounted) {
         setState(() => _selectedIndex = 2);
+      }
+      return;
+    }
+    if (payloadType == 'vaccine_dose_reminder' || payloadType == 'vaccine_dose_overdue') {
+      // Tapping a vaccine push notification → navigate to Health Card (vaccine record)
+      if (mounted) {
+        setState(() => _selectedIndex = 3);
       }
       return;
     }

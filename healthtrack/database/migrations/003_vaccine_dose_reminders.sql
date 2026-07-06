@@ -1,26 +1,15 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- Migration 003: vaccine_dose_reminders table + extend notifications ENUM
+-- Migration 003: vaccine_dose_reminders table
 -- Run once against Aiven (deployed DB).
+--
+-- NOTE: The live notifications.notification_type column is VARCHAR(100), not an
+-- ENUM. No ALTER TABLE is needed — VARCHAR accepts any string value including
+-- 'vaccine_dose_reminder' and 'vaccine_dose_overdue'.
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- 1. Extend the notifications.notification_type ENUM to include the two new types.
---    MySQL allows adding ENUM values with a fast in-place metadata change.
-ALTER TABLE notifications
-  MODIFY COLUMN notification_type ENUM(
-    'admin_appointment_notification',
-    'appointment_reminder',
-    'medication_reminder',
-    'follow_up_reminder',
-    'custom_message',
-    'system',
-    'status_update',
-    'vaccine_dose_reminder',
-    'vaccine_dose_overdue'
-  ) NOT NULL;
-
--- 2. Create the vaccine_dose_reminders table.
---    One row per (patient_id, next_vaccine_schedule_id, days_before) combination.
---    The UNIQUE KEY prevents duplicate reminders if admin marks complete twice.
+-- Create the vaccine_dose_reminders table.
+-- One row per (patient_id, next_vaccine_schedule_id, days_before) combination.
+-- The UNIQUE KEY prevents duplicate reminders if admin marks complete twice.
 CREATE TABLE IF NOT EXISTS vaccine_dose_reminders (
   id                      INT PRIMARY KEY AUTO_INCREMENT,
   patient_id              INT NOT NULL,

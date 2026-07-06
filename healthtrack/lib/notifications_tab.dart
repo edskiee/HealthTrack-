@@ -96,6 +96,7 @@ class _NotificationsTabState extends State<NotificationsTab>
                   : _getNotificationTitle(nType);
               return {
                 "type": _getNotificationType(nType),
+                "notification_type": nType,          // raw type for CTA checks
                 "title": resolvedTitle,
                 "message": n["message"],
                 "time": TimeUtils.formatRelativeTimeString(n["created_at"]),
@@ -172,6 +173,7 @@ class _NotificationsTabState extends State<NotificationsTab>
 
       final formattedNotification = {
         "type": _getNotificationType(nType),
+        "notification_type": nType,          // raw type for CTA checks
         "title": resolvedTitle,
         "message": notificationData["message"],
         "time": TimeUtils.formatRelativeTimeString(notificationData["created_at"]),
@@ -250,6 +252,7 @@ class _NotificationsTabState extends State<NotificationsTab>
         final localRead = localReadIds.contains(idStr);
         return {
           "type": _getNotificationType(notification["notification_type"]),
+          "notification_type": notification["notification_type"]?.toString(), // raw type for CTA checks
           "title": resolvedTitle,
           "message": notification["message"],
           "time": TimeUtils.formatRelativeTimeString(notification["created_at"]),
@@ -316,6 +319,7 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   String _getNotificationType(String? notificationType) {
     switch (notificationType) {
+      case 'new_slots_available':
       case 'new_appointment':
       case 'admin_appointment_notification':
       case 'appointment_reminder':
@@ -342,6 +346,8 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   String _getNotificationTitle(String? notificationType) {
     switch (notificationType) {
+      case 'new_slots_available':
+        return 'New Appointment Slots Available';
       case 'new_appointment':
         return 'New Appointment';
       case 'admin_appointment_notification':
@@ -381,6 +387,8 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   IconData _getNotificationIcon(String? notificationType) {
     switch (notificationType) {
+      case 'new_slots_available':
+        return Icons.event_available;
       case 'appointment_in_progress':
         return Icons.pending_actions_rounded;
       case 'appointment_completed':
@@ -418,6 +426,8 @@ class _NotificationsTabState extends State<NotificationsTab>
 
   Color _getNotificationColor(String? notificationType) {
     switch (notificationType) {
+      case 'new_slots_available':
+        return const Color(0xFF059669); // emerald green — "go book now"
       case 'appointment_in_progress':
         return const Color(0xFF2563EB);
       case 'appointment_completed':
@@ -461,32 +471,87 @@ class _NotificationsTabState extends State<NotificationsTab>
     final message = notification["message"] as String? ?? "You have a new notification";
     final icon = notification["icon"] as IconData? ?? Icons.notifications;
     final color = notification["color"] as Color? ?? Colors.blueAccent;
-    
+    final isNewSlots = notification["notification_type"] == 'new_slots_available' ||
+        (notification["title"] as String? ?? '').contains('Slots Available');
+
     showOverlayNotification(
       (context) {
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           color: Colors.white,
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: color.withOpacity(0.2),
-              child: Icon(icon, color: color),
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: color.withOpacity(0.15),
+                  child: Icon(icon, color: color, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        message,
+                        style: const TextStyle(fontSize: 12, color: Colors.black87),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (isNewSlots)
+                  // "Book now" CTA button — navigates to appointments tab
+                  GestureDetector(
+                    onTap: () {
+                      OverlaySupportEntry.of(context)?.dismiss();
+                      widget.onNotificationTap("appointments");
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Book →',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  GestureDetector(
+                    onTap: () {
+                      OverlaySupportEntry.of(context)?.dismiss();
+                      widget.onNotificationTap("notifications");
+                    },
+                    child: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
+                  ),
+              ],
             ),
-            title: Text(
-              title,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(message),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              OverlaySupportEntry.of(context)!.dismiss();
-              // Navigate to notifications tab when banner is tapped
-              widget.onNotificationTap("notifications");
-            },
           ),
         );
       },
-      duration: const Duration(seconds: 5),
+      duration: const Duration(seconds: 6),
       position: NotificationPosition.top,
     );
   }
@@ -656,6 +721,21 @@ class _NotificationsTabState extends State<NotificationsTab>
               },
               child: const Text("Close"),
             ),
+            // "Book Appointment" CTA for new-slots notifications
+            if ((notification["notification_type"] as String? ?? '') == 'new_slots_available' ||
+                (notification["title"] as String? ?? '').contains('Slots Available'))
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  widget.onNotificationTap("appointments");
+                },
+                icon: const Icon(Icons.calendar_month, size: 16),
+                label: const Text("Book Appointment"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF059669),
+                  foregroundColor: Colors.white,
+                ),
+              ),
           ],
         );
       },
@@ -831,8 +911,18 @@ class _NotificationsTabState extends State<NotificationsTab>
 
         return GestureDetector(
           onTap: () {
-            // Show detailed notification viewer (will mark as read)
-            _showNotificationViewer(context, item);
+            // new_slots_available → navigate directly to appointments/booking screen
+            if ((item["notification_type"] as String? ?? '') == 'new_slots_available' ||
+                (item["title"] as String? ?? '').contains('Slots Available')) {
+              // Mark as read silently
+              if (!(item["isRead"] as bool? ?? false) && item["id"] != null) {
+                _markAsRead(item["id"].toString());
+              }
+              widget.onNotificationTap("appointments");
+            } else {
+              // Show detailed notification viewer (will mark as read)
+              _showNotificationViewer(context, item);
+            }
           },
             child: Card(
             color: isRead ? null : Colors.blue.shade50.withValues(alpha: 0.35),

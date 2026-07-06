@@ -130,6 +130,169 @@ async function dispatchBulkRescheduleNotifications(connection, {
   return notifIds;
 }
 
+// ─── Helper: format a JS Date / date-string as "Wednesday, July 8, 2026" ────
+function formatSlotDateLong(dateStr) {
+  try {
+    // dateStr is 'YYYY-MM-DD' from the DB — parse in local context to avoid UTC shift
+    const [y, m, d] = String(dateStr).split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    return dt.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year:    'numeric',
+      month:   'long',
+      day:     'numeric',
+    });
+  } catch (_) {
+    return String(dateStr);
+  }
+}
+
+// ─── Helper: map services_config.service_name → users.service_type value ────
+function serviceNameToUserServiceType(serviceName) {
+  const lower = (serviceName || '').toLowerCase();
+  if (lower.includes('maternal')) return 'maternal';
+  return 'immunization';
+}
+
+// ─── Dispatch "new slots available" notifications to all registered users ────
+//
+// Strategy:
+//   1. Look up the service name for serviceId.
+//   2. Derive the users.service_type value that matches this service.
+//   3. Dedup check — skip users who already have an unread new_slots_available
+//      notification for this same (serviceId, date) to prevent double-sending
+//      when admin regenerates slots on the same date.
+//   4. Batch INSERT all notification rows in a single multi-value query.
+//   5. Emit a per-user Socket.IO event so open apps see it instantly (done in
+//      small batches of 200 to stay within event-loop budget).
+//   6. Fully async / non-blocking — called with setImmediate() so the HTTP
+//      response to the admin is already sent before this runs.
+//
+// Returns { notifiedCount, skippedCount, error } — only used for logging.
+async function dispatchNewSlotsNotifications({ serviceId, slotDate, io }) {
+  try {
+    // ── 1. Resolve service name ───────────────────────────────────────────
+    const [svcRows] = await db.execute(
+      'SELECT service_name FROM services_config WHERE id = ?',
+      [serviceId]
+    );
+    if (!svcRows.length) {
+      console.warn(`⚠️  dispatchNewSlotsNotifications: service ${serviceId} not found — skipping`);
+      return { notifiedCount: 0, skippedCount: 0 };
+    }
+    const serviceName    = svcRows[0].service_name;           // e.g. "Immunization"
+    const userServiceType = serviceNameToUserServiceType(serviceName); // 'immunization' | 'maternal'
+    const dateLabel      = formatSlotDateLong(slotDate);       // "Wednesday, July 8, 2026"
+    const title          = 'New Appointment Slots Available';
+    const message        =
+      `New ${serviceName} appointment slots are available on ${dateLabel}. ` +
+      `Book your appointment now before slots run out.`;
+
+    // ── 2. Fetch all users registered for this service type ──────────────
+    const [users] = await db.execute(
+      'SELECT id FROM users WHERE service_type = ?',
+      [userServiceType]
+    );
+    if (!users.length) {
+      console.log(`ℹ️  dispatchNewSlotsNotifications: no users for service_type=${userServiceType} — nothing to send`);
+      return { notifiedCount: 0, skippedCount: 0 };
+    }
+
+    // ── 3. Dedup: find users who already have an unread notification for
+    //            this same (service_type concept, date).  We use the title
+    //            + slotDate stored in the message as a proxy, or better — a
+    //            dedicated dedupe query on notification_type + created_at date.
+    //   We store slotDate as part of the message, so we query:
+    //     existing rows: notification_type='new_slots_available'
+    //                    AND message LIKE '%<dateLabel>%'
+    //                    AND is_read = 0
+    //   and exclude those user_ids from the batch.
+    const [existingRows] = await db.execute(
+      `SELECT DISTINCT user_id
+       FROM notifications
+       WHERE notification_type = 'new_slots_available'
+         AND message LIKE ?
+         AND is_read = 0`,
+      [`%${dateLabel}%`]
+    );
+    const alreadyNotified = new Set(existingRows.map(r => r.user_id));
+
+    const targetUsers = users.filter(u => !alreadyNotified.has(u.id));
+    const skippedCount = users.length - targetUsers.length;
+
+    if (!targetUsers.length) {
+      console.log(`ℹ️  dispatchNewSlotsNotifications: all ${users.length} users already notified for date=${slotDate} — skipping`);
+      return { notifiedCount: 0, skippedCount };
+    }
+
+    // ── 4. Batch INSERT — single query, values list ───────────────────────
+    //   Each row: (user_id, NULL, 'new_slots_available', title, message, 0, NOW(), NOW())
+    const BATCH_SIZE = 500;   // stay under MySQL max_allowed_packet
+    let insertedCount = 0;
+
+    for (let i = 0; i < targetUsers.length; i += BATCH_SIZE) {
+      const chunk = targetUsers.slice(i, i + BATCH_SIZE);
+      const placeholders = chunk.map(() => '(?, NULL, ?, ?, ?, 0, NOW(), NOW())').join(', ');
+      const values = [];
+      for (const u of chunk) {
+        values.push(u.id, 'new_slots_available', title, message);
+      }
+      try {
+        const [insResult] = await db.execute(
+          `INSERT INTO notifications
+             (user_id, appointment_id, notification_type, title, message, is_read, created_at, updated_at)
+           VALUES ${placeholders}`,
+          values
+        );
+        insertedCount += insResult.affectedRows || chunk.length;
+      } catch (batchErr) {
+        console.error(
+          `❌ dispatchNewSlotsNotifications: batch insert failed ` +
+          `(chunk ${i}–${i + chunk.length - 1}):`, batchErr.message
+        );
+        // Continue with next chunk — partial success is better than full abort
+      }
+    }
+
+    console.log(
+      `✅ dispatchNewSlotsNotifications: inserted ${insertedCount} notifications ` +
+      `(skipped ${skippedCount} already-notified) for ${serviceName} on ${slotDate}`
+    );
+
+    // ── 5. Emit per-user Socket.IO events in batches of 200 ──────────────
+    //   We only emit for users we successfully inserted for (approximated as
+    //   targetUsers since we don't track per-row insert success above).
+    if (io) {
+      const SOCKET_BATCH = 200;
+      const now = new Date().toISOString();
+      for (let i = 0; i < targetUsers.length; i += SOCKET_BATCH) {
+        const chunk = targetUsers.slice(i, i + SOCKET_BATCH);
+        for (const u of chunk) {
+          io.to(`user_${u.id}`).emit('appointmentNotification', {
+            user_id:           u.id,
+            notification_type: 'new_slots_available',
+            title,
+            message,
+            is_read:           false,
+            created_at:        now,
+            // Extra fields the Flutter app can use for deep-link navigation
+            service_name:      serviceName,
+            service_type:      userServiceType,
+            slot_date:         slotDate,
+          });
+        }
+        // Yield to event loop between socket batches to avoid starving other requests
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    return { notifiedCount: insertedCount, skippedCount };
+  } catch (err) {
+    console.error('❌ dispatchNewSlotsNotifications: unexpected error:', err);
+    return { notifiedCount: 0, skippedCount: 0, error: err.message };
+  }
+}
+
 // Helper: normalise a raw DB row to a consistent API shape
 function normaliseSlot(row) {
   if (!row) return row;
@@ -421,8 +584,10 @@ exports.createSlot = async (req, res) => {
           [serviceId, appointment_date]
         );
 
-        if (req.app.locals.io) {
-          req.app.locals.io.emit('slotsUpdated', {
+        const io = req.app.locals.io;
+
+        if (io) {
+          io.emit('slotsUpdated', {
             action: 'bulk_created',
             slotIds: createdSlots.map(s => s.id),
             serviceId,
@@ -431,10 +596,39 @@ exports.createSlot = async (req, res) => {
           });
         }
 
+        // ── Async non-blocking notification dispatch ──────────────────────
+        // Fire-and-forget: send the HTTP response to admin immediately, then
+        // dispatch notifications in the background so the admin is never
+        // blocked waiting for 8 000+ DB inserts.
+        setImmediate(() => {
+          dispatchNewSlotsNotifications({
+            serviceId,
+            slotDate: appointment_date,
+            io,
+          }).then(({ notifiedCount = 0, skippedCount = 0, error }) => {
+            if (error) {
+              console.error(
+                `❌ Background notification dispatch failed for service=${serviceId} date=${appointment_date}:`, error
+              );
+            } else {
+              console.log(
+                `📣 Slot notifications sent: ${notifiedCount} notified, ${skippedCount} already-notified skipped ` +
+                `(service=${serviceId}, date=${appointment_date})`
+              );
+            }
+          }).catch(err => {
+            console.error('❌ Unexpected error in background notification dispatch:', err);
+          });
+        });
+
         return res.status(201).json({
           success: true,
           message: `${generatedCount} appointment slot(s) generated successfully`,
           data: createdSlots.map(normaliseSlot),
+          // notifiedCount is not available here (dispatch is async) — the
+          // Flutter app polls a separate endpoint for patient count feedback.
+          // See admin slot_configuration_panel for how it fetches this.
+          generatedCount,
         });
       } catch (genError) {
         await connection.rollback();
@@ -1809,5 +2003,61 @@ exports.editDateSlots = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to edit date slots', error: err.message });
   } finally {
     if (connection) connection.release();
+  }
+};
+
+// ─── Get count of patients notified for a given service + date ───────────────
+// GET /appointment-slots/notified-count?serviceId=&date=
+// Used by the admin slot-generation panel to show "X patients notified ✅"
+// after the async dispatch completes.
+exports.getNewSlotsNotifiedCount = async (req, res) => {
+  try {
+    const { serviceId, date } = req.query;
+    if (!serviceId || !date)
+      return res.status(400).json({ success: false, message: 'serviceId and date are required' });
+
+    // Derive the service name so we can build the same dateLabel used in the message
+    const [svcRows] = await db.execute(
+      'SELECT service_name FROM services_config WHERE id = ?',
+      [serviceId]
+    );
+    if (!svcRows.length)
+      return res.status(404).json({ success: false, message: 'Service not found' });
+
+    const serviceName = svcRows[0].service_name;
+    const dateLabel   = formatSlotDateLong(date);
+
+    const [countRows] = await db.execute(
+      `SELECT COUNT(*) AS notified_count
+       FROM notifications
+       WHERE notification_type = 'new_slots_available'
+         AND message LIKE ?`,
+      [`%${dateLabel}%`]
+    );
+
+    const notifiedCount = countRows[0]?.notified_count ?? 0;
+
+    // Also return the total registered users for this service type (for context)
+    const userServiceType = serviceNameToUserServiceType(serviceName);
+    const [totalRows] = await db.execute(
+      'SELECT COUNT(*) AS total FROM users WHERE service_type = ?',
+      [userServiceType]
+    );
+    const totalRegistered = totalRows[0]?.total ?? 0;
+
+    return res.status(200).json({
+      success:        true,
+      notifiedCount,
+      totalRegistered,
+      serviceName,
+      date,
+    });
+  } catch (err) {
+    console.error('❌ getNewSlotsNotifiedCount error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch notified count',
+      error:   err.message,
+    });
   }
 };

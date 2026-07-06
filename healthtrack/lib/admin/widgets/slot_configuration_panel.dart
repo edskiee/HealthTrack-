@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/service_model.dart';
@@ -33,11 +34,21 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
   String _durationInput = '';
   int? _customDuration;
   bool _isGenerating = false;
-  
+
   // Calculation results
   int _calculatedSlots = 0;
   String _calculationError = '';
   bool _isValidConfiguration = false;
+
+  // Notification feedback state
+  // 'idle' | 'notifying' | 'done' | 'skipped'
+  String _notifyStatus = 'idle';
+  int _notifiedCount = 0;
+  int _totalRegistered = 0;
+  String _notifyServiceName = '';
+  Timer? _notifyPollTimer;
+  int _notifyPollAttempts = 0;
+  static const int _maxPollAttempts = 12; // 12 × 5 s = 60 s max
 
   @override
   void initState() {
@@ -68,7 +79,14 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
     }
   }
 
-  // Calculate total slots based on time range and duration
+  @override
+  void dispose() {
+    _notifyPollTimer?.cancel();
+    super.dispose();
+  }
+
+  // ── Slot calculation ───────────────────────────────────────────────────────
+
   void _calculateSlots() {
     setState(() {
       _calculationError = '';
@@ -76,13 +94,11 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       _isValidConfiguration = false;
     });
 
-    // Validate required fields
     if (_startTime == null || _endTime == null || _customDuration == null || _customDuration! <= 0) {
       return;
     }
 
-    // Validate time range
-    if (_startTime!.hour > _endTime!.hour || 
+    if (_startTime!.hour > _endTime!.hour ||
         (_startTime!.hour == _endTime!.hour && _startTime!.minute >= _endTime!.minute)) {
       setState(() {
         _calculationError = 'End time must be later than start time';
@@ -90,14 +106,10 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       return;
     }
 
-    // Calculate time difference in minutes
     final startMinutes = _startTime!.hour * 60 + _startTime!.minute;
     final endMinutes = _endTime!.hour * 60 + _endTime!.minute;
-    final timeRangeMinutes = endMinutes - startMinutes;
-    
-    // Calculate number of slots
-    final slots = timeRangeMinutes ~/ _customDuration!;
-    
+    final slots = (endMinutes - startMinutes) ~/ _customDuration!;
+
     if (slots <= 0) {
       setState(() {
         _calculationError = 'Time range is too short for the selected duration';
@@ -111,7 +123,6 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
     });
   }
 
-  // Validate and parse custom duration input
   void _validateDurationInput(String input) {
     setState(() {
       _durationInput = input;
@@ -120,41 +131,72 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
     });
 
     if (input.isEmpty) {
-      setState(() {
-        _calculationError = 'Duration is required';
-        _customDuration = null;
-      });
+      setState(() { _calculationError = 'Duration is required'; _customDuration = null; });
       return;
     }
-
     final duration = int.tryParse(input);
     if (duration == null) {
-      setState(() {
-        _calculationError = 'Please enter a valid number';
-        _customDuration = null;
-      });
+      setState(() { _calculationError = 'Please enter a valid number'; _customDuration = null; });
       return;
     }
-
     if (duration <= 0) {
-      setState(() {
-        _calculationError = 'Duration must be greater than 0';
-        _customDuration = null;
-      });
+      setState(() { _calculationError = 'Duration must be greater than 0'; _customDuration = null; });
       return;
     }
-
     if (duration > 480) {
-      setState(() {
-        _calculationError = 'Duration cannot exceed 8 hours (480 minutes)';
-        _customDuration = null;
-      });
+      setState(() { _calculationError = 'Duration cannot exceed 8 hours (480 minutes)'; _customDuration = null; });
       return;
     }
-
-    // Recalculate slots with valid duration
     _calculateSlots();
   }
+
+  // ── Notification count polling ─────────────────────────────────────────────
+
+  /// Start polling /appointment-slots/notified-count every 5 s after generation.
+  /// Stops when notifiedCount > 0 (dispatch is done) or after _maxPollAttempts.
+  void _startNotifyPolling(int serviceId, String dateString) {
+    _notifyPollAttempts = 0;
+    _notifyPollTimer?.cancel();
+    _notifyPollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (!mounted) {
+        _notifyPollTimer?.cancel();
+        return;
+      }
+      _notifyPollAttempts++;
+      final result = await AppointmentSlotService.getNewSlotsNotifiedCount(
+        serviceId: serviceId,
+        date: dateString,
+      );
+      if (!mounted) return;
+
+      if (result != null) {
+        final count = (result['notifiedCount'] as num?)?.toInt() ?? 0;
+        final total = (result['totalRegistered'] as num?)?.toInt() ?? 0;
+        final svcName = result['serviceName']?.toString() ?? '';
+
+        if (count > 0 || _notifyPollAttempts >= _maxPollAttempts) {
+          _notifyPollTimer?.cancel();
+          setState(() {
+            _notifyStatus = count > 0 ? 'done' : 'skipped';
+            _notifiedCount = count;
+            _totalRegistered = total;
+            _notifyServiceName = svcName;
+          });
+        } else {
+          // Still waiting — update total so "Notifying X" shows correct number
+          setState(() {
+            _totalRegistered = total;
+            _notifyServiceName = svcName;
+          });
+        }
+      } else if (_notifyPollAttempts >= _maxPollAttempts) {
+        _notifyPollTimer?.cancel();
+        setState(() { _notifyStatus = 'skipped'; });
+      }
+    });
+  }
+
+  // ── Slot generation ────────────────────────────────────────────────────────
 
   Future<void> _generateSlots() async {
     if (!_isValidConfiguration) {
@@ -164,50 +206,63 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
 
     setState(() {
       _isGenerating = true;
+      _notifyStatus = 'idle';
+      _notifiedCount = 0;
+      _totalRegistered = 0;
+      _notifyServiceName = '';
     });
 
     try {
       final dateString = DateFormat('yyyy-MM-dd').format(widget.selectedDate);
-      final startTimeString = "${_startTime!.hour.toString().padLeft(2, '0')}:${_startTime!.minute.toString().padLeft(2, '0')}:00";
-      final endTimeString = "${_endTime!.hour.toString().padLeft(2, '0')}:${_endTime!.minute.toString().padLeft(2, '0')}:00";
-      
+      final startTimeString =
+          "${_startTime!.hour.toString().padLeft(2, '0')}:${_startTime!.minute.toString().padLeft(2, '0')}:00";
+      final endTimeString =
+          "${_endTime!.hour.toString().padLeft(2, '0')}:${_endTime!.minute.toString().padLeft(2, '0')}:00";
+
       final result = await AppointmentSlotService.createSlot(
         serviceId: _selectedServiceId!,
         appointmentDate: dateString,
         startTime: startTimeString,
         endTime: endTimeString,
         slotDurationMinutes: _customDuration!,
-        maxPatients: 10, // Default value, can be made configurable
+        maxPatients: 10,
         generateSlots: true,
       );
-      
+
       if (mounted) {
-        setState(() {
-          _isGenerating = false;
-        });
-        
+        setState(() { _isGenerating = false; });
+
         if (result['success'] == true) {
+          final slotCount = (result['data'] as List?)?.length ??
+              (result['generatedCount'] as int? ?? 0);
           MessageUtils.showSuccessMessage(
-            context, 
-            "${result['data'].length} slots generated successfully!",
+            context,
+            "$slotCount slots generated successfully!",
             title: "Success",
           );
-          
+
+          // Start polling for notification feedback — panel stays open so
+          // admin can see the "Notifying..." → "✅ X patients notified." state.
+          setState(() { _notifyStatus = 'notifying'; });
+          _startNotifyPolling(_selectedServiceId!, dateString);
+
           widget.onSlotsGenerated?.call();
-          widget.onClose?.call();
+          // Do NOT auto-close — let admin see the notification status.
+          // The × button is still available to close manually.
         } else {
-          MessageUtils.showErrorMessage(context, result['message'] ?? "Failed to generate slots");
+          MessageUtils.showErrorMessage(
+              context, result['message'] ?? "Failed to generate slots");
         }
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _isGenerating = false;
-        });
+        setState(() { _isGenerating = false; });
         MessageUtils.showNetworkError(context, e);
       }
     }
   }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -226,30 +281,25 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
           _buildHeader(),
-          
-          // Content
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Date display
                   _buildDateDisplay(),
                   const SizedBox(height: 24),
-                  
-                  // Configuration form
                   _buildConfigurationForm(),
                   const SizedBox(height: 24),
-                  
-                  // Calculation results
                   _buildCalculationResults(),
                   const SizedBox(height: 24),
-                  
-                  // Generate button
                   _buildGenerateButton(),
+                  // Notification feedback — only visible after generation
+                  if (_notifyStatus != 'idle') ...[
+                    const SizedBox(height: 12),
+                    _buildNotifyStatusBanner(),
+                  ],
                 ],
               ),
             ),
@@ -257,6 +307,95 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
         ],
       ),
     );
+  }
+
+  // ── Notification status banner ─────────────────────────────────────────────
+
+  Widget _buildNotifyStatusBanner() {
+    switch (_notifyStatus) {
+      case 'notifying':
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.blue.shade200),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  _totalRegistered > 0
+                      ? 'Notifying $_totalRegistered registered'
+                        '${_notifyServiceName.isNotEmpty ? ' $_notifyServiceName' : ''}'
+                        ' patients...'
+                      : 'Notifying registered patients...',
+                  style: TextStyle(fontSize: 13, color: Colors.blue.shade800),
+                ),
+              ),
+            ],
+          ),
+        );
+
+      case 'done':
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFECFDF5), // emerald-50
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF6EE7B7)), // emerald-300
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Color(0xFF059669), size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '✅ $_notifiedCount'
+                  '${_notifyServiceName.isNotEmpty ? ' $_notifyServiceName' : ''}'
+                  ' patients notified.',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF065F46), // emerald-900
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+
+      case 'skipped':
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.grey.shade600, size: 16),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'No new patients to notify (all already notified for this date).',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            ],
+          ),
+        );
+
+      default:
+        return const SizedBox.shrink();
+    }
   }
 
   Widget _buildHeader() {
@@ -319,23 +458,13 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       children: [
         const Text(
           "Configuration",
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: Colors.grey,
-          ),
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey),
         ),
         const SizedBox(height: 16),
-        
-        // Service selection
         _buildServiceSelector(),
         const SizedBox(height: 16),
-        
-        // Time range selection
         _buildTimeRangeSelector(),
         const SizedBox(height: 16),
-        
-        // Duration input
         _buildDurationInput(),
       ],
     );
@@ -347,11 +476,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       children: [
         const Text(
           "Service Type",
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
+          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
         ),
         const SizedBox(height: 8),
         Container(
@@ -364,44 +489,37 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
           child: widget.services.isEmpty
               ? const Align(
                   alignment: Alignment.centerLeft,
-                  child: Text(
-                    "No services loaded",
-                    style: TextStyle(color: Colors.grey),
-                  ),
+                  child: Text("No services loaded", style: TextStyle(color: Colors.grey)),
                 )
               : DropdownButton<int>(
-            value: ServiceConfigService.resolveSelectedServiceId(
-              widget.services,
-              _selectedServiceId,
-            ),
-            items: widget.services.map((service) {
-              return DropdownMenuItem(
-                value: service.id,
-                child: Row(
-                  children: [
-                    Icon(
-                      service.serviceName == 'Maternal Care' 
-                        ? Icons.pregnant_woman 
-                        : Icons.vaccines,
-                      size: 18,
-                      color: Colors.grey.shade600,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(service.serviceName),
-                  ],
+                  value: ServiceConfigService.resolveSelectedServiceId(
+                    widget.services,
+                    _selectedServiceId,
+                  ),
+                  items: widget.services.map((service) {
+                    return DropdownMenuItem(
+                      value: service.id,
+                      child: Row(
+                        children: [
+                          Icon(
+                            service.serviceName == 'Maternal Care'
+                                ? Icons.pregnant_woman
+                                : Icons.vaccines,
+                            size: 18,
+                            color: Colors.grey.shade600,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(service.serviceName),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: widget.services.isEmpty
+                      ? null
+                      : (value) => setState(() => _selectedServiceId = value),
+                  isExpanded: true,
+                  underline: const SizedBox(),
                 ),
-              );
-            }).toList(),
-            onChanged: widget.services.isEmpty
-                ? null
-                : (value) {
-              setState(() {
-                _selectedServiceId = value;
-              });
-            },
-            isExpanded: true,
-            underline: const SizedBox(),
-          ),
         ),
       ],
     );
@@ -413,11 +531,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       children: [
         const Text(
           "Time Range",
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
+          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
         ),
         const SizedBox(height: 8),
         Row(
@@ -427,9 +541,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                 label: "Start Time",
                 selectedTime: _startTime,
                 onTimeSelected: (time) {
-                  setState(() {
-                    _startTime = time;
-                  });
+                  setState(() => _startTime = time);
                   _calculateSlots();
                 },
                 icon: Icons.access_time,
@@ -443,9 +555,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                 label: "End Time",
                 selectedTime: _endTime,
                 onTimeSelected: (time) {
-                  setState(() {
-                    _endTime = time;
-                  });
+                  setState(() => _endTime = time);
                   _calculateSlots();
                 },
                 icon: Icons.access_time,
@@ -468,11 +578,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-            color: Colors.grey,
-          ),
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey),
         ),
         const SizedBox(height: 4),
         Container(
@@ -496,9 +602,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                 context: context,
                 initialTime: selectedTime ?? const TimeOfDay(hour: 9, minute: 0),
               );
-              if (pickedTime != null) {
-                onTimeSelected(pickedTime);
-              }
+              if (pickedTime != null) onTimeSelected(pickedTime);
             },
           ),
         ),
@@ -512,11 +616,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
       children: [
         const Text(
           "Slot Duration (minutes)",
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
+          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
         ),
         const SizedBox(height: 8),
         Container(
@@ -524,7 +624,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             border: Border.all(
-              color: _calculationError.isNotEmpty ? Colors.red.shade300 : Colors.grey.shade300,
+              color: _calculationError.isNotEmpty
+                  ? Colors.red.shade300
+                  : Colors.grey.shade300,
             ),
             borderRadius: BorderRadius.circular(8),
           ),
@@ -544,10 +646,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                   onChanged: _validateDurationInput,
                 ),
               ),
-              const Text(
-                "min",
-                style: TextStyle(color: Colors.grey, fontSize: 14),
-              ),
+              const Text("min", style: TextStyle(color: Colors.grey, fontSize: 14)),
             ],
           ),
         ),
@@ -557,10 +656,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
             child: Text(
               _calculationError,
               style: TextStyle(
-                color: Colors.red.shade600,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
+                  color: Colors.red.shade600,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500),
             ),
           ),
       ],
@@ -574,7 +672,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
         color: _isValidConfiguration ? Colors.green.shade50 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: _isValidConfiguration ? Colors.green.shade300 : Colors.grey.shade300,
+          color: _isValidConfiguration
+              ? Colors.green.shade300
+              : Colors.grey.shade300,
         ),
       ),
       child: Column(
@@ -584,7 +684,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
             children: [
               Icon(
                 _isValidConfiguration ? Icons.check_circle : Icons.info,
-                color: _isValidConfiguration ? Colors.green.shade600 : Colors.grey.shade600,
+                color: _isValidConfiguration
+                    ? Colors.green.shade600
+                    : Colors.grey.shade600,
                 size: 20,
               ),
               const SizedBox(width: 8),
@@ -593,7 +695,9 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
-                  color: _isValidConfiguration ? Colors.green.shade700 : Colors.grey.shade700,
+                  color: _isValidConfiguration
+                      ? Colors.green.shade700
+                      : Colors.grey.shade700,
                 ),
               ),
             ],
@@ -603,7 +707,8 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: Colors.green.shade100,
                     borderRadius: BorderRadius.circular(20),
@@ -621,20 +726,15 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
             ),
             const SizedBox(height: 8),
             Text(
-              "Based on ${_startTime?.format(context) ?? '--:--'} to ${_endTime?.format(context) ?? '--:--'} "
+              "Based on ${_startTime?.format(context) ?? '--:--'} to "
+              "${_endTime?.format(context) ?? '--:--'} "
               "with $_customDuration minute intervals",
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.grey,
-              ),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ] else ...[
             const Text(
               "Configure time range and duration to see slot calculation",
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey,
-              ),
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ],
@@ -651,9 +751,8 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
           backgroundColor: Colors.blue,
           foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(vertical: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           elevation: 2,
         ),
         child: _isGenerating
@@ -664,9 +763,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
+                        strokeWidth: 2, color: Colors.white),
                   ),
                   SizedBox(width: 12),
                   Text("Generating Slots..."),
@@ -674,10 +771,7 @@ class _SlotConfigurationPanelState extends State<SlotConfigurationPanel> {
               )
             : const Text(
                 "Generate Slots",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
       ),
     );

@@ -15,6 +15,9 @@ router.post("/book", authenticateUser, appointmentSlotsController.bookSlot);
 // Step 2: per-date detail with patient/appointment info (must be before /:id)
 router.get("/date-detail",       authenticateAdmin, appointmentSlotsController.getDateDetail);
 
+// New-slots notification count — how many patients were notified for a service+date
+router.get("/notified-count",    authenticateAdmin, appointmentSlotsController.getNewSlotsNotifiedCount);
+
 // Step 3: bulk-move all slots from one date to another
 router.post("/reschedule-date",  authenticateAdmin, appointmentSlotsController.rescheduleDate);
 

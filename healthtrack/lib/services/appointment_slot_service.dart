@@ -716,4 +716,33 @@ class AppointmentSlotService {
     }
     throw lastException ?? Exception('Failed to edit date slots');
   }
+
+  /// Fetch how many patients were notified for a given service + date.
+  /// Used by the admin panel to show "X patients notified ✅" after generation.
+  /// Returns a map with keys: notifiedCount, totalRegistered, serviceName.
+  /// Returns null on any error (caller shows nothing — non-critical).
+  static Future<Map<String, dynamic>?> getNewSlotsNotifiedCount({
+    required int serviceId,
+    required String date,
+  }) async {
+    for (final url in fallbackBaseUrls) {
+      try {
+        final headers = await _adminHeaders();
+        final response = await http
+            .get(
+              Uri.parse(
+                  '$url/appointment-slots/notified-count?serviceId=$serviceId&date=$date'),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 10));
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          if (data['success'] == true) return data;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    return null; // silent fail — non-critical
+  }
 }

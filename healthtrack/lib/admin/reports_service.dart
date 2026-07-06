@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../services/api_config.dart';
+import '../services/http_client.dart';
 import 'services/admin_session_storage.dart';
 
 class ReportsService {
@@ -17,20 +18,23 @@ class ReportsService {
     };
   }
 
-  /// Try GET across fallback URLs (same strategy as DashboardService).
+  /// Try GET across fallback URLs with 15s timeout + exponential backoff.
   static Future<http.Response> _getWithFallback(String path) async {
     Object? lastError;
     final urls = [baseUrl, ...ApiConfig.fallbackBaseUrls];
     for (final url in urls) {
       try {
-        return await http
-            .get(Uri.parse('$url$path'), headers: await _authHeaders())
-            .timeout(const Duration(seconds: 10));
+        return await AppHttpClient.get(
+          Uri.parse('$url$path'),
+          headers: await _authHeaders(),
+          // maxRetries=0 here — we handle retries at the URL-fallback level
+          maxRetries: 0,
+        );
       } catch (e) {
         lastError = e;
       }
     }
-    throw lastError ?? Exception('All URLs failed for $path');
+    throw lastError ?? AppHttpException('All URLs failed for $path');
   }
 
   // ─── Helper: parse success field robustly ──────────────────────────────────
@@ -579,4 +583,28 @@ class ReportsService {
 
   static Map<String, int> _emptyWeekMap() =>
     {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0};
+
+  /// Flush the server-side report cache so the next fetch returns fresh DB data.
+  /// Called automatically before every manual Refresh in reports_view.dart.
+  static Future<void> flushCache() async {
+    try {
+      final urls = [baseUrl, ...ApiConfig.fallbackBaseUrls];
+      for (final url in urls) {
+        try {
+          await AppHttpClient.post(
+            Uri.parse('$url/dashboard/reports/cache/flush'),
+            headers: await _authHeaders(),
+            maxRetries: 0,
+          );
+          debugPrint('🗑️  Server report cache flushed via $url');
+          return;
+        } catch (_) {
+          // try next URL
+        }
+      }
+    } catch (e) {
+      // Cache flush failing is non-fatal — data is still fetched fresh from client POV
+      debugPrint('flushCache non-fatal error: $e');
+    }
+  }
 }

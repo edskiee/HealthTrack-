@@ -70,9 +70,14 @@ class _VaccineDashboardWidgetState extends State<VaccineDashboardWidget>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Refresh when the patient returns to the app from background
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
       _fetchSummary(silent: true);
+      _pollTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (mounted) _fetchSummary(silent: true);
+      });
     }
   }
 

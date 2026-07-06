@@ -94,7 +94,8 @@ class AdminNotificationBadge extends StatefulWidget {
   State<AdminNotificationBadge> createState() => _AdminNotificationBadgeState();
 }
 
-class _AdminNotificationBadgeState extends State<AdminNotificationBadge> {
+class _AdminNotificationBadgeState extends State<AdminNotificationBadge>
+    with WidgetsBindingObserver {
   final StreamController<int> _unreadCountController = StreamController<int>();
   Timer? _refreshTimer;
   int _lastCount = 0;
@@ -102,15 +103,30 @@ class _AdminNotificationBadgeState extends State<AdminNotificationBadge> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadInitialCount();
     _subscribeToStream();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
     _unreadCountController.close();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      _loadUnreadNotificationCount();
+      _refreshTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        _loadUnreadNotificationCount();
+      });
+    }
   }
 
   void _subscribeToStream() {
@@ -199,7 +215,8 @@ class UserNotificationBadge extends StatefulWidget {
   State<UserNotificationBadge> createState() => _UserNotificationBadgeState();
 }
 
-class _UserNotificationBadgeState extends State<UserNotificationBadge> {
+class _UserNotificationBadgeState extends State<UserNotificationBadge>
+    with WidgetsBindingObserver {
   final StreamController<int> _unreadCountController = StreamController<int>.broadcast();
   Timer? _refreshTimer;
   late final StreamSubscription _sessionSubscription;
@@ -207,6 +224,7 @@ class _UserNotificationBadgeState extends State<UserNotificationBadge> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _startAutoRefresh();
     _loadInitialCount();
     
@@ -220,9 +238,22 @@ class _UserNotificationBadgeState extends State<UserNotificationBadge> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
+    _sessionSubscription.cancel();
     _unreadCountController.close();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      _loadUnreadCount();
+      _refreshTimer ??= Timer.periodic(const Duration(seconds: 30), (_) => _loadUnreadCount());
+    }
   }
 
   void _startAutoRefresh() {

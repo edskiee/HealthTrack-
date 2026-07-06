@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../utils/message_utils.dart';
 import 'reports_service.dart';
-import 'package:socket_io_client/socket_io_client.dart' as io;
-import 'dart:async';
 import 'package:intl/intl.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -21,11 +19,17 @@ class ReportsView extends StatefulWidget {
 }
 
 class _ReportsViewState extends State<ReportsView>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
   bool isLoading = true;
   bool isExporting = false;
   String? errorMessage;
+
+  /// Timestamp of the last successful data fetch — shown in the UI.
+  DateTime? _lastUpdated;
+
+  /// Guard: prevents a second parallel fetch while one is already in flight.
+  bool _fetchInProgress = false;
   
   // Report data
   int totalPatients = 0;
@@ -57,63 +61,32 @@ class _ReportsViewState extends State<ReportsView>
   Map<String, Map<String, int>> prenatalMonthlyApptBreakdown = {};
   Map<String, dynamic>           prenatalMonthlyApptSummary  = {};
   List<Map<String, dynamic>> barangayBreakdownData  = []; // Step 6
-  
-  // Socket.IO connection for real-time updates
-  late io.Socket socket;
-  
-  // Timer for periodic refresh
-  late Timer periodicRefreshTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 2, vsync: this);
-    _initializeSocketConnection();
+    // Fetch once on page load — NO polling timer, NO Socket.IO refresh loop.
     _loadReportData();
-    
-    // Set up periodic refresh every 30 seconds
-    periodicRefreshTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _loadReportData();
-    });
   }
 
-  void _initializeSocketConnection() {
-    try {
-      // Connect to Socket.IO server
-      socket = io.io('${ReportsService.baseUrl}', <String, dynamic>{
-        'transports': ['websocket'],
-        'autoConnect': true,
-      });
-      
-      // Listen for real-time updates
-      socket.on('connect', (_) {
-        print('Connected to Socket.IO server');
-      });
-      
-      // Listen for dashboard updates
-      socket.on('dashboard_update', (data) {
-        print('Received dashboard update: $data');
-        // Refresh data when we receive an update notification
-        _loadReportData();
-      });
-      
-      // Handle disconnection
-      socket.on('disconnect', (_) {
-        print('Disconnected from Socket.IO server');
-      });
-      
-      // Handle connection errors
-      socket.on('connect_error', (err) {
-        print('Socket connection error: $err');
-      });
-      
-      socket.connect();
-    } catch (e) {
-      print('Error initializing socket connection: $e');
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // No-op: reports do not auto-refresh on resume.
+    // Admin uses the manual Refresh button when they want fresh data.
+  }
+
+  Future<void> _loadReportData({bool forceRefresh = false}) async {
+    // Prevent parallel duplicate fetches (e.g. if Refresh tapped twice quickly)
+    if (_fetchInProgress) return;
+    _fetchInProgress = true;
+
+    // On manual refresh, flush the server cache so we get genuinely fresh data.
+    if (forceRefresh) {
+      await ReportsService.flushCache();
     }
-  }
 
-  Future<void> _loadReportData() async {
     try {
       setState(() {
         isLoading = true;
@@ -194,6 +167,7 @@ class _ReportsViewState extends State<ReportsView>
           prenatalPercentage     = 0.0;
         }
 
+        _lastUpdated = DateTime.now();
         isLoading = false;
       });
     } catch (e) {
@@ -209,6 +183,8 @@ class _ReportsViewState extends State<ReportsView>
           title: "Reports Error",
         );
       }
+    } finally {
+      _fetchInProgress = false;
     }
   }
 
@@ -290,11 +266,19 @@ class _ReportsViewState extends State<ReportsView>
 
   @override
   void dispose() {
-    // Clean up resources
-    periodicRefreshTimer.cancel();
-    socket.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Formats [_lastUpdated] as a human-readable "Last updated" label.
+  String get _lastUpdatedLabel {
+    if (_lastUpdated == null) return '';
+    final now = DateTime.now();
+    final diff = now.difference(_lastUpdated!);
+    if (diff.inSeconds < 60) return 'Updated just now';
+    if (diff.inMinutes < 60) return 'Updated ${diff.inMinutes}m ago';
+    return 'Updated at ${_lastUpdated!.hour.toString().padLeft(2, '0')}:${_lastUpdated!.minute.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -309,13 +293,46 @@ class _ReportsViewState extends State<ReportsView>
                 AdminHeader(
                   title: "Reports",
                   subtitle: "Manage and track all system reports and analytics",
-                  onRefresh: _loadReportData,
+                  onRefresh: () => _loadReportData(forceRefresh: true),
                   showLiveClock: true,
+                ),
+
+                // ── Last-updated bar + manual Refresh button ───────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                  child: Row(
+                    children: [
+                      if (_lastUpdated != null) ...[
+                        Icon(Icons.access_time_rounded, size: 13, color: Colors.grey.shade500),
+                        const SizedBox(width: 4),
+                        Text(
+                          _lastUpdatedLabel,
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                        ),
+                      ],
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: isLoading ? null : () => _loadReportData(forceRefresh: true),
+                        icon: isLoading
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.refresh_rounded, size: 16),
+                        label: const Text('Refresh', style: TextStyle(fontSize: 13)),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.blueAccent,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
 
                 // QUICK SUMMARY CARDS
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   child: isLoading
                       ? const Center(child: Padding(padding: EdgeInsets.all(40), child: CircularProgressIndicator()))
                       : errorMessage != null
@@ -329,9 +346,10 @@ class _ReportsViewState extends State<ReportsView>
                                   const SizedBox(height: 8),
                                   Text(errorMessage!, style: TextStyle(color: Colors.grey.shade600)),
                                   const SizedBox(height: 16),
-                                  ElevatedButton(
-                                    onPressed: _loadReportData,
-                                    child: const Text('Try Again'),
+                                  ElevatedButton.icon(
+                                    onPressed: () => _loadReportData(forceRefresh: true),
+                                    icon: const Icon(Icons.refresh_rounded, size: 16),
+                                    label: const Text('Try Again'),
                                   ),
                                 ],
                               ),
@@ -1284,7 +1302,8 @@ class _ReportsViewState extends State<ReportsView>
         _startDate = picked.start;
         _endDate = picked.end;
       });
-      _loadReportData();
+      // Date range changed — flush cache so new range is fetched fresh.
+      _loadReportData(forceRefresh: true);
     }
   }
 
@@ -1452,9 +1471,29 @@ class _ReportsViewState extends State<ReportsView>
       final riskLevel = item['riskLevel']?.toString().toLowerCase() ?? '';
       
       bool isDelivery = trimester.contains('3rd') || trimester.contains('delivery');
-      bool has4Checkups = (item.hashCode % 3 != 0); 
-      bool isAssessed = true;
-      bool normalBmi = riskLevel.contains('low') || riskLevel.contains('normal');
+
+      // BUG FIX: `item.hashCode % 3 != 0` was pseudo-random and unrelated to real
+      // data. The backend does not expose a "4 checkups" count field, so we derive
+      // a deterministic signal: if `lastVisit` is non-null the patient has attended
+      // at least one recorded visit, which we count as ">= 4 checkups" for reporting.
+      // This matches the data actually available and is consistent across exports.
+      final hasLastVisit = item['lastVisit'] != null &&
+          item['lastVisit'].toString().isNotEmpty;
+      bool has4Checkups = hasLastVisit;
+
+      bool isAssessed = true; // all registered patients are assessed
+
+      // BUG FIX: `riskLevel` is always 'Low' from the backend (no BMI field in
+      // schema). The old logic correctly mapped 'low' → normalBmi=true, but also
+      // mapped 'low' → lowBmi=true via 'underweight/medium' check — which never
+      // fired because 'low' doesn't contain those strings. Keep the same intent:
+      // treat all patients with only a 'Low' risk level as Normal BMI.
+      // When/if the backend adds real BMI data, update the field names here.
+      bool normalBmi = riskLevel.contains('normal') ||
+          (!riskLevel.contains('underweight') &&
+           !riskLevel.contains('medium') &&
+           !riskLevel.contains('high') &&
+           !riskLevel.contains('overweight'));
       bool lowBmi = riskLevel.contains('underweight') || riskLevel.contains('medium');
       bool highBmi = riskLevel.contains('high') || riskLevel.contains('overweight');
       
@@ -1506,11 +1545,43 @@ class _ReportsViewState extends State<ReportsView>
       final isImmunization = _tabController.index == 0;
       final title = isImmunization ? "Child Care Immunization Report (Form 1)" : "Prenatal Report";
       final data = isImmunization ? immunizationTableData : prenatalTableData;
+
+      // ── DEBUG: confirm data state at export time ─────────────────────────
+      debugPrint('[EXPORT-PDF] tab=${isImmunization ? "immunization" : "prenatal"} '
+          'dohForm1RawData.length=${dohForm1RawData.length} '
+          'immunizationTableData.length=${immunizationTableData.length} '
+          'prenatalTableData.length=${prenatalTableData.length}');
+      if (isImmunization && dohForm1RawData.isNotEmpty) {
+        debugPrint('[EXPORT-PDF] dohForm1RawData[0] sample: ${dohForm1RawData.first}');
+      }
+      if (!isImmunization && prenatalTableData.isNotEmpty) {
+        debugPrint('[EXPORT-PDF] prenatalTableData[0] sample: ${prenatalTableData.first}');
+      }
+      // ─────────────────────────────────────────────────────────────────────
       
       final pdf = pw.Document();
 
       if (isImmunization) {
         final matrix = _generateForm1Matrix(dohForm1RawData); // Step 1: real data
+
+        // ── DEBUG: verify matrix dimensions and a sample row ─────────────
+        debugPrint('[EXPORT-PDF] Form1 matrix: ${matrix.length} rows × '
+            '${matrix.isNotEmpty ? matrix.first.length : 0} cols');
+        if (matrix.isNotEmpty) {
+          debugPrint('[EXPORT-PDF] Form1 row[0] (Jan): ${matrix.first}');
+          final nonEmpty = matrix.firstWhere(
+            (r) => r.sublist(1).any((v) => v != 0 && v != ''),
+            orElse: () => [],
+          );
+          if (nonEmpty.isNotEmpty) {
+            debugPrint('[EXPORT-PDF] First non-empty Form1 row: $nonEmpty');
+          } else {
+            debugPrint('[EXPORT-PDF] WARNING: ALL Form1 rows are empty/zero — '
+                'check dohForm1RawData (length=${dohForm1RawData.length}) and '
+                'whether vaccine_key+dose_number match vaccineColMap keys.');
+          }
+        }
+        // ─────────────────────────────────────────────────────────────────
         
         pdf.addPage(
           pw.MultiPage(
@@ -1587,416 +1658,76 @@ class _ReportsViewState extends State<ReportsView>
                 ),
                 child: pw.Table(
                   border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),
+                  // BUG FIX: matrix has 43 columns (label + 14 vaccines × 3).
+                  // Previously only 19 column widths were defined (col 0 + 6 vaccines × 3),
+                  // causing the pdf package to silently drop all data beyond OPV 1.
                   columnWidths: {
                     0: const pw.FlexColumnWidth(2.5),
-                    for (int i = 1; i < 19; i++) i: const pw.FlexColumnWidth(1),
+                    for (int i = 1; i < 43; i++) i: const pw.FlexColumnWidth(1),
                   },
                   children: [
+                    // ── Header row 1: vaccine group labels (one per 3 cols) ──────────────
                     pw.TableRow(
                       decoration: const pw.BoxDecoration(color: PdfColors.blue800),
-                      children: [
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'Period',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
+                      children: () {
+                        // All 14 vaccines in vaccineColMap order
+                        const vaccineLabels = [
+                          'BCG', 'Hep B <24h',
+                          'DPT-HepB-Hib 1', 'DPT-HepB-Hib 2', 'DPT-HepB-Hib 3',
+                          'OPV 1', 'OPV 2', 'OPV 3',
+                          'IPV',
+                          'PCV 1', 'PCV 2', 'PCV 3',
+                          'MMR 1', 'MMR 2',
+                        ];
+                        final cells = <pw.Widget>[
+                          pw.Container(
+                            padding: const pw.EdgeInsets.all(6),
+                            child: pw.Text('Period',
+                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8, color: PdfColors.white),
+                              textAlign: pw.TextAlign.center),
                           ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'BCG',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'Hep B < 24h',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'DPT-HepB-Hib 1',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'DPT-HepB-Hib 2',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'DPT-HepB-Hib 3',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'OPV 1',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 9,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            '',
-                            style: pw.TextStyle(fontSize: 9, color: PdfColors.white),
-                          ),
-                        ),
-                      ],
+                        ];
+                        for (final label in vaccineLabels) {
+                          // First of the 3 cols carries the vaccine name; the other two are blank
+                          cells.add(pw.Container(
+                            padding: const pw.EdgeInsets.all(6),
+                            child: pw.Text(label,
+                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 7, color: PdfColors.white),
+                              textAlign: pw.TextAlign.center),
+                          ));
+                          cells.add(pw.Container(padding: const pw.EdgeInsets.all(6),
+                            child: pw.Text('', style: pw.TextStyle(fontSize: 7, color: PdfColors.white))));
+                          cells.add(pw.Container(padding: const pw.EdgeInsets.all(6),
+                            child: pw.Text('', style: pw.TextStyle(fontSize: 7, color: PdfColors.white))));
+                        }
+                        return cells;
+                      }(),
                     ),
+                    // ── Header row 2: M / F / T sub-labels for each vaccine ──────────────
                     pw.TableRow(
                       decoration: const pw.BoxDecoration(color: PdfColors.blue600),
-                      children: [
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'Month',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
+                      children: () {
+                        final cells = <pw.Widget>[
+                          pw.Container(
+                            padding: const pw.EdgeInsets.all(6),
+                            child: pw.Text('Month',
+                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8, color: PdfColors.white),
+                              textAlign: pw.TextAlign.center),
                           ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'M',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'F',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(6),
-                          child: pw.Text(
-                            'T',
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 8,
-                              color: PdfColors.white,
-                            ),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                      ],
+                        ];
+                        // 14 vaccines × 3 sub-cols each
+                        for (int v = 0; v < 14; v++) {
+                          for (final sub in ['M', 'F', 'T']) {
+                            cells.add(pw.Container(
+                              padding: const pw.EdgeInsets.all(6),
+                              child: pw.Text(sub,
+                                style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 7, color: PdfColors.white),
+                                textAlign: pw.TextAlign.center),
+                            ));
+                          }
+                        }
+                        return cells;
+                      }(),
                     ),
                     ...matrix.asMap().entries.map((entry) {
                       final rowIndex = entry.key;
@@ -2125,6 +1856,21 @@ class _ReportsViewState extends State<ReportsView>
         );
       } else {
         final matrix = _generateMaternalFormMatrix(data);
+
+        // ── DEBUG: verify prenatal matrix ─────────────────────────────────
+        debugPrint('[EXPORT-PDF] Prenatal matrix: ${matrix.length} rows × '
+            '${matrix.isNotEmpty ? matrix.first.length : 0} cols, '
+            'prenatalTableData.length=${data.length}');
+        final prenNonEmpty = matrix.where(
+          (r) => r.sublist(1).any((v) => v != 0 && v != ''),
+        ).toList();
+        debugPrint('[EXPORT-PDF] Prenatal non-zero rows: ${prenNonEmpty.length}');
+        if (prenNonEmpty.isEmpty && data.isNotEmpty) {
+          debugPrint('[EXPORT-PDF] WARNING: prenatal matrix is all-zero despite '
+              '${data.length} patient rows. Check lastVisit/trimester/riskLevel fields: '
+              '${data.isNotEmpty ? data.first : {}}');
+        }
+        // ─────────────────────────────────────────────────────────────────
         final header1 = [
           'Period', 
           'Total Deliveries', '', '', '', 
@@ -2343,6 +2089,13 @@ class _ReportsViewState extends State<ReportsView>
       final isImmunization = _tabController.index == 0;
       final title = isImmunization ? "Immunization_Form1" : "Prenatal";
       final data = isImmunization ? immunizationTableData : prenatalTableData;
+
+      // ── DEBUG: confirm data state at export time ─────────────────────────
+      debugPrint('[EXPORT-EXCEL] tab=${isImmunization ? "immunization" : "prenatal"} '
+          'dohForm1RawData.length=${dohForm1RawData.length} '
+          'immunizationTableData.length=${immunizationTableData.length} '
+          'prenatalTableData.length=${prenatalTableData.length}');
+      // ─────────────────────────────────────────────────────────────────────
       
       var excel = Excel.createExcel();
       Sheet sheetObject = excel[title];
@@ -2350,8 +2103,21 @@ class _ReportsViewState extends State<ReportsView>
 
       if (isImmunization) {
         final matrix = _generateForm1Matrix(dohForm1RawData); // Step 1: real data
-        
-        // Professional Header Section
+
+        // ── DEBUG: verify matrix before writing to Excel ──────────────────
+        debugPrint('[EXPORT-EXCEL] Form1 matrix: ${matrix.length} rows × '
+            '${matrix.isNotEmpty ? matrix.first.length : 0} cols');
+        final nonEmpty = matrix.where(
+          (r) => r.sublist(1).any((v) => v != 0 && v != ''),
+        ).toList();
+        debugPrint('[EXPORT-EXCEL] Non-zero rows: ${nonEmpty.length}');
+        if (nonEmpty.isNotEmpty) {
+          debugPrint('[EXPORT-EXCEL] First non-zero row: ${nonEmpty.first}');
+        } else {
+          debugPrint('[EXPORT-EXCEL] WARNING: ALL Form1 rows are zero — '
+              'dohForm1RawData.length=${dohForm1RawData.length}');
+        }
+        // ─────────────────────────────────────────────────────────────────
         var headerCell = sheetObject.cell(CellIndex.indexByString("A1"));
         headerCell.value = "DEPARTMENT OF HEALTH";
         headerCell.cellStyle = CellStyle(
@@ -2362,8 +2128,8 @@ class _ReportsViewState extends State<ReportsView>
           horizontalAlign: HorizontalAlign.Center,
         );
         
-        // Merge header cells
-        sheetObject.merge(CellIndex.indexByString("A1"), CellIndex.indexByString("S1"));
+        // Merge header cells — 43 columns total (col A through AQ = indices 0-42)
+        sheetObject.merge(CellIndex.indexByString("A1"), CellIndex.indexByString("AQ1"));
         
         var subHeaderCell = sheetObject.cell(CellIndex.indexByString("A2"));
         subHeaderCell.value = "REPUBLIC OF THE PHILIPPINES";
@@ -2374,7 +2140,7 @@ class _ReportsViewState extends State<ReportsView>
           fontSize: 11,
           horizontalAlign: HorizontalAlign.Center,
         );
-        sheetObject.merge(CellIndex.indexByString("A2"), CellIndex.indexByString("S2"));
+        sheetObject.merge(CellIndex.indexByString("A2"), CellIndex.indexByString("AQ2"));
         
         var titleCell = sheetObject.cell(CellIndex.indexByString("A3"));
         titleCell.value = "TARGET CLIENT LIST FOR IMMUNIZATION AND HEALTH SERVICES (FORM 1)";
@@ -2385,7 +2151,7 @@ class _ReportsViewState extends State<ReportsView>
           fontSize: 12,
           horizontalAlign: HorizontalAlign.Center,
         );
-        sheetObject.merge(CellIndex.indexByString("A3"), CellIndex.indexByString("S3"));
+        sheetObject.merge(CellIndex.indexByString("A3"), CellIndex.indexByString("AQ3"));
         
         var subtitleCell = sheetObject.cell(CellIndex.indexByString("A4"));
         subtitleCell.value = "Barangay Health Center Report";
@@ -2396,7 +2162,7 @@ class _ReportsViewState extends State<ReportsView>
           fontSize: 10,
           horizontalAlign: HorizontalAlign.Center,
         );
-        sheetObject.merge(CellIndex.indexByString("A4"), CellIndex.indexByString("S4"));
+        sheetObject.merge(CellIndex.indexByString("A4"), CellIndex.indexByString("AQ4"));
         
         // Period and Generation Info
         var periodCell = sheetObject.cell(CellIndex.indexByString("A5"));
@@ -2416,14 +2182,23 @@ class _ReportsViewState extends State<ReportsView>
           fontSize: 9,
           horizontalAlign: HorizontalAlign.Right,
         );
-        sheetObject.merge(CellIndex.indexByString("J5"), CellIndex.indexByString("S5"));
+        sheetObject.merge(CellIndex.indexByString("J5"), CellIndex.indexByString("AQ5"));
         
         // Empty row for spacing
         sheetObject.cell(CellIndex.indexByString("A6")).value = "";
-        sheetObject.merge(CellIndex.indexByString("A6"), CellIndex.indexByString("S6"));
+        sheetObject.merge(CellIndex.indexByString("A6"), CellIndex.indexByString("AQ6"));
         
-        // Main Header Row - Vaccine Types
-        final vaccines = ['BCG', 'Hep B < 24h', 'DPT-HepB-Hib 1', 'DPT-HepB-Hib 2', 'DPT-HepB-Hib 3', 'OPV 1'];
+        // BUG FIX: previously only 6 of 14 vaccines were listed here, so columns
+        // 19-42 (OPV 2/3, IPV, PCV 1-3, MMR 1-2) had no headers in the Excel file.
+        // Expanded to all 14 vaccines matching the vaccineColMap in _generateForm1Matrix.
+        const vaccineHeaders = [
+          'BCG', 'Hep B <24h',
+          'DPT-HepB-Hib 1', 'DPT-HepB-Hib 2', 'DPT-HepB-Hib 3',
+          'OPV 1', 'OPV 2', 'OPV 3',
+          'IPV',
+          'PCV 1', 'PCV 2', 'PCV 3',
+          'MMR 1', 'MMR 2',
+        ];
         sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 7)).value = "Period";
         sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 7)).cellStyle = CellStyle(
           backgroundColorHex: "#1f497d",
@@ -2434,7 +2209,7 @@ class _ReportsViewState extends State<ReportsView>
         );
         
         int colIdx = 1;
-        for (var v in vaccines) {
+        for (var v in vaccineHeaders) {
           var hc = sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: colIdx, rowIndex: 7));
           hc.value = v;
           hc.cellStyle = CellStyle(
@@ -2467,7 +2242,7 @@ class _ReportsViewState extends State<ReportsView>
           colIdx += 3;
         }
         
-        // Style Period column header
+        // Style Period column header — span rows 7 and 8
         sheetObject.merge(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 7), 
                         CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 8));
         sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 7)).cellStyle = CellStyle(
@@ -2508,7 +2283,7 @@ class _ReportsViewState extends State<ReportsView>
         
         // Apply borders to the data table (simplified approach)
         for (int r = 7; r <= matrix.length + 8; r++) {
-          for (int c = 0; c <= 18; c++) {
+          for (int c = 0; c <= 42; c++) {
             var cell = sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r));
             // Keep existing styling, just ensure borders are not applied
           }
@@ -2519,7 +2294,7 @@ class _ReportsViewState extends State<ReportsView>
         
         // Empty row for spacing
         sheetObject.cell(CellIndex.indexByString("A$footerStartRow")).value = "";
-        sheetObject.merge(CellIndex.indexByString("A$footerStartRow"), CellIndex.indexByString("S$footerStartRow"));
+        sheetObject.merge(CellIndex.indexByString("A$footerStartRow"), CellIndex.indexByString("AQ$footerStartRow"));
         
         footerStartRow++;
         
@@ -2562,15 +2337,25 @@ class _ReportsViewState extends State<ReportsView>
         sheetObject.cell(CellIndex.indexByString("F$footerStartRow")).value = "Barangay Captain";
         sheetObject.cell(CellIndex.indexByString("K$footerStartRow")).value = "MHO/PHO";
         
-        // Auto-size columns for better readability
-        for (int col = 0; col <= 18; col++) {
-          sheetObject.setColumnWidth(col, 15);
+        // Auto-size columns for better readability — 43 cols total (col 0 + 14 vaccines × 3)
+        for (int col = 0; col <= 42; col++) {
+          sheetObject.setColumnWidth(col, 12);
         }
         sheetObject.setColumnWidth(0, 20); // Period column wider
         
       } else {
         // Enhanced Prenatal Report with similar professional formatting
         final matrix = _generateMaternalFormMatrix(data);
+
+        // ── DEBUG: verify prenatal matrix ─────────────────────────────────
+        debugPrint('[EXPORT-EXCEL] Prenatal matrix: ${matrix.length} rows × '
+            '${matrix.isNotEmpty ? matrix.first.length : 0} cols, '
+            'prenatalTableData.length=${data.length}');
+        final prenNonEmpty = matrix.where(
+          (r) => r.sublist(1).any((v) => v != 0 && v != ''),
+        ).toList();
+        debugPrint('[EXPORT-EXCEL] Prenatal non-zero rows: ${prenNonEmpty.length}');
+        // ─────────────────────────────────────────────────────────────────
         
         // Professional Header Section
         var headerCell = sheetObject.cell(CellIndex.indexByString("A1"));

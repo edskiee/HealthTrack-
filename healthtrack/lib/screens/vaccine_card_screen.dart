@@ -62,7 +62,15 @@ class _VaccineCardScreenState extends State<VaccineCardScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _fetchCard(silent: true);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      _fetchCard(silent: true);
+      _pollTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (mounted) _fetchCard(silent: true);
+      });
+    }
   }
 
   // ── Realtime setup ─────────────────────────────────────────────────────────

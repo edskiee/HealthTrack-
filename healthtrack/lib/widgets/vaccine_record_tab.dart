@@ -67,9 +67,18 @@ class _VaccineRecordTabState extends State<VaccineRecordTab>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
       _fetchCard(silent: true);
       _fetchScheduledAppointments(silent: true);
+      _pollTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (mounted) {
+          _fetchCard(silent: true);
+          _fetchScheduledAppointments(silent: true);
+        }
+      });
     }
   }
 

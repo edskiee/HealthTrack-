@@ -158,6 +158,31 @@ app.use("/admin/register",  authLimiter);
 // General limiter for all other routes
 app.use(generalLimiter);
 
+// ─── Request-volume monitoring middleware ─────────────────────────────────────
+// Counts all incoming requests per 60-second window and warns when volume is high.
+// Separate from the per-route rate limiters — this is a server-wide health signal.
+{
+  let _totalRequests = 0;
+  let _windowStart   = Date.now();
+
+  app.use((req, _res, next) => {
+    _totalRequests++;
+    const now = Date.now();
+    if (now - _windowStart >= 60_000) {
+      if (_totalRequests > 50) {
+        console.warn(
+          `⚠️  High request volume: ${_totalRequests} requests in last 60s`
+        );
+      } else {
+        console.log(`📈 Request volume: ${_totalRequests} req/min`);
+      }
+      _totalRequests = 0;
+      _windowStart   = now;
+    }
+    next();
+  });
+}
+
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 const io = socketIo(server, {
   cors: corsOptions,
@@ -246,6 +271,18 @@ app.get("/health", (_req, res) => {
     version:   pkgManifest.version || "1.0.0",
     build:     process.env.BUILD_NUMBER || "local",
   });
+});
+
+// ─── Cache flush endpoint (admin-only via auth middleware) ────────────────────
+// Called automatically when the admin taps the "Refresh" button on the Reports
+// page — ensures they always see fresh data, not a 5-min-old cached response.
+const { authenticateAdmin } = require("./middleware/auth");
+const { reportCache }       = require("./controllers/dashboardController");
+
+app.post("/dashboard/reports/cache/flush", authenticateAdmin, (_req, res) => {
+  reportCache.flush();
+  console.log(`🗑️  Report cache flushed by admin request`);
+  res.json({ success: true, message: "Report cache cleared." });
 });
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────

@@ -16,14 +16,17 @@ class RealtimeRefreshService {
   final List<_RefreshCallback> _callbacks = [];
   
   // Current refresh interval in seconds
-  int _refreshInterval = 3;
+  int _refreshInterval = 30;
   
   // Whether auto-refresh is enabled
   bool _autoRefreshEnabled = true;
 
+  /// Minimum allowed refresh interval — prevents accidentally flooding the server.
+  static const int _minIntervalSeconds = 30;
+
   /// Initialize the real-time refresh service
-  void initialize({int refreshIntervalSeconds = 3}) {
-    _refreshInterval = refreshIntervalSeconds;
+  void initialize({int refreshIntervalSeconds = 30}) {
+    _refreshInterval = refreshIntervalSeconds.clamp(_minIntervalSeconds, 300);
     _startAutoRefresh();
   }
 
@@ -57,9 +60,9 @@ class RealtimeRefreshService {
     }
   }
 
-  /// Set refresh interval
+  /// Set refresh interval (floor: 30s to protect the server)
   void setRefreshInterval(int seconds) {
-    _refreshInterval = seconds;
+    _refreshInterval = seconds.clamp(_minIntervalSeconds, 300);
     if (_autoRefreshEnabled) {
       _startAutoRefresh();
     }

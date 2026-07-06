@@ -16,7 +16,7 @@ class AppointmentsView extends StatefulWidget {
   State<AppointmentsView> createState() => _AppointmentsViewState();
 }
 
-class _AppointmentsViewState extends State<AppointmentsView> {
+class _AppointmentsViewState extends State<AppointmentsView> with WidgetsBindingObserver {
   String _currentView = 'approved'; // approved, rescheduled
 
   List<Map<String, dynamic>> _appointments = [];
@@ -46,9 +46,23 @@ class _AppointmentsViewState extends State<AppointmentsView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadAppointments();
     // Start periodic refresh for real-time synchronization
     _startPeriodicRefresh();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // App going to background — pause the timer to stop hammering the server.
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      // Back in foreground — refresh once immediately, then restart the timer.
+      _loadAppointments(silent: true);
+      _startPeriodicRefresh();
+    }
   }
 
   void _showSuccessMessage(String message) {
@@ -116,6 +130,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();

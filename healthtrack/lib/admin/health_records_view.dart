@@ -1831,7 +1831,7 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
       _activeChildId = widget.patientId;
       _loadCard();
       _pollTimer = Timer.periodic(
-          const Duration(seconds: 15), (_) => _loadCard(silent: true));
+          const Duration(seconds: 60), (_) => _loadCard(silent: true));
     }
   }
 
@@ -1865,7 +1865,7 @@ class _VaccineTrackingModalState extends State<_VaccineTrackingModal> {
     _loadCard();
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
-        const Duration(seconds: 15), (_) => _loadCard(silent: true));
+        const Duration(seconds: 60), (_) => _loadCard(silent: true));
   }
 
   @override

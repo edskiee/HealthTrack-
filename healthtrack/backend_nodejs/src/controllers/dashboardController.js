@@ -1,6 +1,129 @@
 const db = require("../config/db");
 // Removed HealthWorkerService reference since it's no longer used
 
+// ─── 5-minute in-memory cache for /dashboard/reports/* ───────────────────────
+//
+// Keyed by a string built from the route + query params.
+// Each entry: { data, expiresAt }
+//
+// Usage inside a controller:
+//   const cached = reportCache.get(key);
+//   if (cached) return res.json(cached);
+//   ... query DB ...
+//   reportCache.set(key, responseData);
+//   return res.json(responseData);
+//
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const _cacheStore = new Map(); // key → { data, expiresAt }
+
+const reportCache = {
+  /** Return cached data if still fresh, otherwise null. */
+  get(key) {
+    const entry = _cacheStore.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      _cacheStore.delete(key);
+      return null;
+    }
+    return entry.data;
+  },
+
+  /** Store data for CACHE_TTL_MS from now. */
+  set(key, data) {
+    _cacheStore.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+  },
+
+  /** Invalidate a specific key (e.g. after admin triggers manual refresh). */
+  invalidate(key) {
+    _cacheStore.delete(key);
+  },
+
+  /** Flush ALL report cache entries — called when admin clicks Refresh. */
+  flush() {
+    _cacheStore.clear();
+    console.log("🗑️  Report cache flushed");
+  },
+
+  /** Number of live entries — used by health/monitoring logs. */
+  size() {
+    // Prune expired entries while counting
+    let live = 0;
+    for (const [k, v] of _cacheStore) {
+      if (Date.now() > v.expiresAt) { _cacheStore.delete(k); }
+      else { live++; }
+    }
+    return live;
+  },
+};
+
+// Expose cache so server.js can reference cache.size() in monitoring logs
+module.exports.reportCache = reportCache;
+
+// ─── Request-volume monitor ───────────────────────────────────────────────────
+// Counts how many /dashboard/reports/* hits land in each 60-second window.
+let _reportRequestCount = 0;
+let _reportWindowStart  = Date.now();
+
+function trackReportRequest(endpoint) {
+  _reportRequestCount++;
+  const now = Date.now();
+
+  if (now - _reportWindowStart >= 60_000) {
+    if (_reportRequestCount > 50) {
+      console.warn(
+        `⚠️  High reports request volume: ${_reportRequestCount} requests in the last 60s`
+      );
+    } else {
+      console.log(
+        `📊 Reports request volume: ${_reportRequestCount} req/min  (cache entries: ${reportCache.size()})`
+      );
+    }
+    _reportRequestCount = 0;
+    _reportWindowStart  = now;
+  }
+}
+
+// Helper: build a cache key from a request
+function cacheKey(req) {
+  return `${req.path}?${new URLSearchParams(req.query).toString()}`;
+}
+
+// Helper: wrap a controller handler with cache + volume tracking
+function withCache(handler) {
+  return async (req, res, next) => {
+    trackReportRequest(req.path);
+
+    const key    = cacheKey(req);
+    const cached = reportCache.get(key);
+
+    if (cached) {
+      console.log(`📦 Cache HIT  ${req.path}`);
+      // Attach a header so the client knows it received cached data
+      res.setHeader("X-Cache", "HIT");
+      return res.json(cached);
+    }
+
+    console.log(`🔍 Cache MISS ${req.path} — querying DB`);
+    res.setHeader("X-Cache", "MISS");
+
+    // Intercept res.json to populate the cache transparently
+    const originalJson = res.json.bind(res);
+    res.json = (body) => {
+      // Only cache successful responses
+      if (res.statusCode >= 200 && res.statusCode < 300 && body?.success !== false) {
+        reportCache.set(key, body);
+      }
+      return originalJson(body);
+    };
+
+    return handler(req, res, next);
+  };
+}
+
+// Export so routes can use it
+module.exports.withCache = withCache;
+
 // Helper function to convert full day names to abbreviations
 function _getDayAbbreviation(fullDayName) {
   const dayMap = {

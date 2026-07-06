@@ -1,10 +1,8 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../services/api_config.dart';
 import '../services/dashboard_service.dart';
 import '../utils/time_utils.dart';
-import '../admin/services/realtime_refresh_service.dart';
 import 'widgets/admin_header.dart';
 
 class DashboardView extends StatefulWidget {
@@ -14,7 +12,7 @@ class DashboardView extends StatefulWidget {
   State<DashboardView> createState() => _DashboardViewState();
 }
 
-class _DashboardViewState extends State<DashboardView> {
+class _DashboardViewState extends State<DashboardView> with WidgetsBindingObserver {
   bool isLoading = true;
   String? errorMessage;
   Map<String, dynamic> dashboardStats = {};
@@ -28,19 +26,24 @@ class _DashboardViewState extends State<DashboardView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadDashboardData();
     
-    // Register callback with real-time refresh service
-    RealtimeRefreshService().addRefreshCallback(_loadDashboardData, moduleId: 'dashboard');
-    
-    // Initialize Socket.IO connection for real-time updates
+    // Socket.IO handles real-time updates — NO HTTP polling timer needed.
     _initSocketConnection();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh once when the admin returns to the app — but no timer.
+      _loadDashboardData();
+    }
+  }
+
+  @override
   void dispose() {
-    // Unregister callback when widget is disposed
-    RealtimeRefreshService().removeCallbacksByModuleId('dashboard');
+    WidgetsBinding.instance.removeObserver(this);
     
     // Disconnect Socket.IO when widget is disposed
     _socket?.disconnect();
@@ -221,7 +224,7 @@ class _DashboardViewState extends State<DashboardView> {
                           Icon(Icons.autorenew, size: 14, color: const Color(0xFF1565C0)),
                           const SizedBox(width: 4),
                           Text(
-                            "Auto-refreshes every 30 seconds",
+                            "Real-time updates via live connection",
                             style: TextStyle(color: const Color(0xFF1565C0), fontSize: 12),
                           ),
                         ],

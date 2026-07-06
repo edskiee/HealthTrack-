@@ -112,8 +112,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // App going to background — stop the poll timer immediately.
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      // Back in foreground — refresh once, then restart the 30s timer.
       _fetchScheduleTracking();
+      _refreshTimer ??= Timer.periodic(const Duration(seconds: 30), (_) => _fetchRealtimeData());
     }
   }
 

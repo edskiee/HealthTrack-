@@ -124,7 +124,7 @@ class _SettingsViewState extends State<SettingsView>
     );
     _bootstrap();
     _sessionTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _loadSessions());
+        Timer.periodic(const Duration(seconds: 120), (_) => _loadSessions());
     _healthTimer =
         Timer.periodic(const Duration(seconds: 60), (_) => _probeHealthOnly());
     _connectSocket();
@@ -278,6 +278,23 @@ class _SettingsViewState extends State<SettingsView>
     if (context.read<ThemeProvider>().themeMode != ThemeMode.system) return;
     setState(() {});
     widget.onThemeModeChanged?.call('system');
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // Background — cancel timers so sessions endpoint stops being hit.
+      _sessionTimer?.cancel();
+      _sessionTimer = null;
+      _healthTimer?.cancel();
+      _healthTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      // Foreground again — refresh once, restart timers.
+      _loadSessions();
+      _probeHealthOnly();
+      _sessionTimer ??= Timer.periodic(const Duration(seconds: 120), (_) => _loadSessions());
+      _healthTimer  ??= Timer.periodic(const Duration(seconds: 60),  (_) => _probeHealthOnly());
+    }
   }
 
   @override
